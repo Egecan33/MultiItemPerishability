@@ -21,11 +21,39 @@ import time, json
 from pathlib import Path
 import numpy as np
 
+from collections import defaultdict
+import networkx as nx
+import matplotlib.pyplot as plt
+
+import pygraphviz
+
+
+ENABLE_LIVE_PLOTS = False
+TREE_VISUALIZATION = False
+
+if TREE_VISUALIZATION or ENABLE_LIVE_PLOTS:
+    fig, ax = plt.subplots()
+    plt.ion()
+    plt.show(block=False)
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # adaptive k_max  +  DP progress pulses
 # ────────────────────────────────────────────────────────────────────────────
 DP_STATE_STEP = 250_000  # print every 100k DP states
-HARD_KMAX_CAP = 64  # safety ceiling; raise if you really need it
+HARD_KMAX_CAP = 10  # safety ceiling; raise if you really need it
+
+
+def live_plot_inventory(t, inv, back, item_id, line_dict):
+    ax.clear()
+    ax.set_title(f"Inventory / Backorders for Item {item_id}")
+    ax.set_xlabel("Period")
+    ax.set_ylabel("Units")
+    ax.grid(True)
+    ax.plot(range(t + 1), line_dict["inv"][: t + 1], label="Inventory")
+    ax.plot(range(t + 1), line_dict["back"][: t + 1], label="Backorders")
+    ax.legend()
+    plt.pause(0.1)
 
 
 def dp_pricing_general_pulsed(
@@ -114,11 +142,37 @@ def dp_pricing_general_pulsed(
         return float("inf"), None, None, None
     red_cost, _ = dp[1][zero]
     q_plan, cost, st = [], 0.0, zero
+
+    inv_history = []
+    back_history = []
     for t in range(1, T + 1):
         q, st_next, true = dp[t][st][1]
         q_plan.append(q)
         cost += true
         st = st_next
+
+        # Inventory/backorder simulation (replicating logic from detailed_exec_rep)
+        inv = list(st)
+        demand_t = demand[t - 1]
+        inv_new = [0] * L
+        inv_new[1:] = inv[:-1]
+        inv_new[0] += q
+        on_hand = sum(inv_new)
+        sell = min(demand_t, on_hand)
+        rem = demand_t - sell
+        back = rem
+        inv_history.append(sum(inv_new))
+        back_history.append(back)
+
+        if ENABLE_LIVE_PLOTS:
+            live_plot_inventory(
+                t - 1,
+                inv_history,
+                back_history,
+                item_id,
+                {"inv": inv_history, "back": back_history},
+            )
+
     return red_cost, cost, q_plan, None
 
 
@@ -337,6 +391,21 @@ class BranchPrice:
             )
             self.master.add_pattern(i, cost, q, self.order_fix)
         self.master.model.update()
+        self.tree = {}
+        self.node_counter = 0
+        self.parent_stack = []
+
+    def log_node(self, parent, fix, obj, incumbent, status):
+        self.tree[self.node_counter] = {
+            "parent": parent,
+            "fix": fix,
+            "obj": obj,
+            "incumbent": incumbent,
+            "status": status,
+        }
+        self.parent_stack.append(self.node_counter)
+        self.node_counter += 1
+        return self.node_counter - 1
 
     def compute_y(self, lam):
         y = {(i, t): 0.0 for i in self.items for t in range(self.T)}
@@ -358,6 +427,7 @@ class BranchPrice:
             print(
                 f"[CG] iter {len(self.master.lambda_vars[self.items[0]])}  obj={obj:.2f}"
             )
+
             mu_hat = [
                 self.alpha * m + (1 - self.alpha) * p for m, p in zip(mu, self.prev_mu)
             ]
@@ -381,6 +451,13 @@ class BranchPrice:
 
     def branch_and_price(self, best=float("inf"), best_sol=None):
         bound, (pi, mu, lam) = self.column_generation()
+        node_id = self.log_node(
+            parent=self.parent_stack[-1] if self.parent_stack else None,
+            fix=None if not self.order_fix else list(self.order_fix.items())[-1],
+            obj=bound,
+            incumbent=best,
+            status="branching" if bound < best else "pruned",
+        )
         if bound >= best - 1e-6:
             return best, best_sol
         res = self.master.optimize()
@@ -404,6 +481,7 @@ class BranchPrice:
         i_b, t_b = frac
         best, best_sol = self.branch_child(i_b, t_b, (0, 0), best, best_sol)
         best, best_sol = self.branch_child(i_b, t_b, (1, 1), best, best_sol)
+        self.parent_stack.pop()
         return best, best_sol
 
     def branch_child(self, i, t, fix, best, best_sol):
@@ -411,6 +489,9 @@ class BranchPrice:
         child = deepcopy(self)
         child.order_fix[(i, t)] = fix
         child.master = child.master.copy(order_fix=child.order_fix)
+        child.parent_stack = self.parent_stack.copy()
+        child.tree = self.tree  # shared reference
+        child.node_counter = self.node_counter  # preserve counter
         return child.branch_and_price(best, best_sol)
 
     def fallback_heuristic_pattern(
@@ -452,6 +533,17 @@ class BranchPrice:
 
     def price_with_growth(self, i, mu_hat, pi_i, k_start=8):
         """Try small k; double until bound no longer active or hard cap reached."""
+        # fallback heuristic pattern before full DP if mu is positive
+        heur = self.fallback_heuristic_pattern(i, mu_hat, pi_i)
+        if heur is not None:
+            rc, cost_heur, q_heur = heur
+            if all(p["q"] != q_heur for p in self.master.patterns[i]):
+                self.master.add_pattern(i, cost_heur, q_heur, self.order_fix)
+                if self.verbose:
+                    print(
+                        f"[HEUR] item {i} -> fallback added with rc={rc:.2f} cost={cost_heur:.2f}"
+                    )
+
         k = max(4, min(k_start, self.k_max[i]))  # conservative starting point
         while True:
             red, cost, q, _ = dp_pricing_general_pulsed(
@@ -499,24 +591,31 @@ def detailed_exec_rep(bp, sol):
     print("\n=== Detailed execution report ===")
     for i in bp.items:
         print(f"\nItem {i}")
-        sel_idx = [idx for idx, v in enumerate(sol[i]) if v > 0.9][0]
+        try:
+            sel_idx = next(idx for idx, v in enumerate(sol[i]) if v > 0.9)
+        except StopIteration:
+            print(f"[ERROR] No selected pattern for item {i} — skipping.")
+            continue
+
+        if sel_idx >= len(bp.master.patterns[i]):
+            print(f"[ERROR] Pattern index {sel_idx} out of bounds for item {i}")
+            continue
+
         orders = bp.master.patterns[i][sel_idx]["q"]
         demand_i = bp.dem[i]
         shelf = bp.shelf[i]
-        inv = [0] * (shelf)  # inv[0]=age-1 on-hand, inv[1]=age-2, ...
+        inv = [0] * shelf
         backorder = 0
+
         print(" t | dem | ord | inv+ | back")
         print("-" * 27)
         for t in range(bp.T):
-            # receive today’s order immediately
             on_hand_today = sum(inv)
             inv_new = [0] * shelf
-            inv_new[1:] = inv[:-1]  # age existing inventory
-            inv_new[0] += orders[t]  # today’s order becomes age-1
-            # satisfy demand
+            inv_new[1:] = inv[:-1]
+            inv_new[0] += orders[t]
             sell = min(demand_i[t] + backorder, sum(inv_new))
             remaining = demand_i[t] + backorder - sell
-            # consume oldest first
             for age in range(shelf - 1, -1, -1):
                 use = min(inv_new[age], sell)
                 inv_new[age] -= use
@@ -626,51 +725,56 @@ def build_lot(
     return lot
 
 
-# --------- core data objects ---------------------------------------------
+def visualize_bnp_tree(tree: list):
+    G = nx.DiGraph()
 
-if __name__ == "__main__":
+    for node in tree:
+        node_id = node["id"]
+        fix = node.get("fix")
+        obj = node.get("obj", float("inf"))
+        inc = node.get("incumbent", float("inf"))
+        gap = (100 * (inc - obj) / inc) if inc < float("inf") else float("inf")
 
-    # ---- basic switches -------------------------------------------------
-    RANDOMIZE = True  # → False to re-use the cached instance
-    USE_MANUAL_CAPACITY = True  # ← switch here
-    ALLOW_BACKORDER = False  # allow backorders in pricing
+        label = f"{node_id}\n"
+        if fix:
+            label += f"{fix[0]}={fix[1]}\n"
+        label += f"obj={obj:.1f}\n"
+        label += f"inc={inc if inc < float('inf') else 'inf'}\n"
+        if inc < float("inf"):
+            label += f"gap={gap:.1f}%"
 
-    INSTANCE_PATH = Path(__file__).with_name("last_instance.json")
-    SEED = 0  # keeps random runs reproducible
+        G.add_node(node_id, label=label)
 
-    # --------------------------------------------------------------------
+        parent_id = node.get("parent")
+        if parent_id is not None:
+            G.add_edge(parent_id, node_id)
 
-    random.seed(SEED)
-    np.random.seed(SEED)
+    try:
+        pos = nx.nx_agraph.graphviz_layout(G, prog="dot", args="-Grankdir=LR")
+    except:
+        print("[WARN] Falling back to spring layout.")
+        pos = nx.spring_layout(G, seed=42)
 
-    # 1️⃣  Load existing instance (only when RANDOMIZE is off and file exists)
-    if (not RANDOMIZE) and INSTANCE_PATH.exists():
-        lot = Lot.from_json(INSTANCE_PATH)
-        print(f"[INFO] Loaded instance from {INSTANCE_PATH}")
+    node_labels = nx.get_node_attributes(G, "label")
 
-    # 2️⃣  Otherwise build a fresh instance and overwrite the cache
-    else:
-        specs = [
-            # id  setup  b_var  c_var  h    shelf
-            (0, 7.5, 5.0, 2.0, 0.4, 4),
-            (1, 9.0, 5.0, 3.0, 0.6, 3),
-            (2, 6.0, 5.0, 1.8, 0.3, 5),
-            # (3, 8.0, 5.0, 2.5, 0.5, 10),
-            # add more items here if you like
-        ]
-        period = 10  # number of periods in the lot
-        manual_caps = [30] * period if USE_MANUAL_CAPACITY else None
-        lot = build_lot(
-            period=period,
-            lb_dem=1,
-            ub_dem=10,
-            capacity_pad=20,
-            specs=specs,
-            manual_capacity=manual_caps,
-        )
-        lot.to_json(INSTANCE_PATH)
-        print(f"[INFO] Generated new instance → {INSTANCE_PATH}")
+    nx.draw(
+        G,
+        pos,
+        with_labels=True,
+        labels=node_labels,
+        node_color="lightblue",
+        edge_color="gray",
+        node_size=3000,
+        font_size=8,
+        font_weight="bold",
+    )
 
+    plt.title("Branch-and-Price Tree")
+    plt.tight_layout()
+    plt.show()
+
+
+def wrapper_main():
     # 3️⃣  Solve with Branch-and-Price
     demand, c_var, h, setup, b_var, cap, shelf, k_max = lot.to_dicts()
     bp = BranchPrice(demand, c_var, h, setup, b_var, cap, shelf, k_max)
@@ -704,3 +808,87 @@ if __name__ == "__main__":
             print(f"[ERROR] No valid pattern found for item {i}, likely infeasible.")
 
     detailed_exec_rep(bp, sol)
+
+    for i in bp.items:
+        sel = next(idx for idx, v in enumerate(sol[i]) if v > 0.9)
+        orders = bp.master.patterns[i][sel]["q"]
+        demand_i = bp.dem[i]
+        shelf = bp.shelf[i]
+        inv = [0] * shelf
+        back = 0
+        inv_hist, back_hist = [], []
+        for t in range(bp.T):
+            inv_new = [0] * shelf
+            inv_new[1:] = inv[:-1]
+            inv_new[0] += orders[t]
+            sell = min(demand_i[t] + back, sum(inv_new))
+            rem = demand_i[t] + back - sell
+            back = rem
+            inv = inv_new
+            inv_hist.append(sum(inv))
+            back_hist.append(back)
+
+        if ENABLE_LIVE_PLOTS:
+            live_plot_inventory(
+                bp.T - 1, inv_hist, back_hist, i, {"inv": inv_hist, "back": back_hist}
+            )
+
+        if TREE_VISUALIZATION:
+            visualize_bnp_tree(bp.tree)
+            print(f"[INFO] Branch-and-Price tree visualized.")
+
+        plt.ioff()
+        plt.show()
+
+
+# --------- core data objects ---------------------------------------------
+
+if __name__ == "__main__":
+
+    # ---- basic switches -------------------------------------------------
+    RANDOMIZE = True  # → False to re-use the cached instance
+    USE_MANUAL_CAPACITY = True  # ← switch here
+    ALLOW_BACKORDER = False  # allow backorders in pricing
+
+    INSTANCE_PATH = Path(__file__).with_name("last_instance.json")
+    SEED = 0  # keeps random runs reproducible
+
+    # --------------------------------------------------------------------
+
+    random.seed(SEED)
+    np.random.seed(SEED)
+
+    # 1️⃣  Load existing instance (only when RANDOMIZE is off and file exists)
+    if (not RANDOMIZE) and INSTANCE_PATH.exists():
+        lot = Lot.from_json(INSTANCE_PATH)
+        print(f"[INFO] Loaded instance from {INSTANCE_PATH}")
+
+    # 2️⃣  Otherwise build a fresh instance and overwrite the cache
+    else:
+        specs = [
+            # id  setup  b_var  c_var  h    shelf
+            (0, 7.5, 5.0, 2.0, 0.4, 3),
+            (1, 9.0, 5.0, 3.0, 0.6, 4),
+            (2, 6.0, 5.0, 1.8, 0.3, 5),
+            (3, 8.0, 5.0, 2.5, 0.5, 6),
+            (4, 10.0, 5.0, 3.5, 0.7, 5),
+            (5, 12.0, 5.0, 4.0, 0.8, 2),
+            (6, 11.0, 5.0, 3.8, 0.75, 3),
+            (7, 13.0, 5.0, 4.2, 0.85, 5),
+            # add more items here if you like
+        ]
+        period = 11  # number of periods in the lot
+        manual_caps = [56] * period if USE_MANUAL_CAPACITY else None
+        lot = build_lot(
+            period=period,
+            lb_dem=1,
+            ub_dem=7,
+            capacity_pad=10,
+            specs=specs,
+            manual_capacity=manual_caps,
+        )
+        lot.to_json(INSTANCE_PATH)
+        print(f"[INFO] Generated new instance → {INSTANCE_PATH}")
+
+    # 3️⃣  Solve with Branch-and-Price
+    wrapper_main()

@@ -24,7 +24,7 @@ import numpy as np
 # ────────────────────────────────────────────────────────────────────────────
 # adaptive k_max  +  DP progress pulses
 # ────────────────────────────────────────────────────────────────────────────
-DP_STATE_STEP = 100_000  # print every 100k DP states
+DP_STATE_STEP = 250_000  # print every 100k DP states
 HARD_KMAX_CAP = 128  # safety ceiling; raise if you really need it
 
 
@@ -425,13 +425,51 @@ class BranchPrice:
             )
             if q is None:  # ← NEW  ░░░░░░░░░░░░░░
                 if k >= HARD_KMAX_CAP:  #       ░ handle hopeless case
-                    return red, cost, []  #       ░ returns empty column
+                    print(f"[HEUR] Fallback pattern used for item {i}")
+                    return self.fallback_heuristic_pattern(i, mu_hat, pi_i)
                 k *= 2  # ← NEW  ░ grow search cube & retry
                 continue
             if any(q_t == k for q_t in q) and k < HARD_KMAX_CAP:
                 k *= 2  # cap was tight, enlarge
                 continue
             return red, cost, q
+
+    def fallback_heuristic_pattern(
+        self, i: int, mu: list[float], pi_i: float
+    ) -> tuple[float, float, list[int]]:
+        """Generate a fallback greedy pattern if DP explodes."""
+        demand_i = self.dem[i]
+        shelf = self.shelf[i]
+        T = len(demand_i)
+        q = [0] * T
+        inventory = [0] * shelf
+        total_cost = 0.0
+
+        for t in range(T):
+            d = demand_i[t]
+            available = sum(inventory)
+            shortage = max(0, d - available)
+            order = shortage  # naive greedy: order just enough
+            q[t] = order
+
+            # Update inventory
+            inventory = [order] + inventory[:-1]
+            consumed = d
+            for age in reversed(range(shelf)):
+                use = min(inventory[age], consumed)
+                inventory[age] -= use
+                consumed -= use
+
+            holding_cost = self.h[i] * sum(inventory)
+            setup_cost = self.setup[i] if order > 0 else 0
+            var_cost = self.c_var[i] * order
+            back_cost = self.b_var[i] * consumed  # if unmet
+
+            total_cost += holding_cost + setup_cost + var_cost + back_cost
+
+        # Reduced cost: use duals (mu and pi_i)
+        red = total_cost - sum(mu[t] * q[t] for t in range(T)) - pi_i
+        return red, total_cost, q
 
     def __deepcopy__(self, memo):
         cls = self.__class__
@@ -603,9 +641,10 @@ if __name__ == "__main__":
             # (3, 8.0, 5.0, 2.5, 0.5, 10),
             # add more items here if you like
         ]
-        manual_caps = [15] * 12 if USE_MANUAL_CAPACITY else None
+        period = 5  # number of periods in the lot
+        manual_caps = [30] * period if USE_MANUAL_CAPACITY else None
         lot = build_lot(
-            period=12,
+            period=period,
             lb_dem=1,
             ub_dem=10,
             capacity_pad=7,
