@@ -11,11 +11,15 @@ import itertools, random, sys
 from copy import deepcopy
 import numpy as np
 import gurobipy as grb
-import time
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import List, Dict
+
+# main.py  (top of file)
+import time, json
+from pathlib import Path
+import numpy as np
 
 
 # -----------------------------------------------------------------------
@@ -386,7 +390,7 @@ class Lot:
 
     @property
     def kmax(self) -> Dict[int, int]:
-        return {i: max(it.demand) + 3 for i, it in self.items.items()}
+        return {i: max(it.demand) + self.capacity_pad for i, it in self.items.items()}
 
     # -------- factory-like helper ----------------
     def to_dicts(self):
@@ -401,15 +405,35 @@ class Lot:
         kmax = self.kmax
         return demand, c_var, h, setup, b_var, cap, shelf, kmax
 
+        # ---- convenience helpers --------------------------------------------
+
+    def to_json(self, path: str | Path, *, indent: int = 2) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)  # ← make folder
+
+        # JSON keys must be strings, so stringify the item-ids
+        serial = asdict(self)
+        serial["items"] = {str(k): v for k, v in serial["items"].items()}
+        path.write_text(json.dumps(serial, indent=indent))
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> "Lot":
+        data = json.loads(Path(path).read_text())
+        # ── recreate Item dataclass objects ──────────────────────────
+        items = {int(k): Item(**v) for k, v in data["items"].items()}
+        return cls(
+            period=data["period"], capacity_pad=data["capacity_pad"], items=items
+        )
+
 
 # -----------------------------------------------------------------------
 #  Build instance + run
 # -----------------------------------------------------------------------
 def build_lot(
     period: int = 30,
-    lb_dem: int = 1,
-    ub_dem: int = 7,
-    capacity_pad: int = 12,
+    lb_dem: int = 0,
+    ub_dem: int = 10,
+    capacity_pad: int = 6,
     specs: List[tuple] = None,
 ) -> Lot:
     """Return a Lot object populated with x random items."""
@@ -428,30 +452,53 @@ def build_lot(
 
 if __name__ == "__main__":
 
-    specs = [
-        # id  setup  b_var  c_var  h  shelf
-        (0, 7.5, 5.0, 2.0, 0.4, 5),
-        (1, 9.0, 5.0, 3.0, 0.6, 10),
-        (2, 6.0, 5.0, 1.8, 0.3, 5),
-        (3, 8.0, 5.0, 2.5, 0.5, 4),
-    ]
+    # ---- basic switches -------------------------------------------------
+    RANDOMIZE = True  # → False to re-use the cached instance
+    INSTANCE_PATH = Path(__file__).with_name("last_instance.json")
+    SEED = 0  # keeps random runs reproducible
 
-    lot = build_lot(period=90, lb_dem=1, ub_dem=10, capacity_pad=12, specs=specs)
+    backorder = False  # allow backorders in pricing
+    # --------------------------------------------------------------------
 
+    random.seed(SEED)
+    np.random.seed(SEED)
+
+    # 1️⃣  Load existing instance (only when RANDOMIZE is off and file exists)
+    if (not RANDOMIZE) and INSTANCE_PATH.exists():
+        lot = Lot.from_json(INSTANCE_PATH)
+        print(f"[INFO] Loaded instance from {INSTANCE_PATH}")
+
+    # 2️⃣  Otherwise build a fresh instance and overwrite the cache
+    else:
+        specs = [
+            # id  setup  b_var  c_var  h    shelf
+            (0, 7.5, 5.0, 2.0, 0.4, 2),
+            (1, 9.0, 5.0, 3.0, 0.6, 6),
+            (2, 6.0, 5.0, 1.8, 0.3, 3),
+            (3, 8.0, 5.0, 2.5, 0.5, 10),
+            # add more items here if you like
+        ]
+        lot = build_lot(
+            period=30,
+            lb_dem=1,
+            ub_dem=8,
+            capacity_pad=15,
+            specs=specs,
+        )
+        lot.to_json(INSTANCE_PATH)
+        print(f"[INFO] Generated new instance → {INSTANCE_PATH}")
+
+    # 3️⃣  Solve with Branch-and-Price
     demand, c_var, h, setup, b_var, cap, shelf, k_max = lot.to_dicts()
     bp = BranchPrice(demand, c_var, h, setup, b_var, cap, shelf, k_max)
 
     t0 = time.perf_counter()
-
     best, sol = bp.branch_and_price()
-
     elapsed = time.perf_counter() - t0
 
     print(f"\nObjective: {best:.2f}   (elapsed {elapsed:.2f} s)\n")
-
     for i in bp.items:
         sel = next(idx for idx, v in enumerate(sol[i]) if v > 0.9)
         print(f"Item {i}: pattern {sel}, orders={bp.master.patterns[i][sel]['q']}")
 
-    # detailed execution report (assumes you kept the helper exactly as shared)
     detailed_exec_rep(bp, sol)
