@@ -21,6 +21,106 @@ import time, json
 from pathlib import Path
 import numpy as np
 
+# ────────────────────────────────────────────────────────────────────────────
+# adaptive k_max  +  DP progress pulses
+# ────────────────────────────────────────────────────────────────────────────
+DP_STATE_STEP = 100_000  # print every 100k DP states
+HARD_KMAX_CAP = 128  # safety ceiling; raise if you really need it
+
+
+def dp_pricing_general_pulsed(
+    item_id,
+    demand,
+    c_var,
+    h,
+    setup,
+    b_var,
+    mu,
+    pi,
+    shelf_life,
+    k_max,
+    order_fix,
+    allow_backorder=False,
+    dbg=False,
+):
+    """Original DP with a heartbeat print and *no* back-order option."""
+    T, L = len(demand), shelf_life
+
+    cum_demand = [0] * (T + 1)  # cum_demand[t] = Σ_{τ=t}^{T} demand[τ]
+    running = 0
+    for τ in range(T - 1, -1, -1):  # walk backwards
+        running += demand[τ]
+        cum_demand[τ] = running
+
+    rng = range(-k_max, k_max + 1) if allow_backorder else range(k_max + 1)
+    zero = tuple(0 for _ in range(L - 1))
+    dp = [dict() for _ in range(T + 2)]
+    dp[T + 1][zero] = (-pi, None)
+
+    state_cnt = 0
+    for t in range(T, 0, -1):
+        d, mu_t = demand[t - 1], mu[t - 1]
+        lb, ub = order_fix.get((item_id, t - 1), (0, 1))
+        for state in itertools.product(rng, repeat=L - 1):
+            state_cnt += 1
+            if dbg and state_cnt % DP_STATE_STEP == 0:
+                print(
+                    f"      [DP] item={item_id} t={t:2d} "
+                    f"states={state_cnt//1_000:,}k"
+                )
+            # --------------- body of the original DP (copy verbatim) -----
+            avail = sum(max(x, 0) for x in state)  # ignore back-ordered ages
+
+            # ── PRUNE: too much stock to ever consume ───────────────────────────
+            if avail > cum_demand[t - 1]:
+                continue
+
+            # ─── PRUNE: if even with the biggest order we’d still throw stock away, skip ──
+            if avail > d + k_max:
+                continue
+
+            need = d - avail
+            q_min = max(0, need, 1 if lb == 1 else 0)
+            q_max = k_max if ub else 0  # ub==0 ⇒ no order allowed
+            best_val, best_dec = float("inf"), None
+            for q in range(q_min, q_max + 1):
+                inv = list(state)
+                rem = d
+                for age in range(L - 1, 0, -1):
+                    idx = age - 1
+                    use = min(inv[idx], rem)
+                    inv[idx] -= use
+                    rem -= use
+                use_q = min(q, rem)
+                rem -= use_q
+                age1 = q - use_q - rem  # rem≥0 ⇒ age1≥0
+                nxt = tuple([age1] + inv[:-1])
+                if age1 > k_max or nxt not in dp[t + 1]:
+                    continue
+                fixed = setup if q else 0
+                true = c_var * q + h * sum(nxt) + b_var * rem + fixed
+                red = (
+                    (c_var - mu_t) * q
+                    + h * sum(nxt)
+                    + b_var * rem
+                    + fixed
+                    + dp[t + 1][nxt][0]
+                )
+                if red < best_val:
+                    best_val, best_dec = red, (q, nxt, true)
+            if best_dec:
+                dp[t][state] = (best_val, best_dec)
+    if zero not in dp[1]:
+        return float("inf"), None, None, None
+    red_cost, _ = dp[1][zero]
+    q_plan, cost, st = [], 0.0, zero
+    for t in range(1, T + 1):
+        q, st_next, true = dp[t][st][1]
+        q_plan.append(q)
+        cost += true
+        st = st_next
+    return red_cost, cost, q_plan, None
+
 
 # -----------------------------------------------------------------------
 #  Dynamic-programming pricing routine
@@ -262,20 +362,7 @@ class BranchPrice:
             self.prev_mu = mu_hat
             added = False
             for i in self.items:
-                red, cost, q, _ = dp_pricing_general(
-                    i,
-                    self.dem[i],
-                    self.c_var[i],
-                    self.h[i],
-                    self.setup[i],
-                    self.b_var[i],
-                    mu_hat,
-                    pi[i],
-                    self.shelf[i],
-                    self.k_max[i],
-                    self.order_fix,
-                    allow_backorder=False,  #   <-------------------- Backorders allowed here if True
-                )
+                red, cost, q = self.price_with_growth(i, mu_hat, pi[i])
                 if red < -1e-6:
                     before_len = len(self.master.lambda_vars[i])
                     self.master.add_pattern(i, cost, q, self.order_fix)
@@ -316,6 +403,35 @@ class BranchPrice:
         child.order_fix[(i, t)] = fix
         child.master = child.master.copy(order_fix=child.order_fix)
         return child.branch_and_price(best, best_sol)
+
+    def price_with_growth(self, i, mu_hat, pi_i, k_start=8):
+        """Try small k; double until bound no longer active or hard cap reached."""
+        k = max(4, min(k_start, self.k_max[i]))  # conservative starting point
+        while True:
+            red, cost, q, _ = dp_pricing_general_pulsed(
+                i,
+                self.dem[i],
+                self.c_var[i],
+                self.h[i],
+                self.setup[i],
+                self.b_var[i],
+                mu_hat,
+                pi_i,
+                self.shelf[i],
+                k_max=k,
+                order_fix=self.order_fix,
+                allow_backorder=False,  # ←------------- allow backorders here
+                dbg=True,
+            )
+            if q is None:  # ← NEW  ░░░░░░░░░░░░░░
+                if k >= HARD_KMAX_CAP:  #       ░ handle hopeless case
+                    return red, cost, []  #       ░ returns empty column
+                k *= 2  # ← NEW  ░ grow search cube & retry
+                continue
+            if any(q_t == k for q_t in q) and k < HARD_KMAX_CAP:
+                k *= 2  # cap was tight, enlarge
+                continue
+            return red, cost, q
 
     def __deepcopy__(self, memo):
         cls = self.__class__
@@ -472,16 +588,16 @@ if __name__ == "__main__":
         specs = [
             # id  setup  b_var  c_var  h    shelf
             (0, 7.5, 5.0, 2.0, 0.4, 4),
-            # (1, 9.0, 5.0, 3.0, 0.6, 4),
+            (1, 9.0, 5.0, 3.0, 0.6, 3),
             # (2, 6.0, 5.0, 1.8, 0.3, 5),
             # (3, 8.0, 5.0, 2.5, 0.5, 10),
             # add more items here if you like
         ]
         lot = build_lot(
-            period=40,
-            lb_dem=4,
+            period=12,
+            lb_dem=1,
             ub_dem=10,
-            capacity_pad=15,
+            capacity_pad=7,
             specs=specs,
         )
         lot.to_json(INSTANCE_PATH)
