@@ -447,10 +447,11 @@ class BranchPrice:
                         )
             if not added:
                 break
-        return obj, (pi, mu, lam)
+        return obj, (pi, mu, lam)  # ← obj is the current LP bound
 
     def branch_and_price(self, best=float("inf"), best_sol=None):
         bound, (pi, mu, lam) = self.column_generation()
+        self._print_gap(bound, best)  # <── NEW
         node_id = self.log_node(
             parent=self.parent_stack[-1] if self.parent_stack else None,
             fix=None if not self.order_fix else list(self.order_fix.items())[-1],
@@ -477,6 +478,7 @@ class BranchPrice:
                 break
         if frac is None:
             print(f"[SOL] incumbent {bound:.2f}")
+            self._print_gap(bound, bound, prefix="    ")
             return bound, lam
         i_b, t_b = frac
         best, best_sol = self.branch_child(i_b, t_b, (0, 0), best, best_sol)
@@ -574,6 +576,19 @@ class BranchPrice:
                 k *= 2  # cap was tight, enlarge
                 continue
             return red, cost, q
+
+        # ── pretty printer -------------------------------------------------
+
+    @staticmethod
+    def _print_gap(bound: float, incumbent: float, prefix: str = "") -> None:
+        if incumbent < float("inf"):
+            gap = 100.0 * (incumbent - bound) / incumbent
+            print(
+                f"{prefix}[GAP] bound={bound:.2f}  best={incumbent:.2f}  "
+                f"gap={gap:.2f}%"
+            )
+        else:  # no incumbent yet
+            print(f"{prefix}[GAP] bound={bound:.2f}  best=∞  gap=∞")
 
     def __deepcopy__(self, memo):
         cls = self.__class__
@@ -792,6 +807,9 @@ def wrapper_main():
     elapsed = time.perf_counter() - t0
 
     print(f"\nObjective: {best:.2f}   (elapsed {elapsed:.2f} s)\n")
+    # final MIP gap with respect to LP bound at root
+    root_bound = bp.tree[0]["obj"] if bp.tree else best
+    BranchPrice._print_gap(root_bound, best, prefix="[FINAL] ")
     print(f"[INFO] Backorders allowed: {ALLOW_BACKORDER}")
 
     for i in bp.items:
@@ -868,21 +886,21 @@ if __name__ == "__main__":
         specs = [
             # id  setup  b_var  c_var  h    shelf
             (0, 7.5, 5.0, 2.0, 0.4, 3),
-            (1, 9.0, 5.0, 3.0, 0.6, 4),
-            (2, 6.0, 5.0, 1.8, 0.3, 5),
-            (3, 8.0, 5.0, 2.5, 0.5, 4),
-            (4, 10.0, 5.0, 3.5, 0.7, 5),
-            (5, 12.0, 5.0, 4.0, 0.8, 2),
+            (1, 29.0, 5.0, 3.0, 0.6, 4),
+            # (2, 6.0, 5.0, 1.8, 0.3, 5),
+            # (3, 8.0, 5.0, 2.5, 0.5, 4),
+            # (4, 10.0, 5.0, 3.5, 0.7, 5),
+            # (5, 12.0, 5.0, 4.0, 0.8, 2),
             # (6, 11.0, 5.0, 3.8, 0.75, 3),
             # (7, 13.0, 5.0, 4.2, 0.85, 5),
             # add more items here if you like
         ]
-        period = 24  # number of periods in the lot
-        manual_caps = [56] * period if USE_MANUAL_CAPACITY else None
+        period = 10  # number of periods in the lot
+        manual_caps = [35] * period if USE_MANUAL_CAPACITY else None
         lot = build_lot(
             period=period,
             lb_dem=1,
-            ub_dem=7,
+            ub_dem=20,
             capacity_pad=10,
             specs=specs,
             manual_capacity=manual_caps,

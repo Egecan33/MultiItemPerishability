@@ -56,6 +56,91 @@ def live_plot_inventory(t, inv, back, item_id, line_dict):
     plt.pause(0.1)
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  Network-based pricing  (replaces the huge DP)
+# ──────────────────────────────────────────────────────────────────────
+def _arc_cost(demand, c_var, h, setup, mu_t, t: int, u: int) -> tuple[int, float]:
+    """
+    One order at period *t* covers demand up to and incl. *u* (t ≤ u).
+    Returns (q, reduced_cost).  Assumes u-t < shelf_life and q ≤ k_max.
+    """
+    q = sum(demand[t : u + 1])  # order size
+    # holding cost = Σ_{τ=t}^{u} demand[τ] · (τ-t)
+    hold = sum(demand[τ] * (τ - t) for τ in range(t, u + 1))
+    red = (c_var - mu_t) * q + h * hold + (setup if q else 0)
+    return q, red
+
+
+def price_shortest_path(
+    item_id: int,
+    demand: list[int],
+    c_var: float,
+    h: float,
+    setup: float,
+    mu: list[float],
+    pi: float,
+    shelf: int,
+    k_max: int,
+    order_fix: dict[tuple[int, int], tuple[int, int]],
+) -> tuple[float, float, list[int]]:
+    """
+    Layered DAG shortest path:
+        node 0 … T      (node T is the sink)
+        arc (t → u+1)   = one order at t covering demand[t…u]
+    Returns  (red_cost, true_cost, q_plan).
+    *No* back-orders; leaves k_max & branching (order_fix) checks in place.
+    """
+    T = len(demand)
+    dist = [float("inf")] * (T + 1)
+    succ = [None] * T  # store (u, q) chosen for period t
+    dist[T] = -pi  # reduced cost contribution of λ-variable
+
+    # reverse topological order
+    for t in range(T - 1, -1, -1):
+        lb, ub = order_fix.get((item_id, t), (0, 1))
+        # if order is forbidden at t                     (LB=UB=0 ⇒ δ_t = 0)
+        if ub == 0:
+            dist[t] = dist[t + 1]  # must rely on earlier inventory
+            continue
+
+        best = float("inf")
+        best_arc = None
+        q_acc = 0
+        hold_acc = 0  # accumulate h·Σ d(τ)(τ-t)
+
+        for u in range(t, min(T, t + shelf)):
+            q_acc += demand[u]
+            if q_acc > k_max:  # order-size ceiling
+                break
+            hold_acc += demand[u] * (u - t)
+            q, red_arc = q_acc, (c_var - mu[t]) * q_acc + h * hold_acc + setup
+            cand = red_arc + dist[u + 1]
+            if cand < best:
+                best = cand
+                best_arc = (u, q)
+
+        dist[t] = best
+        succ[t] = best_arc
+
+    if dist[0] >= -1e-6:  # no negative reduced cost
+        return float("inf"), None, None
+
+    # -------- reconstruct order plan -----------
+    q_plan = [0] * T
+    true_cost = 0.0
+    t = 0
+    while t < T:
+        u, q = succ[t]
+        q_plan[t] = q
+        # true cost uses *original* coefficients
+        hold = sum(demand[τ] * (τ - t) for τ in range(t, u + 1))
+        true_cost += setup + c_var * q + h * hold
+        t = u + 1
+
+    red_cost = dist[0]
+    return red_cost, true_cost, q_plan
+
+
 def dp_pricing_general_pulsed(
     item_id,
     demand,
@@ -81,6 +166,7 @@ def dp_pricing_general_pulsed(
         cum_demand[τ] = running
 
     rng = range(-k_max, k_max + 1) if allow_backorder else range(k_max + 1)
+
     zero = tuple(0 for _ in range(L - 1))
     dp = [dict() for _ in range(T + 2)]
     dp[T + 1][zero] = (-pi, None)
@@ -447,10 +533,11 @@ class BranchPrice:
                         )
             if not added:
                 break
-        return obj, (pi, mu, lam)
+        return obj, (pi, mu, lam)  # ← obj is the current LP bound
 
     def branch_and_price(self, best=float("inf"), best_sol=None):
         bound, (pi, mu, lam) = self.column_generation()
+        self._print_gap(bound, best)  # <── NEW
         node_id = self.log_node(
             parent=self.parent_stack[-1] if self.parent_stack else None,
             fix=None if not self.order_fix else list(self.order_fix.items())[-1],
@@ -477,6 +564,7 @@ class BranchPrice:
                 break
         if frac is None:
             print(f"[SOL] incumbent {bound:.2f}")
+            self._print_gap(bound, bound, prefix="    ")
             return bound, lam
         i_b, t_b = frac
         best, best_sol = self.branch_child(i_b, t_b, (0, 0), best, best_sol)
@@ -546,21 +634,36 @@ class BranchPrice:
 
         k = max(4, min(k_start, self.k_max[i]))  # conservative starting point
         while True:
-            red, cost, q, _ = dp_pricing_general_pulsed(
+
+            red, cost, q = price_shortest_path(
                 i,
                 self.dem[i],
                 self.c_var[i],
                 self.h[i],
                 self.setup[i],
-                self.b_var[i],
                 mu_hat,
                 pi_i,
                 self.shelf[i],
-                k_max=k,
-                order_fix=self.order_fix,
-                allow_backorder=ALLOW_BACKORDER,
-                dbg=True,
+                self.k_max[i],
+                self.order_fix,
             )
+
+            # for using dp_pricing_general_pulsed
+            # red, cost, q, _ = dp_pricing_general_pulsed(
+            #     i,
+            #     self.dem[i],
+            #     self.c_var[i],
+            #     self.h[i],
+            #     self.setup[i],
+            #     self.b_var[i],
+            #     mu_hat,
+            #     pi_i,
+            #     self.shelf[i],
+            #     k_max=k,
+            #     order_fix=self.order_fix,
+            #     allow_backorder=ALLOW_BACKORDER,
+            #     dbg=True,
+            # )
             if q is None:
                 if k >= HARD_KMAX_CAP:
                     print(
@@ -574,6 +677,19 @@ class BranchPrice:
                 k *= 2  # cap was tight, enlarge
                 continue
             return red, cost, q
+
+        # ── pretty printer -------------------------------------------------
+
+    @staticmethod
+    def _print_gap(bound: float, incumbent: float, prefix: str = "") -> None:
+        if incumbent < float("inf"):
+            gap = 100.0 * (incumbent - bound) / incumbent
+            print(
+                f"{prefix}[GAP] bound={bound:.2f}  best={incumbent:.2f}  "
+                f"gap={gap:.2f}%"
+            )
+        else:  # no incumbent yet
+            print(f"{prefix}[GAP] bound={bound:.2f}  best=∞  gap=∞")
 
     def __deepcopy__(self, memo):
         cls = self.__class__
@@ -792,6 +908,9 @@ def wrapper_main():
     elapsed = time.perf_counter() - t0
 
     print(f"\nObjective: {best:.2f}   (elapsed {elapsed:.2f} s)\n")
+    # final MIP gap with respect to LP bound at root
+    root_bound = bp.tree[0]["obj"] if bp.tree else best
+    BranchPrice._print_gap(root_bound, best, prefix="[FINAL] ")
     print(f"[INFO] Backorders allowed: {ALLOW_BACKORDER}")
 
     for i in bp.items:
@@ -868,21 +987,21 @@ if __name__ == "__main__":
         specs = [
             # id  setup  b_var  c_var  h    shelf
             (0, 7.5, 5.0, 2.0, 0.4, 3),
-            (1, 9.0, 5.0, 3.0, 0.6, 4),
-            (2, 6.0, 5.0, 1.8, 0.3, 5),
-            (3, 8.0, 5.0, 2.5, 0.5, 4),
-            (4, 10.0, 5.0, 3.5, 0.7, 5),
-            (5, 12.0, 5.0, 4.0, 0.8, 2),
+            (1, 29.0, 5.0, 3.0, 0.6, 4),
+            # (2, 6.0, 5.0, 1.8, 0.3, 5),
+            # (3, 8.0, 5.0, 2.5, 0.5, 4),
+            # (4, 10.0, 5.0, 3.5, 0.7, 5),
+            # (5, 12.0, 5.0, 4.0, 0.8, 2),
             # (6, 11.0, 5.0, 3.8, 0.75, 3),
             # (7, 13.0, 5.0, 4.2, 0.85, 5),
             # add more items here if you like
         ]
-        period = 24  # number of periods in the lot
-        manual_caps = [56] * period if USE_MANUAL_CAPACITY else None
+        period = 10  # number of periods in the lot
+        manual_caps = [35] * period if USE_MANUAL_CAPACITY else None
         lot = build_lot(
             period=period,
             lb_dem=1,
-            ub_dem=7,
+            ub_dem=20,
             capacity_pad=10,
             specs=specs,
             manual_capacity=manual_caps,
