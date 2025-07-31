@@ -41,7 +41,6 @@ if TREE_VISUALIZATION or ENABLE_LIVE_PLOTS:
 # adaptive k_max  +  DP progress pulses
 # ────────────────────────────────────────────────────────────────────────────
 DP_STATE_STEP = 250_000  # print every 100k DP states
-HARD_KMAX_CAP = 128  # safety ceiling; raise if you really need it
 
 
 def live_plot_inventory(t, inv, back, item_id, line_dict):
@@ -129,9 +128,23 @@ def price_shortest_path(
     q_plan = [0] * T
     true_cost = 0.0
     t = 0
+    # -------- reconstruct order plan -----------
+    q_plan = [0] * T
+    true_cost = 0.0
+    t = 0
     while t < T:
-        u, q = succ[t]
+
+        # ── NEW GUARD ──────────────────────────────────────────────
+        # If no order is allowed / needed in period t (succ[t] is None),
+        # advance to the next period with q_plan[t] = 0.
+        if succ[t] is None:
+            t += 1
+            continue
+        # ───────────────────────────────────────────────────────────
+
+        u, q = succ[t]  # ← was raising TypeError
         q_plan[t] = q
+
         # true cost uses *original* coefficients
         hold = sum(demand[τ] * (τ - t) for τ in range(t, u + 1))
         true_cost += setup + c_var * q + h * hold
@@ -476,6 +489,21 @@ class BranchPrice:
                 1 for q_t in q if q_t > 0
             )
             self.master.add_pattern(i, cost, q, self.order_fix)
+
+        BIG_M = 1e6  # large enough to be obviously dominated
+
+        for i in self.items:
+            # existing “order exactly the demand” pattern
+            q_full = self.dem[i]
+            cost_full = sum(self.c_var[i] * q_t for q_t in q_full) + self.setup[
+                i
+            ] * sum(1 for q_t in q_full if q_t > 0)
+            self.master.add_pattern(i, cost_full, q_full, self.order_fix)
+
+            # <<< NEW:  dummy pattern >>>
+            q_dummy = [0] * self.T  # uses no capacity
+            self.master.add_pattern(i, BIG_M, q_dummy, self.order_fix)
+
         self.master.model.update()
         self.tree = {}
         self.node_counter = 0
@@ -622,6 +650,12 @@ class BranchPrice:
     def price_with_growth(self, i, mu_hat, pi_i, k_start=8):
         """Try small k; double until bound no longer active or hard cap reached."""
         # fallback heuristic pattern before full DP if mu is positive
+
+        # constants
+        SHELF_MAX = max(self.shelf.values())
+        DEMAND_MAX = max(max(d) for d in self.dem.values())
+        HARD_KMAX_CAP = DEMAND_MAX * SHELF_MAX  # safety ceiling
+
         heur = self.fallback_heuristic_pattern(i, mu_hat, pi_i)
         if heur is not None:
             rc, cost_heur, q_heur = heur
@@ -632,7 +666,7 @@ class BranchPrice:
                         f"[HEUR] item {i} -> fallback added with rc={rc:.2f} cost={cost_heur:.2f}"
                     )
 
-        k = max(4, min(k_start, self.k_max[i]))  # conservative starting point
+        k = max(4, min(self.k_max[i] * self.shelf[i], HARD_KMAX_CAP))
         while True:
 
             red, cost, q = price_shortest_path(
@@ -967,7 +1001,7 @@ if __name__ == "__main__":
     # ---- basic switches -------------------------------------------------
     RANDOMIZE = True  # → False to re-use the cached instance
     USE_MANUAL_CAPACITY = True  # ← switch here
-    ALLOW_BACKORDER = False  # allow backorders in pricing
+    ALLOW_BACKORDER = True  # allow backorders in pricing
 
     INSTANCE_PATH = Path(__file__).with_name("last_instance.json")
     SEED = 0  # keeps random runs reproducible
@@ -988,20 +1022,24 @@ if __name__ == "__main__":
             # id  setup  b_var  c_var  h    shelf
             (0, 7.5, 5.0, 2.0, 0.4, 3),
             (1, 29.0, 5.0, 3.0, 0.6, 4),
-            # (2, 6.0, 5.0, 1.8, 0.3, 5),
-            # (3, 8.0, 5.0, 2.5, 0.5, 4),
-            # (4, 10.0, 5.0, 3.5, 0.7, 5),
-            # (5, 12.0, 5.0, 4.0, 0.8, 2),
-            # (6, 11.0, 5.0, 3.8, 0.75, 3),
-            # (7, 13.0, 5.0, 4.2, 0.85, 5),
+            (2, 6.0, 5.0, 1.8, 0.3, 5),
+            (3, 8.0, 5.0, 2.5, 0.5, 4),
+            (4, 10.0, 5.0, 3.5, 0.7, 5),
+            (5, 12.0, 5.0, 4.0, 0.8, 2),
+            (6, 11.0, 5.0, 3.8, 0.75, 3),
+            (7, 13.0, 5.0, 4.2, 0.85, 5),
+            (8, 9.0, 5.0, 3.2, 0.65, 4),
+            (9, 15.0, 5.0, 4.5, 0.9, 6),
+            (10, 14.0, 5.0, 4.8, 0.95, 3),
+            (11, 16.0, 5.0, 5.0, 1.0, 4),
             # add more items here if you like
         ]
-        period = 10  # number of periods in the lot
-        manual_caps = [35] * period if USE_MANUAL_CAPACITY else None
+        period = 1300  # number of periods in the lot
+        manual_caps = [750] * period if USE_MANUAL_CAPACITY else None
         lot = build_lot(
             period=period,
             lb_dem=1,
-            ub_dem=20,
+            ub_dem=90,
             capacity_pad=10,
             specs=specs,
             manual_capacity=manual_caps,
