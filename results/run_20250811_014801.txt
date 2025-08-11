@@ -1,0 +1,2490 @@
+=== Perishable Lot-Sizing Branch-and-Price Run Report ===
+Timestamp: 20250811_014801
+Objective: 118927.50
+Elapsed time (s): 354.88
+Instance file: /Users/egecanaktan/github_repositories/MultiItemPerishability/last_instance.json
+Instance copy: results/instance_20250811_014801.json
+Backorders allowed: False
+Items: 5   Periods: 80
+
+-- Capacity (per period) --
+870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870, 870
+
+-- Item parameters (costs and shelf-life) --
+Item 0: setup=127.5, c_var=2.0, h=0.4, b_var=5.0, min_shelf=1, max_shelf=50
+Item 1: setup=29.0, c_var=3.0, h=0.6, b_var=5.0, min_shelf=1, max_shelf=59
+Item 2: setup=50.0, c_var=1.0, h=0.3, b_var=5.0, min_shelf=3, max_shelf=70
+Item 3: setup=75.0, c_var=4.0, h=0.5, b_var=5.0, min_shelf=3, max_shelf=5
+Item 4: setup=100.0, c_var=2.5, h=0.4, b_var=5.0, min_shelf=3, max_shelf=5
+
+-- Selected patterns (λ > 0) --
+Item 0: pattern 10, cost=22442.20, y=[1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0], q=[99, 303, 0, 78, 0, 256, 0, 182, 0, 215, 0, 206, 0, 166, 0, 109, 0, 219, 0, 224, 0, 318, 0, 193, 0, 106, 0, 206, 0, 552, 0, 0, 0, 0, 203, 0, 238, 0, 217, 0, 265, 0, 248, 0, 252, 0, 0, 0, 0, 288, 0, 516, 0, 0, 0, 284, 0, 149, 0, 271, 0, 198, 0, 351, 0, 0, 0, 0, 300, 0, 0, 0, 213, 0, 154, 0, 220, 0, 256, 0]
+Item 1: pattern 13, cost=24572.60, y=[1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1], q=[163, 137, 155, 201, 0, 0, 32, 163, 49, 156, 179, 0, 125, 0, 135, 0, 0, 162, 0, 98, 0, 216, 0, 123, 54, 203, 0, 174, 146, 0, 109, 185, 0, 85, 0, 76, 0, 166, 78, 90, 112, 63, 0, 129, 131, 0, 179, 0, 180, 101, 52, 67, 92, 188, 121, 190, 0, 179, 173, 53, 212, 0, 215, 0, 42, 88, 136, 96, 0, 153, 114, 171, 49, 0, 121, 175, 105, 146, 131, 80]
+Item 2: pattern 14, cost=10267.50, y=[1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0], q=[185, 0, 224, 0, 0, 103, 281, 0, 141, 0, 0, 0, 184, 195, 0, 309, 0, 263, 0, 0, 0, 156, 218, 0, 150, 0, 224, 0, 148, 0, 102, 188, 0, 0, 217, 0, 0, 101, 0, 302, 0, 167, 325, 0, 0, 0, 99, 0, 0, 0, 53, 242, 0, 224, 0, 251, 0, 0, 192, 336, 0, 168, 310, 0, 283, 0, 164, 208, 0, 184, 0, 151, 0, 229, 0, 0, 75, 0, 156, 0]
+Item 3: pattern 24, cost=35430.00, y=[1, 0, 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0], q=[124, 0, 150, 242, 0, 161, 0, 139, 0, 0, 188, 0, 251, 0, 193, 257, 0, 0, 230, 0, 120, 0, 176, 0, 254, 0, 0, 78, 0, 215, 0, 93, 206, 0, 0, 153, 163, 0, 249, 0, 164, 284, 0, 261, 0, 257, 0, 256, 0, 163, 224, 0, 139, 217, 0, 0, 88, 181, 274, 0, 93, 0, 239, 0, 0, 195, 0, 98, 226, 0, 184, 181, 160, 0, 0, 161, 0, 0, 92, 0]
+Item 4: pattern 18, cost=26215.20, y=[1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1], q=[254, 0, 0, 0, 347, 0, 0, 272, 0, 0, 321, 0, 256, 0, 149, 0, 399, 0, 171, 0, 0, 157, 300, 0, 407, 0, 0, 374, 0, 0, 183, 269, 0, 0, 176, 0, 398, 0, 0, 192, 0, 0, 101, 210, 0, 243, 0, 209, 0, 194, 0, 0, 209, 0, 0, 0, 134, 317, 0, 203, 0, 83, 0, 360, 0, 329, 0, 314, 0, 238, 0, 147, 0, 0, 255, 0, 158, 0, 0, 107]
+
+-- Branch-and-Price Tree (nodes) --
+{"id": 0, "parent": null, "fix": null, "obj": 120173.80748185453, "incumbent": Infinity, "status": "branching"}
+{"id": 1, "parent": 0, "fix": [[0, 4], [0, 0]], "obj": 119922.51574532979, "incumbent": Infinity, "status": "branching"}
+{"id": 2, "parent": 1, "fix": [[3, 25], [0, 0]], "obj": 119961.25546427397, "incumbent": Infinity, "status": "branching"}
+{"id": 3, "parent": 2, "fix": [[3, 30], [0, 0]], "obj": 119974.29345246182, "incumbent": Infinity, "status": "branching"}
+{"id": 4, "parent": 3, "fix": [[2, 2], [0, 0]], "obj": Infinity, "incumbent": Infinity, "status": "pruned"}
+{"id": 5, "parent": 3, "fix": [[2, 2], [1, 1]], "obj": 119396.46596482322, "incumbent": Infinity, "status": "branching"}
+{"id": 6, "parent": 5, "fix": [[4, 60], [0, 0]], "obj": 119400.59262031878, "incumbent": Infinity, "status": "branching"}
+{"id": 7, "parent": 6, "fix": [[2, 31], [0, 0]], "obj": 119404.57559904217, "incumbent": Infinity, "status": "branching"}
+{"id": 8, "parent": 7, "fix": [[2, 16], [0, 0]], "obj": 119405.10379046106, "incumbent": Infinity, "status": "branching"}
+{"id": 9, "parent": 8, "fix": [[4, 59], [0, 0]], "obj": 119433.42447114084, "incumbent": Infinity, "status": "branching"}
+{"id": 10, "parent": 9, "fix": [[4, 58], [0, 0]], "obj": Infinity, "incumbent": Infinity, "status": "pruned"}
+{"id": 11, "parent": 9, "fix": [[4, 58], [1, 1]], "obj": 119444.4874478832, "incumbent": Infinity, "status": "branching"}
+{"id": 12, "parent": 11, "fix": [[2, 58], [0, 0]], "obj": 119459.99449219929, "incumbent": Infinity, "status": "branching"}
+{"id": 13, "parent": 12, "fix": [[4, 15], [0, 0]], "obj": 119487.90606004494, "incumbent": Infinity, "status": "branching"}
+{"id": 14, "parent": 13, "fix": [[2, 62], [0, 0]], "obj": 119490.1309894489, "incumbent": Infinity, "status": "branching"}
+{"id": 15, "parent": 14, "fix": [[4, 23], [0, 0]], "obj": 119491.71543389332, "incumbent": Infinity, "status": "branching"}
+{"id": 16, "parent": 15, "fix": [[0, 28], [0, 0]], "obj": 119460.86207575993, "incumbent": Infinity, "status": "branching"}
+{"id": 17, "parent": 16, "fix": [[4, 17], [0, 0]], "obj": 119468.42973074644, "incumbent": Infinity, "status": "branching"}
+{"id": 18, "parent": 17, "fix": [[4, 61], [0, 0]], "obj": 119471.5936056681, "incumbent": Infinity, "status": "branching"}
+{"id": 19, "parent": 18, "fix": [[4, 62], [0, 0]], "obj": 119472.47222987375, "incumbent": Infinity, "status": "branching"}
+{"id": 20, "parent": 19, "fix": [[4, 64], [0, 0]], "obj": 119475.00802052644, "incumbent": Infinity, "status": "branching"}
+{"id": 21, "parent": 20, "fix": [[2, 63], [0, 0]], "obj": 119526.96539757561, "incumbent": Infinity, "status": "branching"}
+{"id": 22, "parent": 21, "fix": [[1, 58], [0, 0]], "obj": Infinity, "incumbent": Infinity, "status": "pruned"}
+{"id": 23, "parent": 21, "fix": [[1, 58], [1, 1]], "obj": 119246.02917758489, "incumbent": Infinity, "status": "branching"}
+{"id": 24, "parent": 23, "fix": [[2, 42], [0, 0]], "obj": 119248.03871604643, "incumbent": Infinity, "status": "branching"}
+{"id": 25, "parent": 24, "fix": [[3, 58], [0, 0]], "obj": Infinity, "incumbent": Infinity, "status": "pruned"}
+{"id": 26, "parent": 24, "fix": [[3, 58], [1, 1]], "obj": Infinity, "incumbent": Infinity, "status": "pruned"}
+{"id": 27, "parent": 23, "fix": [[2, 42], [1, 1]], "obj": 119247.00538271308, "incumbent": Infinity, "status": "branching"}
+{"id": 28, "parent": 27, "fix": [[4, 43], [0, 0]], "obj": 119248.91371604642, "incumbent": Infinity, "status": "branching"}
+{"id": 29, "parent": 28, "fix": [[4, 45], [0, 0]], "obj": 119266.33871604642, "incumbent": Infinity, "status": "branching"}
+{"id": 30, "parent": 29, "fix": [[3, 58], [0, 0]], "obj": Infinity, "incumbent": Infinity, "status": "pruned"}
+{"id": 31, "parent": 29, "fix": [[3, 58], [1, 1]], "obj": Infinity, "incumbent": Infinity, "status": "pruned"}
+{"id": 32, "parent": 28, "fix": [[4, 45], [1, 1]], "obj": 119271.7076742696, "incumbent": Infinity, "status": "branching"}
+{"id": 33, "parent": 32, "fix": [[2, 29], [0, 0]], "obj": 119272.2156496241, "incumbent": Infinity, "status": "branching"}
+{"id": 34, "parent": 33, "fix": [[3, 29], [0, 0]], "obj": 119250.57139223641, "incumbent": Infinity, "status": "branching"}
+{"id": 35, "parent": 34, "fix": [[4, 42], [0, 0]], "obj": 119347.21576522675, "incumbent": Infinity, "status": "branching"}
+{"id": 36, "parent": 35, "fix": [[3, 58], [0, 0]], "obj": Infinity, "incumbent": Infinity, "status": "pruned"}
+{"id": 37, "parent": 35, "fix": [[3, 58], [1, 1]], "obj": Infinity, "incumbent": Infinity, "status": "pruned"}
+{"id": 38, "parent": 34, "fix": [[4, 42], [1, 1]], "obj": 119275.87769013422, "incumbent": Infinity, "status": "branching"}
+{"id": 39, "parent": 38, "fix": [[0, 1], [0, 0]], "obj": Infinity, "incumbent": Infinity, "status": "pruned"}
+{"id": 40, "parent": 38, "fix": [[0, 1], [1, 1]], "obj": Infinity, "incumbent": Infinity, "status": "pruned"}
+{"id": 41, "parent": 33, "fix": [[3, 29], [1, 1]], "obj": 118947.38044981383, "incumbent": Infinity, "status": "branching"}
+{"id": 42, "parent": 41, "fix": [[3, 28], [0, 0]], "obj": 118947.53556329849, "incumbent": Infinity, "status": "branching"}
+{"id": 43, "parent": 42, "fix": [[1, 29], [0, 0]], "obj": 118983.14413472707, "incumbent": Infinity, "status": "branching"}
+{"id": 44, "parent": 43, "fix": [[4, 29], [0, 0]], "obj": 119006.68699186992, "incumbent": Infinity, "status": "branching"}
+{"id": 45, "parent": 44, "fix": [[4, 44], [0, 0]], "obj": 119008.54352991923, "incumbent": Infinity, "status": "branching"}
+{"id": 46, "parent": 45, "fix": [[3, 59], [0, 0]], "obj": Infinity, "incumbent": Infinity, "status": "pruned"}
+{"id": 47, "parent": 45, "fix": [[3, 59], [1, 1]], "obj": 119013.43987138265, "incumbent": Infinity, "status": "branching"}
+{"id": 48, "parent": 47, "fix": [[4, 42], [0, 0]], "obj": 119124.6, "incumbent": Infinity, "status": "branching"}
+{"id": 49, "parent": 47, "fix": [[4, 42], [1, 1]], "obj": 119036.10403225807, "incumbent": 118927.5, "status": "pruned"}
+{"id": 50, "parent": 44, "fix": [[4, 44], [1, 1]], "obj": 119026.50365853659, "incumbent": 118927.5, "status": "pruned"}
+{"id": 51, "parent": 43, "fix": [[4, 29], [1, 1]], "obj": Infinity, "incumbent": 118927.5, "status": "pruned"}
+{"id": 52, "parent": 42, "fix": [[1, 29], [1, 1]], "obj": 118952.7970982529, "incumbent": 118927.5, "status": "pruned"}
+{"id": 53, "parent": 41, "fix": [[3, 28], [1, 1]], "obj": 119009.02049431547, "incumbent": 118927.5, "status": "pruned"}
+{"id": 54, "parent": 32, "fix": [[2, 29], [1, 1]], "obj": 119277.226077231, "incumbent": 118927.5, "status": "pruned"}
+{"id": 55, "parent": 27, "fix": [[4, 43], [1, 1]], "obj": 119261.93871604642, "incumbent": 118927.5, "status": "pruned"}
+{"id": 56, "parent": 20, "fix": [[2, 63], [1, 1]], "obj": 119481.5450136608, "incumbent": 118927.5, "status": "pruned"}
+{"id": 57, "parent": 19, "fix": [[4, 64], [1, 1]], "obj": 119502.7653975756, "incumbent": 118927.5, "status": "pruned"}
+{"id": 58, "parent": 18, "fix": [[4, 62], [1, 1]], "obj": 119540.07406809584, "incumbent": 118927.5, "status": "pruned"}
+{"id": 59, "parent": 17, "fix": [[4, 61], [1, 1]], "obj": 119471.51669104665, "incumbent": 118927.5, "status": "pruned"}
+{"id": 60, "parent": 16, "fix": [[4, 17], [1, 1]], "obj": 119483.87150703192, "incumbent": 118927.5, "status": "pruned"}
+{"id": 61, "parent": 15, "fix": [[0, 28], [1, 1]], "obj": Infinity, "incumbent": 118927.5, "status": "pruned"}
+{"id": 62, "parent": 14, "fix": [[4, 23], [1, 1]], "obj": 119501.93609875167, "incumbent": 118927.5, "status": "pruned"}
+{"id": 63, "parent": 13, "fix": [[2, 62], [1, 1]], "obj": 119502.58893520256, "incumbent": 118927.5, "status": "pruned"}
+{"id": 64, "parent": 12, "fix": [[4, 15], [1, 1]], "obj": 119460.06457306181, "incumbent": 118927.5, "status": "pruned"}
+{"id": 65, "parent": 11, "fix": [[2, 58], [1, 1]], "obj": 119466.58811915715, "incumbent": 118927.5, "status": "pruned"}
+{"id": 66, "parent": 8, "fix": [[4, 59], [1, 1]], "obj": 119411.25986517404, "incumbent": 118927.5, "status": "pruned"}
+{"id": 67, "parent": 7, "fix": [[2, 16], [1, 1]], "obj": 119413.71238646649, "incumbent": 118927.5, "status": "pruned"}
+{"id": 68, "parent": 6, "fix": [[2, 31], [1, 1]], "obj": 119404.65546540628, "incumbent": 118927.5, "status": "pruned"}
+{"id": 69, "parent": 5, "fix": [[4, 60], [1, 1]], "obj": 119409.70869856306, "incumbent": 118927.5, "status": "pruned"}
+{"id": 70, "parent": 2, "fix": [[3, 30], [1, 1]], "obj": 119628.99281383361, "incumbent": 118927.5, "status": "pruned"}
+{"id": 71, "parent": 1, "fix": [[3, 25], [1, 1]], "obj": 119572.49281383361, "incumbent": 118927.5, "status": "pruned"}
+{"id": 72, "parent": 0, "fix": [[0, 4], [1, 1]], "obj": 119181.71299997267, "incumbent": 118927.5, "status": "pruned"}
+
+=== Console Output Log ===
+[ADD] item 0 pattern#0 cost=26310.00
+[ADD] item 1 pattern#0 cost=24832.00
+[ADD] item 2 pattern#0 cost=11508.00
+[ADD] item 3 pattern#0 cost=37116.00
+[ADD] item 4 pattern#0 cost=29090.00
+[INFO] Init Branch-and-Price: items=5, T=80, capacity_stats[min=870 max=870 mean=870 l1=6.96e+04]
+[INFO] Solving LP relaxation with column generation and branching on fractional decisions.
+[CG] iter  1  obj=128856.00
+[ADD] item 0 pattern#1 cost=22763.30
+[ADD] item 1 pattern#1 cost=24773.40
+[ADD] item 2 pattern#1 cost=10586.60
+[ADD] item 3 pattern#1 cost=35708.50
+[ADD] item 4 pattern#1 cost=26575.20
+[CG] iter  2  obj=124697.94
+[ADD] item 0 pattern#2 cost=23031.80
+[ADD] item 1 pattern#2 cost=25111.40
+[ADD] item 2 pattern#2 cost=10484.40
+[ADD] item 3 pattern#2 cost=35768.50
+[ADD] item 4 pattern#2 cost=26616.40
+[CG] iter  3  obj=124239.84
+[ADD] item 0 pattern#3 cost=23116.00
+[ADD] item 2 pattern#3 cost=10517.90
+[ADD] item 3 pattern#3 cost=35901.00
+[ADD] item 4 pattern#3 cost=26557.60
+[CG] iter  4  obj=122398.80
+[ADD] item 0 pattern#4 cost=22794.00
+[ADD] item 1 pattern#3 cost=24776.20
+[ADD] item 2 pattern#4 cost=10421.90
+[ADD] item 4 pattern#4 cost=26530.00
+[CG] iter  5  obj=121386.22
+[ADD] item 0 pattern#5 cost=22601.60
+[ADD] item 1 pattern#4 cost=24776.80
+[ADD] item 2 pattern#5 cost=10607.10
+[ADD] item 3 pattern#4 cost=35764.00
+[ADD] item 4 pattern#5 cost=26588.80
+[CG] iter  6  obj=120491.59
+[ADD] item 0 pattern#6 cost=22422.30
+[ADD] item 1 pattern#5 cost=24774.00
+[ADD] item 2 pattern#6 cost=10651.20
+[ADD] item 3 pattern#5 cost=35890.50
+[CG] iter  7  obj=120382.21
+[ADD] item 0 pattern#7 cost=22783.20
+[ADD] item 2 pattern#7 cost=10576.10
+[ADD] item 3 pattern#6 cost=35750.00
+[CG] iter  8  obj=120173.81
+[ADD] item 2 pattern#8 cost=10470.60
+[ADD] item 3 pattern#7 cost=35874.00
+[ADD] item 4 pattern#6 cost=26632.40
+[CG] iter  9  obj=120173.81
+[ADD] item 0 pattern#8 cost=22984.10
+[CG] iter 10  obj=120173.81
+[CG] iter 11  obj=120173.81
+[CG] iter 12  obj=120173.81
+[CG] iter 13  obj=120173.81
+[CG] iter 14  obj=120173.81
+[CG] iter 15  obj=120173.81
+[CG] iter 16  obj=120173.81
+[CG] iter 17  obj=120173.81
+[CG] iter 18  obj=120173.81
+[CG] iter 19  obj=120173.81
+[CG] iter 20  obj=120173.81
+[CG] iter 21  obj=120173.81
+[CG] iter 22  obj=120173.81
+[CG] iter 23  obj=120173.81
+[CG] iter 24  obj=120173.81
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=120173.81  best=∞  gap=∞
+[INFO] Fractional y values (top): y[0,4]=0.320, y[0,61]=0.320, y[0,63]=0.320, y[0,68]=0.320, y[0,1]=0.680
+[BRANCH] Branch on y[0,4] ≈ 0.320 (μ[4]=0.000)
+[CG] iter  1  obj=120353.94
+[ADD] item 0 pattern#9 cost=22622.80
+[ADD] item 1 pattern#6 cost=24959.80
+[ADD] item 2 pattern#9 cost=10675.10
+[ADD] item 3 pattern#8 cost=35860.00
+[ADD] item 4 pattern#7 cost=26714.80
+[CG] iter  2  obj=120224.24
+[ADD] item 0 pattern#10 cost=22442.20
+[ADD] item 2 pattern#10 cost=10483.90
+[ADD] item 3 pattern#9 cost=35846.50
+[CG] iter  3  obj=119937.24
+[ADD] item 2 pattern#11 cost=10487.40
+[ADD] item 3 pattern#10 cost=35832.50
+[ADD] item 4 pattern#8 cost=26737.60
+[CG] iter  4  obj=119922.52
+[ADD] item 0 pattern#11 cost=22743.00
+[ADD] item 4 pattern#9 cost=26673.60
+[CG] iter  5  obj=119922.52
+[CG] iter  6  obj=119922.52
+[CG] iter  7  obj=119922.52
+[CG] iter  8  obj=119922.52
+[CG] iter  9  obj=119922.52
+[CG] iter 10  obj=119922.52
+[CG] iter 11  obj=119922.52
+[CG] iter 12  obj=119922.52
+[CG] iter 13  obj=119922.52
+[CG] iter 14  obj=119922.52
+[CG] iter 15  obj=119922.52
+[CG] iter 16  obj=119922.52
+[CG] iter 17  obj=119922.52
+[CG] iter 18  obj=119922.52
+[CG] iter 19  obj=119922.52
+[CG] iter 20  obj=119922.52
+[CG] iter 21  obj=119922.52
+[CG] iter 22  obj=119922.52
+[CG] iter 23  obj=119922.52
+[CG] iter 24  obj=119922.52
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119922.52  best=∞  gap=∞
+[INFO] Fractional y values (top): y[3,25]=0.828, y[3,27]=0.828, y[3,29]=0.828, y[3,31]=0.828, y[3,73]=0.828
+[BRANCH] Branch on y[3,25] ≈ 0.828 (μ[25]=0.000)
+[CG] iter  1  obj=120143.04
+[ADD] item 0 pattern#12 cost=22988.50
+[ADD] item 1 pattern#7 cost=24974.80
+[ADD] item 2 pattern#12 cost=10591.70
+[ADD] item 3 pattern#11 cost=35787.50
+[ADD] item 4 pattern#10 cost=26744.40
+[CG] iter  2  obj=119980.28
+[ADD] item 2 pattern#13 cost=10603.40
+[ADD] item 3 pattern#12 cost=35757.50
+[ADD] item 4 pattern#11 cost=26734.00
+[CG] iter  3  obj=119961.26
+[ADD] item 3 pattern#13 cost=35842.50
+[ADD] item 4 pattern#12 cost=26724.80
+[CG] iter  4  obj=119961.26
+[CG] iter  5  obj=119961.26
+[CG] iter  6  obj=119961.26
+[CG] iter  7  obj=119961.26
+[CG] iter  8  obj=119961.26
+[CG] iter  9  obj=119961.26
+[CG] iter 10  obj=119961.26
+[CG] iter 11  obj=119961.26
+[CG] iter 12  obj=119961.26
+[CG] iter 13  obj=119961.26
+[CG] iter 14  obj=119961.26
+[CG] iter 15  obj=119961.26
+[CG] iter 16  obj=119961.26
+[CG] iter 17  obj=119961.26
+[CG] iter 18  obj=119961.26
+[CG] iter 19  obj=119961.26
+[CG] iter 20  obj=119961.26
+[CG] iter 21  obj=119961.26
+[CG] iter 22  obj=119961.26
+[CG] iter 23  obj=119961.26
+[CG] iter 24  obj=119961.26
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119961.26  best=∞  gap=∞
+[INFO] Fractional y values (top): y[3,30]=0.313, y[3,75]=0.313, y[3,77]=0.313, y[3,26]=0.687, y[3,29]=0.687
+[BRANCH] Branch on y[3,30] ≈ 0.313 (μ[30]=0.000)
+[CG] iter  1  obj=119974.67
+[ADD] item 4 pattern#13 cost=26730.80
+[CG] iter  2  obj=119974.29
+[CG] iter  3  obj=119974.29
+[CG] iter  4  obj=119974.29
+[CG] iter  5  obj=119974.29
+[CG] iter  6  obj=119974.29
+[CG] iter  7  obj=119974.29
+[CG] iter  8  obj=119974.29
+[CG] iter  9  obj=119974.29
+[CG] iter 10  obj=119974.29
+[CG] iter 11  obj=119974.29
+[CG] iter 12  obj=119974.29
+[CG] iter 13  obj=119974.29
+[CG] iter 14  obj=119974.29
+[CG] iter 15  obj=119974.29
+[CG] iter 16  obj=119974.29
+[CG] iter 17  obj=119974.29
+[CG] iter 18  obj=119974.29
+[CG] iter 19  obj=119974.29
+[CG] iter 20  obj=119974.29
+[CG] iter 21  obj=119974.29
+[CG] iter 22  obj=119974.29
+[CG] iter 23  obj=119974.29
+[CG] iter 24  obj=119974.29
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119974.29  best=∞  gap=∞
+[INFO] Fractional y values (top): y[2,2]=0.913, y[2,4]=0.913, y[2,60]=0.913, y[2,63]=0.913, y[2,5]=0.087
+[BRANCH] Branch on y[2,2] ≈ 0.913 (μ[2]=0.000)
+[WARN] RMP infeasible under current constraints. Attempting to restore feasibility via pricing.
+[FAIL] Unable to restore feasibility at this node. Pruning.
+[GAP] bound=inf  best=∞  gap=∞
+[CG] iter  1  obj=119976.25
+[ADD] item 2 pattern#14 cost=10267.50
+[CG] iter  2  obj=119810.31
+[ADD] item 2 pattern#15 cost=10250.70
+[ADD] item 4 pattern#14 cost=26134.80
+[CG] iter  3  obj=119565.91
+[ADD] item 0 pattern#13 cost=22948.30
+[ADD] item 1 pattern#8 cost=24864.80
+[ADD] item 2 pattern#16 cost=10298.40
+[ADD] item 4 pattern#15 cost=26228.80
+[CG] iter  4  obj=119501.15
+[ADD] item 0 pattern#14 cost=22916.90
+[ADD] item 1 pattern#9 cost=24863.00
+[ADD] item 2 pattern#17 cost=10276.00
+[ADD] item 3 pattern#14 cost=35995.00
+[ADD] item 4 pattern#16 cost=26231.60
+[CG] iter  5  obj=119432.45
+[ADD] item 0 pattern#15 cost=22963.40
+[ADD] item 2 pattern#18 cost=10278.10
+[ADD] item 3 pattern#15 cost=35884.00
+[ADD] item 4 pattern#17 cost=26256.80
+[CG] iter  6  obj=119419.67
+[ADD] item 0 pattern#16 cost=22967.90
+[ADD] item 2 pattern#19 cost=10268.90
+[ADD] item 4 pattern#18 cost=26215.20
+[CG] iter  7  obj=119412.48
+[ADD] item 0 pattern#17 cost=22769.90
+[ADD] item 2 pattern#20 cost=10288.50
+[ADD] item 4 pattern#19 cost=26178.80
+[CG] iter  8  obj=119410.54
+[ADD] item 2 pattern#21 cost=10269.60
+[ADD] item 4 pattern#20 cost=26167.60
+[CG] iter  9  obj=119404.74
+[ADD] item 2 pattern#22 cost=10252.70
+[ADD] item 4 pattern#21 cost=26147.20
+[CG] iter 10  obj=119402.55
+[ADD] item 0 pattern#18 cost=22711.60
+[ADD] item 2 pattern#23 cost=10290.00
+[ADD] item 4 pattern#22 cost=26167.60
+[CG] iter 11  obj=119399.76
+[ADD] item 2 pattern#24 cost=10273.20
+[CG] iter 12  obj=119397.84
+[ADD] item 2 pattern#25 cost=10261.20
+[CG] iter 13  obj=119397.56
+[ADD] item 4 pattern#23 cost=26153.60
+[CG] iter 14  obj=119396.47
+[CG] iter 15  obj=119396.47
+[CG] iter 16  obj=119396.47
+[CG] iter 17  obj=119396.47
+[CG] iter 18  obj=119396.47
+[CG] iter 19  obj=119396.47
+[CG] iter 20  obj=119396.47
+[CG] iter 21  obj=119396.47
+[CG] iter 22  obj=119396.47
+[CG] iter 23  obj=119396.47
+[CG] iter 24  obj=119396.47
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119396.47  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,60]=0.496, y[4,59]=0.504, y[2,31]=0.622, y[2,16]=0.355, y[2,17]=0.645
+[BRANCH] Branch on y[4,60] ≈ 0.496 (μ[60]=0.000)
+[CG] iter  1  obj=119403.97
+[ADD] item 2 pattern#26 cost=10282.50
+[ADD] item 4 pattern#24 cost=26146.40
+[CG] iter  2  obj=119400.77
+[ADD] item 2 pattern#27 cost=10266.30
+[ADD] item 4 pattern#25 cost=26158.40
+[CG] iter  3  obj=119400.64
+[ADD] item 4 pattern#26 cost=26146.00
+[CG] iter  4  obj=119400.59
+[ADD] item 2 pattern#28 cost=10259.10
+[CG] iter  5  obj=119400.59
+[CG] iter  6  obj=119400.59
+[CG] iter  7  obj=119400.59
+[CG] iter  8  obj=119400.59
+[CG] iter  9  obj=119400.59
+[CG] iter 10  obj=119400.59
+[CG] iter 11  obj=119400.59
+[CG] iter 12  obj=119400.59
+[CG] iter 13  obj=119400.59
+[CG] iter 14  obj=119400.59
+[CG] iter 15  obj=119400.59
+[CG] iter 16  obj=119400.59
+[CG] iter 17  obj=119400.59
+[CG] iter 18  obj=119400.59
+[CG] iter 19  obj=119400.59
+[CG] iter 20  obj=119400.59
+[CG] iter 21  obj=119400.59
+[CG] iter 22  obj=119400.59
+[CG] iter 23  obj=119400.59
+[CG] iter 24  obj=119400.59
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119400.59  best=∞  gap=∞
+[INFO] Fractional y values (top): y[2,31]=0.622, y[2,16]=0.355, y[2,17]=0.645, y[4,59]=0.802, y[2,63]=0.869
+[BRANCH] Branch on y[2,31] ≈ 0.622 (μ[31]=-0.034)
+[CG] iter  1  obj=119404.58
+[CG] iter  2  obj=119404.58
+[CG] iter  3  obj=119404.58
+[CG] iter  4  obj=119404.58
+[CG] iter  5  obj=119404.58
+[CG] iter  6  obj=119404.58
+[CG] iter  7  obj=119404.58
+[CG] iter  8  obj=119404.58
+[CG] iter  9  obj=119404.58
+[CG] iter 10  obj=119404.58
+[CG] iter 11  obj=119404.58
+[CG] iter 12  obj=119404.58
+[CG] iter 13  obj=119404.58
+[CG] iter 14  obj=119404.58
+[CG] iter 15  obj=119404.58
+[CG] iter 16  obj=119404.58
+[CG] iter 17  obj=119404.58
+[CG] iter 18  obj=119404.58
+[CG] iter 19  obj=119404.58
+[CG] iter 20  obj=119404.58
+[CG] iter 21  obj=119404.58
+[CG] iter 22  obj=119404.58
+[CG] iter 23  obj=119404.58
+[CG] iter 24  obj=119404.58
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119404.58  best=∞  gap=∞
+[INFO] Fractional y values (top): y[2,16]=0.355, y[2,17]=0.645, y[4,59]=0.802, y[2,62]=0.131, y[2,63]=0.869
+[BRANCH] Branch on y[2,16] ≈ 0.355 (μ[16]=0.000)
+[CG] iter  1  obj=119418.20
+[ADD] item 2 pattern#29 cost=10275.90
+[ADD] item 4 pattern#27 cost=26239.60
+[CG] iter  2  obj=119410.08
+[ADD] item 4 pattern#28 cost=26177.60
+[CG] iter  3  obj=119405.77
+[ADD] item 4 pattern#29 cost=26190.00
+[CG] iter  4  obj=119405.10
+[CG] iter  5  obj=119405.10
+[CG] iter  6  obj=119405.10
+[CG] iter  7  obj=119405.10
+[CG] iter  8  obj=119405.10
+[CG] iter  9  obj=119405.10
+[CG] iter 10  obj=119405.10
+[CG] iter 11  obj=119405.10
+[CG] iter 12  obj=119405.10
+[CG] iter 13  obj=119405.10
+[CG] iter 14  obj=119405.10
+[CG] iter 15  obj=119405.10
+[CG] iter 16  obj=119405.10
+[CG] iter 17  obj=119405.10
+[CG] iter 18  obj=119405.10
+[CG] iter 19  obj=119405.10
+[CG] iter 20  obj=119405.10
+[CG] iter 21  obj=119405.10
+[CG] iter 22  obj=119405.10
+[CG] iter 23  obj=119405.10
+[CG] iter 24  obj=119405.10
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119405.10  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,59]=0.802, y[4,14]=0.175, y[4,16]=0.175, y[4,18]=0.175, y[4,15]=0.825
+[BRANCH] Branch on y[4,59] ≈ 0.802 (μ[59]=-0.018)
+[CG] iter  1  obj=119481.18
+[ADD] item 2 pattern#30 cost=10312.20
+[ADD] item 4 pattern#30 cost=26261.60
+[CG] iter  2  obj=119442.29
+[ADD] item 4 pattern#31 cost=26230.00
+[CG] iter  3  obj=119439.79
+[ADD] item 4 pattern#32 cost=26158.80
+[CG] iter  4  obj=119433.42
+[CG] iter  5  obj=119433.42
+[CG] iter  6  obj=119433.42
+[CG] iter  7  obj=119433.42
+[CG] iter  8  obj=119433.42
+[CG] iter  9  obj=119433.42
+[CG] iter 10  obj=119433.42
+[CG] iter 11  obj=119433.42
+[CG] iter 12  obj=119433.42
+[CG] iter 13  obj=119433.42
+[CG] iter 14  obj=119433.42
+[CG] iter 15  obj=119433.42
+[CG] iter 16  obj=119433.42
+[CG] iter 17  obj=119433.42
+[CG] iter 18  obj=119433.42
+[CG] iter 19  obj=119433.42
+[CG] iter 20  obj=119433.42
+[CG] iter 21  obj=119433.42
+[CG] iter 22  obj=119433.42
+[CG] iter 23  obj=119433.42
+[CG] iter 24  obj=119433.42
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119433.42  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,58]=0.662, y[4,57]=0.338, y[4,15]=0.825, y[4,17]=0.825, y[4,14]=0.175
+[BRANCH] Branch on y[4,58] ≈ 0.662 (μ[58]=-0.204)
+[WARN] RMP infeasible under current constraints. Attempting to restore feasibility via pricing.
+[FAIL] Unable to restore feasibility at this node. Pruning.
+[GAP] bound=inf  best=∞  gap=∞
+[CG] iter  1  obj=119445.85
+[ADD] item 2 pattern#31 cost=10310.10
+[CG] iter  2  obj=119444.49
+[CG] iter  3  obj=119444.49
+[CG] iter  4  obj=119444.49
+[CG] iter  5  obj=119444.49
+[CG] iter  6  obj=119444.49
+[CG] iter  7  obj=119444.49
+[CG] iter  8  obj=119444.49
+[CG] iter  9  obj=119444.49
+[CG] iter 10  obj=119444.49
+[CG] iter 11  obj=119444.49
+[CG] iter 12  obj=119444.49
+[CG] iter 13  obj=119444.49
+[CG] iter 14  obj=119444.49
+[CG] iter 15  obj=119444.49
+[CG] iter 16  obj=119444.49
+[CG] iter 17  obj=119444.49
+[CG] iter 18  obj=119444.49
+[CG] iter 19  obj=119444.49
+[CG] iter 20  obj=119444.49
+[CG] iter 21  obj=119444.49
+[CG] iter 22  obj=119444.49
+[CG] iter 23  obj=119444.49
+[CG] iter 24  obj=119444.49
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119444.49  best=∞  gap=∞
+[INFO] Fractional y values (top): y[2,58]=0.310, y[2,57]=0.690, y[4,14]=0.175, y[4,16]=0.175, y[4,18]=0.175
+[BRANCH] Branch on y[2,58] ≈ 0.310 (μ[58]=-0.266)
+[CG] iter  1  obj=119467.80
+[ADD] item 2 pattern#32 cost=10329.00
+[ADD] item 4 pattern#33 cost=26266.80
+[CG] iter  2  obj=119460.18
+[ADD] item 2 pattern#33 cost=10326.90
+[CG] iter  3  obj=119459.99
+[CG] iter  4  obj=119459.99
+[CG] iter  5  obj=119459.99
+[CG] iter  6  obj=119459.99
+[CG] iter  7  obj=119459.99
+[CG] iter  8  obj=119459.99
+[CG] iter  9  obj=119459.99
+[CG] iter 10  obj=119459.99
+[CG] iter 11  obj=119459.99
+[CG] iter 12  obj=119459.99
+[CG] iter 13  obj=119459.99
+[CG] iter 14  obj=119459.99
+[CG] iter 15  obj=119459.99
+[CG] iter 16  obj=119459.99
+[CG] iter 17  obj=119459.99
+[CG] iter 18  obj=119459.99
+[CG] iter 19  obj=119459.99
+[CG] iter 20  obj=119459.99
+[CG] iter 21  obj=119459.99
+[CG] iter 22  obj=119459.99
+[CG] iter 23  obj=119459.99
+[CG] iter 24  obj=119459.99
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119459.99  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,15]=0.825, y[4,17]=0.825, y[4,14]=0.175, y[4,16]=0.175, y[4,18]=0.175
+[BRANCH] Branch on y[4,15] ≈ 0.825 (μ[15]=0.000)
+[CG] iter  1  obj=119490.17
+[CG] iter  2  obj=119490.17
+[ADD] item 1 pattern#10 cost=24848.20
+[ADD] item 2 pattern#34 cost=10310.20
+[CG] iter  3  obj=119489.82
+[ADD] item 2 pattern#35 cost=10308.10
+[CG] iter  4  obj=119488.17
+[ADD] item 2 pattern#36 cost=10324.90
+[CG] iter  5  obj=119487.91
+[CG] iter  6  obj=119487.91
+[CG] iter  7  obj=119487.91
+[CG] iter  8  obj=119487.91
+[CG] iter  9  obj=119487.91
+[CG] iter 10  obj=119487.91
+[CG] iter 11  obj=119487.91
+[CG] iter 12  obj=119487.91
+[CG] iter 13  obj=119487.91
+[CG] iter 14  obj=119487.91
+[CG] iter 15  obj=119487.91
+[CG] iter 16  obj=119487.91
+[CG] iter 17  obj=119487.91
+[CG] iter 18  obj=119487.91
+[CG] iter 19  obj=119487.91
+[CG] iter 20  obj=119487.91
+[CG] iter 21  obj=119487.91
+[CG] iter 22  obj=119487.91
+[CG] iter 23  obj=119487.91
+[CG] iter 24  obj=119487.91
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119487.91  best=∞  gap=∞
+[INFO] Fractional y values (top): y[2,62]=0.131, y[2,63]=0.869, y[4,23]=0.128, y[4,25]=0.128, y[4,22]=0.872
+[BRANCH] Branch on y[2,62] ≈ 0.131 (μ[62]=0.000)
+[CG] iter  1  obj=119490.13
+[CG] iter  2  obj=119490.13
+[CG] iter  3  obj=119490.13
+[CG] iter  4  obj=119490.13
+[CG] iter  5  obj=119490.13
+[CG] iter  6  obj=119490.13
+[CG] iter  7  obj=119490.13
+[CG] iter  8  obj=119490.13
+[CG] iter  9  obj=119490.13
+[CG] iter 10  obj=119490.13
+[CG] iter 11  obj=119490.13
+[CG] iter 12  obj=119490.13
+[CG] iter 13  obj=119490.13
+[CG] iter 14  obj=119490.13
+[CG] iter 15  obj=119490.13
+[CG] iter 16  obj=119490.13
+[CG] iter 17  obj=119490.13
+[CG] iter 18  obj=119490.13
+[CG] iter 19  obj=119490.13
+[CG] iter 20  obj=119490.13
+[CG] iter 21  obj=119490.13
+[CG] iter 22  obj=119490.13
+[CG] iter 23  obj=119490.13
+[CG] iter 24  obj=119490.13
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119490.13  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,23]=0.128, y[4,25]=0.128, y[4,22]=0.872, y[4,24]=0.872, y[0,28]=0.067
+[BRANCH] Branch on y[4,23] ≈ 0.128 (μ[23]=0.000)
+[CG] iter  1  obj=119491.72
+[CG] iter  2  obj=119491.72
+[CG] iter  3  obj=119491.72
+[CG] iter  4  obj=119491.72
+[CG] iter  5  obj=119491.72
+[CG] iter  6  obj=119491.72
+[CG] iter  7  obj=119491.72
+[CG] iter  8  obj=119491.72
+[CG] iter  9  obj=119491.72
+[CG] iter 10  obj=119491.72
+[CG] iter 11  obj=119491.72
+[CG] iter 12  obj=119491.72
+[CG] iter 13  obj=119491.72
+[CG] iter 14  obj=119491.72
+[CG] iter 15  obj=119491.72
+[CG] iter 16  obj=119491.72
+[CG] iter 17  obj=119491.72
+[CG] iter 18  obj=119491.72
+[CG] iter 19  obj=119491.72
+[CG] iter 20  obj=119491.72
+[CG] iter 21  obj=119491.72
+[CG] iter 22  obj=119491.72
+[CG] iter 23  obj=119491.72
+[CG] iter 24  obj=119491.72
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119491.72  best=∞  gap=∞
+[INFO] Fractional y values (top): y[0,28]=0.067, y[0,1]=0.933, y[0,3]=0.933, y[0,29]=0.933, y[4,63]=0.933
+[BRANCH] Branch on y[0,28] ≈ 0.067 (μ[28]=0.000)
+[CG] iter  1  obj=119500.54
+[ADD] item 1 pattern#11 cost=24853.80
+[ADD] item 3 pattern#16 cost=35916.50
+[CG] iter  2  obj=119497.36
+[ADD] item 4 pattern#34 cost=26178.80
+[CG] iter  3  obj=119488.96
+[ADD] item 3 pattern#17 cost=35790.00
+[CG] iter  4  obj=119474.77
+[ADD] item 4 pattern#35 cost=26138.40
+[CG] iter  5  obj=119464.51
+[ADD] item 2 pattern#37 cost=10291.20
+[ADD] item 4 pattern#36 cost=26150.40
+[CG] iter  6  obj=119461.69
+[ADD] item 2 pattern#38 cost=10289.10
+[ADD] item 4 pattern#37 cost=26226.80
+[CG] iter  7  obj=119460.87
+[CG] iter  8  obj=119460.87
+[ADD] item 4 pattern#38 cost=26150.00
+[CG] iter  9  obj=119460.86
+[CG] iter 10  obj=119460.86
+[CG] iter 11  obj=119460.86
+[CG] iter 12  obj=119460.86
+[CG] iter 13  obj=119460.86
+[CG] iter 14  obj=119460.86
+[CG] iter 15  obj=119460.86
+[CG] iter 16  obj=119460.86
+[CG] iter 17  obj=119460.86
+[CG] iter 18  obj=119460.86
+[CG] iter 19  obj=119460.86
+[CG] iter 20  obj=119460.86
+[CG] iter 21  obj=119460.86
+[CG] iter 22  obj=119460.86
+[CG] iter 23  obj=119460.86
+[CG] iter 24  obj=119460.86
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119460.86  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,17]=0.825, y[4,18]=0.175, y[4,61]=0.089, y[4,63]=0.933, y[4,62]=0.067
+[BRANCH] Branch on y[4,17] ≈ 0.825 (μ[17]=-0.031)
+[CG] iter  1  obj=119468.48
+[ADD] item 2 pattern#39 cost=10289.20
+[CG] iter  2  obj=119468.43
+[CG] iter  3  obj=119468.43
+[CG] iter  4  obj=119468.43
+[CG] iter  5  obj=119468.43
+[CG] iter  6  obj=119468.43
+[CG] iter  7  obj=119468.43
+[CG] iter  8  obj=119468.43
+[CG] iter  9  obj=119468.43
+[CG] iter 10  obj=119468.43
+[CG] iter 11  obj=119468.43
+[CG] iter 12  obj=119468.43
+[CG] iter 13  obj=119468.43
+[CG] iter 14  obj=119468.43
+[CG] iter 15  obj=119468.43
+[CG] iter 16  obj=119468.43
+[CG] iter 17  obj=119468.43
+[CG] iter 18  obj=119468.43
+[CG] iter 19  obj=119468.43
+[CG] iter 20  obj=119468.43
+[CG] iter 21  obj=119468.43
+[CG] iter 22  obj=119468.43
+[CG] iter 23  obj=119468.43
+[CG] iter 24  obj=119468.43
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119468.43  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,61]=0.089, y[4,63]=0.933, y[4,62]=0.067, y[4,64]=0.067, y[2,43]=0.043
+[BRANCH] Branch on y[4,61] ≈ 0.089 (μ[61]=0.000)
+[CG] iter  1  obj=119471.59
+[CG] iter  2  obj=119471.59
+[CG] iter  3  obj=119471.59
+[CG] iter  4  obj=119471.59
+[CG] iter  5  obj=119471.59
+[CG] iter  6  obj=119471.59
+[CG] iter  7  obj=119471.59
+[CG] iter  8  obj=119471.59
+[CG] iter  9  obj=119471.59
+[CG] iter 10  obj=119471.59
+[CG] iter 11  obj=119471.59
+[CG] iter 12  obj=119471.59
+[CG] iter 13  obj=119471.59
+[CG] iter 14  obj=119471.59
+[CG] iter 15  obj=119471.59
+[CG] iter 16  obj=119471.59
+[CG] iter 17  obj=119471.59
+[CG] iter 18  obj=119471.59
+[CG] iter 19  obj=119471.59
+[CG] iter 20  obj=119471.59
+[CG] iter 21  obj=119471.59
+[CG] iter 22  obj=119471.59
+[CG] iter 23  obj=119471.59
+[CG] iter 24  obj=119471.59
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119471.59  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,62]=0.067, y[4,64]=0.067, y[4,63]=0.933, y[2,43]=0.043, y[2,42]=0.957
+[BRANCH] Branch on y[4,62] ≈ 0.067 (μ[62]=0.000)
+[CG] iter  1  obj=119481.55
+[ADD] item 2 pattern#40 cost=10346.90
+[ADD] item 4 pattern#39 cost=26185.60
+[CG] iter  2  obj=119472.47
+[CG] iter  3  obj=119472.47
+[CG] iter  4  obj=119472.47
+[CG] iter  5  obj=119472.47
+[CG] iter  6  obj=119472.47
+[CG] iter  7  obj=119472.47
+[CG] iter  8  obj=119472.47
+[CG] iter  9  obj=119472.47
+[CG] iter 10  obj=119472.47
+[CG] iter 11  obj=119472.47
+[CG] iter 12  obj=119472.47
+[CG] iter 13  obj=119472.47
+[CG] iter 14  obj=119472.47
+[CG] iter 15  obj=119472.47
+[CG] iter 16  obj=119472.47
+[CG] iter 17  obj=119472.47
+[CG] iter 18  obj=119472.47
+[CG] iter 19  obj=119472.47
+[CG] iter 20  obj=119472.47
+[CG] iter 21  obj=119472.47
+[CG] iter 22  obj=119472.47
+[CG] iter 23  obj=119472.47
+[CG] iter 24  obj=119472.47
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119472.47  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,64]=0.149, y[1,58]=0.948, y[2,43]=0.043, y[2,42]=0.957, y[2,29]=0.025
+[BRANCH] Branch on y[4,64] ≈ 0.149 (μ[64]=0.000)
+[CG] iter  1  obj=119475.74
+[ADD] item 2 pattern#41 cost=10370.00
+[CG] iter  2  obj=119475.14
+[ADD] item 2 pattern#42 cost=10367.90
+[CG] iter  3  obj=119475.01
+[CG] iter  4  obj=119475.01
+[CG] iter  5  obj=119475.01
+[CG] iter  6  obj=119475.01
+[CG] iter  7  obj=119475.01
+[CG] iter  8  obj=119475.01
+[CG] iter  9  obj=119475.01
+[CG] iter 10  obj=119475.01
+[CG] iter 11  obj=119475.01
+[CG] iter 12  obj=119475.01
+[CG] iter 13  obj=119475.01
+[CG] iter 14  obj=119475.01
+[CG] iter 15  obj=119475.01
+[CG] iter 16  obj=119475.01
+[CG] iter 17  obj=119475.01
+[CG] iter 18  obj=119475.01
+[CG] iter 19  obj=119475.01
+[CG] iter 20  obj=119475.01
+[CG] iter 21  obj=119475.01
+[CG] iter 22  obj=119475.01
+[CG] iter 23  obj=119475.01
+[CG] iter 24  obj=119475.01
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119475.01  best=∞  gap=∞
+[INFO] Fractional y values (top): y[2,63]=0.869, y[1,58]=0.948, y[2,42]=0.957, y[2,43]=0.043, y[2,28]=0.975
+[BRANCH] Branch on y[2,63] ≈ 0.869 (μ[63]=-0.327)
+[CG] iter  1  obj=119526.97
+[CG] iter  2  obj=119526.97
+[CG] iter  3  obj=119526.97
+[CG] iter  4  obj=119526.97
+[CG] iter  5  obj=119526.97
+[CG] iter  6  obj=119526.97
+[CG] iter  7  obj=119526.97
+[CG] iter  8  obj=119526.97
+[CG] iter  9  obj=119526.97
+[CG] iter 10  obj=119526.97
+[CG] iter 11  obj=119526.97
+[CG] iter 12  obj=119526.97
+[CG] iter 13  obj=119526.97
+[CG] iter 14  obj=119526.97
+[CG] iter 15  obj=119526.97
+[CG] iter 16  obj=119526.97
+[CG] iter 17  obj=119526.97
+[CG] iter 18  obj=119526.97
+[CG] iter 19  obj=119526.97
+[CG] iter 20  obj=119526.97
+[CG] iter 21  obj=119526.97
+[CG] iter 22  obj=119526.97
+[CG] iter 23  obj=119526.97
+[CG] iter 24  obj=119526.97
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119526.97  best=∞  gap=∞
+[INFO] Fractional y values (top): y[1,58]=0.948, y[2,42]=0.957, y[2,43]=0.043, y[2,29]=0.025, y[2,28]=0.975
+[BRANCH] Branch on y[1,58] ≈ 0.948 (μ[58]=-0.432)
+[WARN] RMP infeasible under current constraints. Attempting to restore feasibility via pricing.
+[FAIL] Unable to restore feasibility at this node. Pruning.
+[GAP] bound=inf  best=∞  gap=∞
+[CG] iter  1  obj=119527.23
+[ADD] item 1 pattern#12 cost=24492.20
+[CG] iter  2  obj=119246.03
+[CG] iter  3  obj=119246.03
+[CG] iter  4  obj=119246.03
+[CG] iter  5  obj=119246.03
+[CG] iter  6  obj=119246.03
+[CG] iter  7  obj=119246.03
+[CG] iter  8  obj=119246.03
+[CG] iter  9  obj=119246.03
+[CG] iter 10  obj=119246.03
+[CG] iter 11  obj=119246.03
+[CG] iter 12  obj=119246.03
+[CG] iter 13  obj=119246.03
+[CG] iter 14  obj=119246.03
+[CG] iter 15  obj=119246.03
+[CG] iter 16  obj=119246.03
+[CG] iter 17  obj=119246.03
+[CG] iter 18  obj=119246.03
+[CG] iter 19  obj=119246.03
+[CG] iter 20  obj=119246.03
+[CG] iter 21  obj=119246.03
+[CG] iter 22  obj=119246.03
+[CG] iter 23  obj=119246.03
+[CG] iter 24  obj=119246.03
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119246.03  best=∞  gap=∞
+[INFO] Fractional y values (top): y[2,42]=0.957, y[2,43]=0.043, y[3,58]=0.967, y[3,60]=0.967, y[2,29]=0.025
+[BRANCH] Branch on y[2,42] ≈ 0.957 (μ[42]=-0.006)
+[CG] iter  1  obj=119248.10
+[ADD] item 2 pattern#43 cost=10349.00
+[CG] iter  2  obj=119248.04
+[CG] iter  3  obj=119248.04
+[CG] iter  4  obj=119248.04
+[CG] iter  5  obj=119248.04
+[CG] iter  6  obj=119248.04
+[CG] iter  7  obj=119248.04
+[CG] iter  8  obj=119248.04
+[CG] iter  9  obj=119248.04
+[CG] iter 10  obj=119248.04
+[CG] iter 11  obj=119248.04
+[CG] iter 12  obj=119248.04
+[CG] iter 13  obj=119248.04
+[CG] iter 14  obj=119248.04
+[CG] iter 15  obj=119248.04
+[CG] iter 16  obj=119248.04
+[CG] iter 17  obj=119248.04
+[CG] iter 18  obj=119248.04
+[CG] iter 19  obj=119248.04
+[CG] iter 20  obj=119248.04
+[CG] iter 21  obj=119248.04
+[CG] iter 22  obj=119248.04
+[CG] iter 23  obj=119248.04
+[CG] iter 24  obj=119248.04
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119248.04  best=∞  gap=∞
+[INFO] Fractional y values (top): y[3,58]=0.967, y[3,60]=0.967, y[2,28]=0.975, y[2,29]=0.025
+[BRANCH] Branch on y[3,58] ≈ 0.967 (μ[58]=-0.462)
+[WARN] RMP infeasible under current constraints. Attempting to restore feasibility via pricing.
+[FAIL] Unable to restore feasibility at this node. Pruning.
+[GAP] bound=inf  best=∞  gap=∞
+[WARN] RMP infeasible under current constraints. Attempting to restore feasibility via pricing.
+[FAIL] Unable to restore feasibility at this node. Pruning.
+[GAP] bound=inf  best=∞  gap=∞
+[CG] iter  1  obj=119271.71
+[ADD] item 4 pattern#40 cost=26187.20
+[CG] iter  2  obj=119247.61
+[CG] iter  3  obj=119247.61
+[ADD] item 4 pattern#41 cost=26166.00
+[CG] iter  4  obj=119247.01
+[CG] iter  5  obj=119247.01
+[ADD] item 0 pattern#19 cost=22817.10
+[CG] iter  6  obj=119247.01
+[CG] iter  7  obj=119247.01
+[CG] iter  8  obj=119247.01
+[CG] iter  9  obj=119247.01
+[CG] iter 10  obj=119247.01
+[CG] iter 11  obj=119247.01
+[CG] iter 12  obj=119247.01
+[CG] iter 13  obj=119247.01
+[CG] iter 14  obj=119247.01
+[CG] iter 15  obj=119247.01
+[CG] iter 16  obj=119247.01
+[CG] iter 17  obj=119247.01
+[CG] iter 18  obj=119247.01
+[CG] iter 19  obj=119247.01
+[CG] iter 20  obj=119247.01
+[CG] iter 21  obj=119247.01
+[CG] iter 22  obj=119247.01
+[CG] iter 23  obj=119247.01
+[CG] iter 24  obj=119247.01
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119247.01  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,43]=0.067, y[3,58]=0.967, y[3,60]=0.967, y[2,28]=0.975, y[2,29]=0.025
+[BRANCH] Branch on y[4,43] ≈ 0.067 (μ[43]=0.000)
+[CG] iter  1  obj=119271.71
+[ADD] item 4 pattern#42 cost=26248.40
+[CG] iter  2  obj=119250.37
+[CG] iter  3  obj=119250.37
+[ADD] item 4 pattern#43 cost=26170.40
+[CG] iter  4  obj=119248.91
+[CG] iter  5  obj=119248.91
+[CG] iter  6  obj=119248.91
+[CG] iter  7  obj=119248.91
+[CG] iter  8  obj=119248.91
+[CG] iter  9  obj=119248.91
+[CG] iter 10  obj=119248.91
+[CG] iter 11  obj=119248.91
+[CG] iter 12  obj=119248.91
+[CG] iter 13  obj=119248.91
+[CG] iter 14  obj=119248.91
+[CG] iter 15  obj=119248.91
+[CG] iter 16  obj=119248.91
+[CG] iter 17  obj=119248.91
+[CG] iter 18  obj=119248.91
+[CG] iter 19  obj=119248.91
+[CG] iter 20  obj=119248.91
+[CG] iter 21  obj=119248.91
+[CG] iter 22  obj=119248.91
+[CG] iter 23  obj=119248.91
+[CG] iter 24  obj=119248.91
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119248.91  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,45]=0.854, y[4,44]=0.146, y[3,58]=0.967, y[3,60]=0.967, y[2,28]=0.975
+[BRANCH] Branch on y[4,45] ≈ 0.854 (μ[45]=0.000)
+[CG] iter  1  obj=119266.34
+[CG] iter  2  obj=119266.34
+[CG] iter  3  obj=119266.34
+[CG] iter  4  obj=119266.34
+[CG] iter  5  obj=119266.34
+[CG] iter  6  obj=119266.34
+[CG] iter  7  obj=119266.34
+[CG] iter  8  obj=119266.34
+[CG] iter  9  obj=119266.34
+[CG] iter 10  obj=119266.34
+[CG] iter 11  obj=119266.34
+[CG] iter 12  obj=119266.34
+[CG] iter 13  obj=119266.34
+[CG] iter 14  obj=119266.34
+[CG] iter 15  obj=119266.34
+[CG] iter 16  obj=119266.34
+[CG] iter 17  obj=119266.34
+[CG] iter 18  obj=119266.34
+[CG] iter 19  obj=119266.34
+[CG] iter 20  obj=119266.34
+[CG] iter 21  obj=119266.34
+[CG] iter 22  obj=119266.34
+[CG] iter 23  obj=119266.34
+[CG] iter 24  obj=119266.34
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119266.34  best=∞  gap=∞
+[INFO] Fractional y values (top): y[3,58]=0.967, y[3,60]=0.967, y[2,29]=0.025, y[2,28]=0.975
+[BRANCH] Branch on y[3,58] ≈ 0.967 (μ[58]=-0.462)
+[WARN] RMP infeasible under current constraints. Attempting to restore feasibility via pricing.
+[FAIL] Unable to restore feasibility at this node. Pruning.
+[GAP] bound=inf  best=∞  gap=∞
+[WARN] RMP infeasible under current constraints. Attempting to restore feasibility via pricing.
+[FAIL] Unable to restore feasibility at this node. Pruning.
+[GAP] bound=inf  best=∞  gap=∞
+[CG] iter  1  obj=119271.71
+[CG] iter  2  obj=119271.71
+[CG] iter  3  obj=119271.71
+[CG] iter  4  obj=119271.71
+[CG] iter  5  obj=119271.71
+[CG] iter  6  obj=119271.71
+[CG] iter  7  obj=119271.71
+[CG] iter  8  obj=119271.71
+[CG] iter  9  obj=119271.71
+[CG] iter 10  obj=119271.71
+[CG] iter 11  obj=119271.71
+[CG] iter 12  obj=119271.71
+[CG] iter 13  obj=119271.71
+[CG] iter 14  obj=119271.71
+[CG] iter 15  obj=119271.71
+[CG] iter 16  obj=119271.71
+[CG] iter 17  obj=119271.71
+[CG] iter 18  obj=119271.71
+[CG] iter 19  obj=119271.71
+[CG] iter 20  obj=119271.71
+[CG] iter 21  obj=119271.71
+[CG] iter 22  obj=119271.71
+[CG] iter 23  obj=119271.71
+[CG] iter 24  obj=119271.71
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119271.71  best=∞  gap=∞
+[INFO] Fractional y values (top): y[2,29]=0.199, y[2,28]=0.801, y[0,1]=0.944, y[0,3]=0.944, y[0,23]=0.944
+[BRANCH] Branch on y[2,29] ≈ 0.199 (μ[29]=-0.172)
+[CG] iter  1  obj=119272.22
+[CG] iter  2  obj=119272.22
+[CG] iter  3  obj=119272.22
+[CG] iter  4  obj=119272.22
+[CG] iter  5  obj=119272.22
+[CG] iter  6  obj=119272.22
+[CG] iter  7  obj=119272.22
+[CG] iter  8  obj=119272.22
+[CG] iter  9  obj=119272.22
+[CG] iter 10  obj=119272.22
+[CG] iter 11  obj=119272.22
+[CG] iter 12  obj=119272.22
+[CG] iter 13  obj=119272.22
+[CG] iter 14  obj=119272.22
+[CG] iter 15  obj=119272.22
+[CG] iter 16  obj=119272.22
+[CG] iter 17  obj=119272.22
+[CG] iter 18  obj=119272.22
+[CG] iter 19  obj=119272.22
+[CG] iter 20  obj=119272.22
+[CG] iter 21  obj=119272.22
+[CG] iter 22  obj=119272.22
+[CG] iter 23  obj=119272.22
+[CG] iter 24  obj=119272.22
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119272.22  best=∞  gap=∞
+[INFO] Fractional y values (top): y[3,29]=0.113, y[0,30]=0.056, y[0,32]=0.056, y[0,41]=0.056, y[0,64]=0.056
+[BRANCH] Branch on y[3,29] ≈ 0.113 (μ[29]=-0.151)
+[CG] iter  1  obj=119275.88
+[ADD] item 4 pattern#44 cost=26224.40
+[CG] iter  2  obj=119251.00
+[ADD] item 4 pattern#45 cost=26251.20
+[CG] iter  3  obj=119250.57
+[CG] iter  4  obj=119250.57
+[CG] iter  5  obj=119250.57
+[CG] iter  6  obj=119250.57
+[CG] iter  7  obj=119250.57
+[CG] iter  8  obj=119250.57
+[CG] iter  9  obj=119250.57
+[CG] iter 10  obj=119250.57
+[CG] iter 11  obj=119250.57
+[CG] iter 12  obj=119250.57
+[CG] iter 13  obj=119250.57
+[CG] iter 14  obj=119250.57
+[CG] iter 15  obj=119250.57
+[CG] iter 16  obj=119250.57
+[CG] iter 17  obj=119250.57
+[CG] iter 18  obj=119250.57
+[CG] iter 19  obj=119250.57
+[CG] iter 20  obj=119250.57
+[CG] iter 21  obj=119250.57
+[CG] iter 22  obj=119250.57
+[CG] iter 23  obj=119250.57
+[CG] iter 24  obj=119250.57
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119250.57  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,42]=0.955, y[4,41]=0.045, y[4,44]=0.045, y[3,58]=0.967, y[3,60]=0.967
+[BRANCH] Branch on y[4,42] ≈ 0.955 (μ[42]=-0.325)
+[CG] iter  1  obj=119347.22
+[CG] iter  2  obj=119347.22
+[CG] iter  3  obj=119347.22
+[CG] iter  4  obj=119347.22
+[CG] iter  5  obj=119347.22
+[CG] iter  6  obj=119347.22
+[CG] iter  7  obj=119347.22
+[CG] iter  8  obj=119347.22
+[CG] iter  9  obj=119347.22
+[CG] iter 10  obj=119347.22
+[CG] iter 11  obj=119347.22
+[CG] iter 12  obj=119347.22
+[CG] iter 13  obj=119347.22
+[CG] iter 14  obj=119347.22
+[CG] iter 15  obj=119347.22
+[CG] iter 16  obj=119347.22
+[CG] iter 17  obj=119347.22
+[CG] iter 18  obj=119347.22
+[CG] iter 19  obj=119347.22
+[CG] iter 20  obj=119347.22
+[CG] iter 21  obj=119347.22
+[CG] iter 22  obj=119347.22
+[CG] iter 23  obj=119347.22
+[CG] iter 24  obj=119347.22
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119347.22  best=∞  gap=∞
+[INFO] Fractional y values (top): y[3,58]=0.967, y[3,60]=0.967, y[4,30]=0.984
+[BRANCH] Branch on y[3,58] ≈ 0.967 (μ[58]=-0.462)
+[WARN] RMP infeasible under current constraints. Attempting to restore feasibility via pricing.
+[FAIL] Unable to restore feasibility at this node. Pruning.
+[GAP] bound=inf  best=∞  gap=∞
+[WARN] RMP infeasible under current constraints. Attempting to restore feasibility via pricing.
+[FAIL] Unable to restore feasibility at this node. Pruning.
+[GAP] bound=inf  best=∞  gap=∞
+[CG] iter  1  obj=119275.88
+[CG] iter  2  obj=119275.88
+[CG] iter  3  obj=119275.88
+[CG] iter  4  obj=119275.88
+[CG] iter  5  obj=119275.88
+[CG] iter  6  obj=119275.88
+[CG] iter  7  obj=119275.88
+[CG] iter  8  obj=119275.88
+[CG] iter  9  obj=119275.88
+[CG] iter 10  obj=119275.88
+[CG] iter 11  obj=119275.88
+[CG] iter 12  obj=119275.88
+[CG] iter 13  obj=119275.88
+[CG] iter 14  obj=119275.88
+[CG] iter 15  obj=119275.88
+[CG] iter 16  obj=119275.88
+[CG] iter 17  obj=119275.88
+[CG] iter 18  obj=119275.88
+[CG] iter 19  obj=119275.88
+[CG] iter 20  obj=119275.88
+[CG] iter 21  obj=119275.88
+[CG] iter 22  obj=119275.88
+[CG] iter 23  obj=119275.88
+[CG] iter 24  obj=119275.88
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119275.88  best=∞  gap=∞
+[INFO] Fractional y values (top): y[0,1]=0.944, y[0,3]=0.944, y[0,23]=0.944, y[0,42]=0.944, y[0,44]=0.944
+[BRANCH] Branch on y[0,1] ≈ 0.944 (μ[1]=0.000)
+[WARN] RMP infeasible under current constraints. Attempting to restore feasibility via pricing.
+[FAIL] Unable to restore feasibility at this node. Pruning.
+[GAP] bound=inf  best=∞  gap=∞
+[WARN] RMP infeasible under current constraints. Attempting to restore feasibility via pricing.
+[FAIL] Unable to restore feasibility at this node. Pruning.
+[GAP] bound=inf  best=∞  gap=∞
+[CG] iter  1  obj=119294.68
+[ADD] item 0 pattern#20 cost=22936.50
+[ADD] item 1 pattern#13 cost=24572.60
+[ADD] item 3 pattern#18 cost=35578.50
+[ADD] item 4 pattern#44 cost=26291.20
+[CG] iter  2  obj=119112.04
+[ADD] item 1 pattern#14 cost=24495.60
+[ADD] item 3 pattern#19 cost=35533.50
+[ADD] item 4 pattern#45 cost=26318.00
+[CG] iter  3  obj=119035.59
+[ADD] item 3 pattern#20 cost=35431.00
+[CG] iter  4  obj=118949.91
+[ADD] item 3 pattern#21 cost=35436.50
+[ADD] item 4 pattern#46 cost=26213.60
+[CG] iter  5  obj=118948.59
+[ADD] item 3 pattern#22 cost=35557.50
+[CG] iter  6  obj=118948.39
+[ADD] item 3 pattern#23 cost=35552.00
+[CG] iter  7  obj=118948.27
+[ADD] item 3 pattern#24 cost=35430.00
+[ADD] item 4 pattern#47 cost=26213.20
+[CG] iter  8  obj=118947.38
+[CG] iter  9  obj=118947.38
+[CG] iter 10  obj=118947.38
+[CG] iter 11  obj=118947.38
+[CG] iter 12  obj=118947.38
+[CG] iter 13  obj=118947.38
+[CG] iter 14  obj=118947.38
+[CG] iter 15  obj=118947.38
+[CG] iter 16  obj=118947.38
+[CG] iter 17  obj=118947.38
+[CG] iter 18  obj=118947.38
+[CG] iter 19  obj=118947.38
+[CG] iter 20  obj=118947.38
+[CG] iter 21  obj=118947.38
+[CG] iter 22  obj=118947.38
+[CG] iter 23  obj=118947.38
+[CG] iter 24  obj=118947.38
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=118947.38  best=∞  gap=∞
+[INFO] Fractional y values (top): y[3,28]=0.173, y[3,27]=0.827, y[4,44]=0.146, y[3,59]=0.110, y[3,60]=0.890
+[BRANCH] Branch on y[3,28] ≈ 0.173 (μ[28]=0.000)
+[CG] iter  1  obj=118947.65
+[ADD] item 3 pattern#25 cost=35435.50
+[CG] iter  2  obj=118947.54
+[CG] iter  3  obj=118947.54
+[CG] iter  4  obj=118947.54
+[CG] iter  5  obj=118947.54
+[CG] iter  6  obj=118947.54
+[CG] iter  7  obj=118947.54
+[CG] iter  8  obj=118947.54
+[CG] iter  9  obj=118947.54
+[CG] iter 10  obj=118947.54
+[CG] iter 11  obj=118947.54
+[CG] iter 12  obj=118947.54
+[CG] iter 13  obj=118947.54
+[CG] iter 14  obj=118947.54
+[CG] iter 15  obj=118947.54
+[CG] iter 16  obj=118947.54
+[CG] iter 17  obj=118947.54
+[CG] iter 18  obj=118947.54
+[CG] iter 19  obj=118947.54
+[CG] iter 20  obj=118947.54
+[CG] iter 21  obj=118947.54
+[CG] iter 22  obj=118947.54
+[CG] iter 23  obj=118947.54
+[CG] iter 24  obj=118947.54
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=118947.54  best=∞  gap=∞
+[INFO] Fractional y values (top): y[1,29]=0.736, y[1,28]=0.264, y[4,44]=0.146, y[3,60]=0.890, y[3,59]=0.110
+[BRANCH] Branch on y[1,29] ≈ 0.736 (μ[29]=-0.574)
+[CG] iter  1  obj=118983.14
+[CG] iter  2  obj=118983.14
+[CG] iter  3  obj=118983.14
+[CG] iter  4  obj=118983.14
+[CG] iter  5  obj=118983.14
+[CG] iter  6  obj=118983.14
+[CG] iter  7  obj=118983.14
+[CG] iter  8  obj=118983.14
+[CG] iter  9  obj=118983.14
+[CG] iter 10  obj=118983.14
+[CG] iter 11  obj=118983.14
+[CG] iter 12  obj=118983.14
+[CG] iter 13  obj=118983.14
+[CG] iter 14  obj=118983.14
+[CG] iter 15  obj=118983.14
+[CG] iter 16  obj=118983.14
+[CG] iter 17  obj=118983.14
+[CG] iter 18  obj=118983.14
+[CG] iter 19  obj=118983.14
+[CG] iter 20  obj=118983.14
+[CG] iter 21  obj=118983.14
+[CG] iter 22  obj=118983.14
+[CG] iter 23  obj=118983.14
+[CG] iter 24  obj=118983.14
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=118983.14  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,29]=0.589, y[4,44]=0.146, y[3,60]=0.890, y[3,59]=0.110
+[BRANCH] Branch on y[4,29] ≈ 0.589 (μ[29]=-0.229)
+[CG] iter  1  obj=119006.69
+[CG] iter  2  obj=119006.69
+[CG] iter  3  obj=119006.69
+[CG] iter  4  obj=119006.69
+[CG] iter  5  obj=119006.69
+[CG] iter  6  obj=119006.69
+[CG] iter  7  obj=119006.69
+[CG] iter  8  obj=119006.69
+[CG] iter  9  obj=119006.69
+[CG] iter 10  obj=119006.69
+[CG] iter 11  obj=119006.69
+[CG] iter 12  obj=119006.69
+[CG] iter 13  obj=119006.69
+[CG] iter 14  obj=119006.69
+[CG] iter 15  obj=119006.69
+[CG] iter 16  obj=119006.69
+[CG] iter 17  obj=119006.69
+[CG] iter 18  obj=119006.69
+[CG] iter 19  obj=119006.69
+[CG] iter 20  obj=119006.69
+[CG] iter 21  obj=119006.69
+[CG] iter 22  obj=119006.69
+[CG] iter 23  obj=119006.69
+[CG] iter 24  obj=119006.69
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119006.69  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,44]=0.146, y[3,60]=0.890, y[3,59]=0.110
+[BRANCH] Branch on y[4,44] ≈ 0.146 (μ[44]=0.000)
+[CG] iter  1  obj=119031.21
+[ADD] item 4 pattern#48 cost=26306.40
+[CG] iter  2  obj=119008.54
+[CG] iter  3  obj=119008.54
+[CG] iter  4  obj=119008.54
+[CG] iter  5  obj=119008.54
+[CG] iter  6  obj=119008.54
+[CG] iter  7  obj=119008.54
+[CG] iter  8  obj=119008.54
+[CG] iter  9  obj=119008.54
+[CG] iter 10  obj=119008.54
+[CG] iter 11  obj=119008.54
+[CG] iter 12  obj=119008.54
+[CG] iter 13  obj=119008.54
+[CG] iter 14  obj=119008.54
+[CG] iter 15  obj=119008.54
+[CG] iter 16  obj=119008.54
+[CG] iter 17  obj=119008.54
+[CG] iter 18  obj=119008.54
+[CG] iter 19  obj=119008.54
+[CG] iter 20  obj=119008.54
+[CG] iter 21  obj=119008.54
+[CG] iter 22  obj=119008.54
+[CG] iter 23  obj=119008.54
+[CG] iter 24  obj=119008.54
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119008.54  best=∞  gap=∞
+[INFO] Fractional y values (top): y[3,59]=0.110, y[3,60]=0.890, y[4,42]=0.955, y[4,41]=0.045
+[BRANCH] Branch on y[3,59] ≈ 0.110 (μ[59]=0.000)
+[WARN] RMP infeasible under current constraints. Attempting to restore feasibility via pricing.
+[FAIL] Unable to restore feasibility at this node. Pruning.
+[GAP] bound=inf  best=∞  gap=∞
+[CG] iter  1  obj=119013.44
+[CG] iter  2  obj=119013.44
+[CG] iter  3  obj=119013.44
+[CG] iter  4  obj=119013.44
+[CG] iter  5  obj=119013.44
+[CG] iter  6  obj=119013.44
+[CG] iter  7  obj=119013.44
+[CG] iter  8  obj=119013.44
+[CG] iter  9  obj=119013.44
+[CG] iter 10  obj=119013.44
+[CG] iter 11  obj=119013.44
+[CG] iter 12  obj=119013.44
+[CG] iter 13  obj=119013.44
+[CG] iter 14  obj=119013.44
+[CG] iter 15  obj=119013.44
+[CG] iter 16  obj=119013.44
+[CG] iter 17  obj=119013.44
+[CG] iter 18  obj=119013.44
+[CG] iter 19  obj=119013.44
+[CG] iter 20  obj=119013.44
+[CG] iter 21  obj=119013.44
+[CG] iter 22  obj=119013.44
+[CG] iter 23  obj=119013.44
+[CG] iter 24  obj=119013.44
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119013.44  best=∞  gap=∞
+[INFO] Fractional y values (top): y[4,42]=0.955, y[4,41]=0.045
+[BRANCH] Branch on y[4,42] ≈ 0.955 (μ[42]=-0.374)
+[CG] iter  1  obj=119124.60
+[CG] iter  2  obj=119124.60
+[CG] iter  3  obj=119124.60
+[CG] iter  4  obj=119124.60
+[CG] iter  5  obj=119124.60
+[CG] iter  6  obj=119124.60
+[CG] iter  7  obj=119124.60
+[CG] iter  8  obj=119124.60
+[CG] iter  9  obj=119124.60
+[CG] iter 10  obj=119124.60
+[CG] iter 11  obj=119124.60
+[CG] iter 12  obj=119124.60
+[CG] iter 13  obj=119124.60
+[CG] iter 14  obj=119124.60
+[CG] iter 15  obj=119124.60
+[CG] iter 16  obj=119124.60
+[CG] iter 17  obj=119124.60
+[CG] iter 18  obj=119124.60
+[CG] iter 19  obj=119124.60
+[CG] iter 20  obj=119124.60
+[CG] iter 21  obj=119124.60
+[CG] iter 22  obj=119124.60
+[CG] iter 23  obj=119124.60
+[CG] iter 24  obj=119124.60
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119124.60  best=∞  gap=∞
+[INFO] Restricted IP solved in 0.01s, status=2, obj=118927.50
+[SOL] New incumbent 118927.50 found (restricted IP solution).
+    bound=119124.60  best=118927.50  gap=-0.17%
+[CG] iter  1  obj=119036.10
+[CG] iter  2  obj=119036.10
+[CG] iter  3  obj=119036.10
+[CG] iter  4  obj=119036.10
+[CG] iter  5  obj=119036.10
+[CG] iter  6  obj=119036.10
+[CG] iter  7  obj=119036.10
+[CG] iter  8  obj=119036.10
+[CG] iter  9  obj=119036.10
+[CG] iter 10  obj=119036.10
+[CG] iter 11  obj=119036.10
+[CG] iter 12  obj=119036.10
+[CG] iter 13  obj=119036.10
+[CG] iter 14  obj=119036.10
+[CG] iter 15  obj=119036.10
+[CG] iter 16  obj=119036.10
+[CG] iter 17  obj=119036.10
+[CG] iter 18  obj=119036.10
+[CG] iter 19  obj=119036.10
+[CG] iter 20  obj=119036.10
+[CG] iter 21  obj=119036.10
+[CG] iter 22  obj=119036.10
+[CG] iter 23  obj=119036.10
+[CG] iter 24  obj=119036.10
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119036.10  best=118927.50  gap=-0.09%
+[CG] iter  1  obj=119026.50
+[CG] iter  2  obj=119026.50
+[CG] iter  3  obj=119026.50
+[CG] iter  4  obj=119026.50
+[CG] iter  5  obj=119026.50
+[CG] iter  6  obj=119026.50
+[CG] iter  7  obj=119026.50
+[CG] iter  8  obj=119026.50
+[CG] iter  9  obj=119026.50
+[CG] iter 10  obj=119026.50
+[CG] iter 11  obj=119026.50
+[CG] iter 12  obj=119026.50
+[CG] iter 13  obj=119026.50
+[CG] iter 14  obj=119026.50
+[CG] iter 15  obj=119026.50
+[CG] iter 16  obj=119026.50
+[CG] iter 17  obj=119026.50
+[CG] iter 18  obj=119026.50
+[CG] iter 19  obj=119026.50
+[CG] iter 20  obj=119026.50
+[CG] iter 21  obj=119026.50
+[CG] iter 22  obj=119026.50
+[CG] iter 23  obj=119026.50
+[CG] iter 24  obj=119026.50
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119026.50  best=118927.50  gap=-0.08%
+[WARN] RMP infeasible under current constraints. Attempting to restore feasibility via pricing.
+[FAIL] Unable to restore feasibility at this node. Pruning.
+[GAP] bound=inf  best=118927.50  gap=-inf%
+[CG] iter  1  obj=118952.80
+[CG] iter  2  obj=118952.80
+[CG] iter  3  obj=118952.80
+[CG] iter  4  obj=118952.80
+[CG] iter  5  obj=118952.80
+[CG] iter  6  obj=118952.80
+[CG] iter  7  obj=118952.80
+[CG] iter  8  obj=118952.80
+[CG] iter  9  obj=118952.80
+[CG] iter 10  obj=118952.80
+[CG] iter 11  obj=118952.80
+[CG] iter 12  obj=118952.80
+[CG] iter 13  obj=118952.80
+[CG] iter 14  obj=118952.80
+[CG] iter 15  obj=118952.80
+[CG] iter 16  obj=118952.80
+[CG] iter 17  obj=118952.80
+[CG] iter 18  obj=118952.80
+[CG] iter 19  obj=118952.80
+[CG] iter 20  obj=118952.80
+[CG] iter 21  obj=118952.80
+[CG] iter 22  obj=118952.80
+[CG] iter 23  obj=118952.80
+[CG] iter 24  obj=118952.80
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=118952.80  best=118927.50  gap=-0.02%
+[CG] iter  1  obj=119012.65
+[ADD] item 4 pattern#48 cost=26224.80
+[CG] iter  2  obj=119009.75
+[ADD] item 4 pattern#49 cost=26146.80
+[CG] iter  3  obj=119009.02
+[CG] iter  4  obj=119009.02
+[CG] iter  5  obj=119009.02
+[CG] iter  6  obj=119009.02
+[CG] iter  7  obj=119009.02
+[CG] iter  8  obj=119009.02
+[CG] iter  9  obj=119009.02
+[CG] iter 10  obj=119009.02
+[CG] iter 11  obj=119009.02
+[CG] iter 12  obj=119009.02
+[CG] iter 13  obj=119009.02
+[CG] iter 14  obj=119009.02
+[CG] iter 15  obj=119009.02
+[CG] iter 16  obj=119009.02
+[CG] iter 17  obj=119009.02
+[CG] iter 18  obj=119009.02
+[CG] iter 19  obj=119009.02
+[CG] iter 20  obj=119009.02
+[CG] iter 21  obj=119009.02
+[CG] iter 22  obj=119009.02
+[CG] iter 23  obj=119009.02
+[CG] iter 24  obj=119009.02
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119009.02  best=118927.50  gap=-0.07%
+[CG] iter  1  obj=119277.23
+[CG] iter  2  obj=119277.23
+[CG] iter  3  obj=119277.23
+[CG] iter  4  obj=119277.23
+[CG] iter  5  obj=119277.23
+[CG] iter  6  obj=119277.23
+[CG] iter  7  obj=119277.23
+[CG] iter  8  obj=119277.23
+[CG] iter  9  obj=119277.23
+[CG] iter 10  obj=119277.23
+[CG] iter 11  obj=119277.23
+[CG] iter 12  obj=119277.23
+[CG] iter 13  obj=119277.23
+[CG] iter 14  obj=119277.23
+[CG] iter 15  obj=119277.23
+[CG] iter 16  obj=119277.23
+[CG] iter 17  obj=119277.23
+[CG] iter 18  obj=119277.23
+[CG] iter 19  obj=119277.23
+[CG] iter 20  obj=119277.23
+[CG] iter 21  obj=119277.23
+[CG] iter 22  obj=119277.23
+[CG] iter 23  obj=119277.23
+[CG] iter 24  obj=119277.23
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119277.23  best=118927.50  gap=-0.29%
+[CG] iter  1  obj=119261.94
+[CG] iter  2  obj=119261.94
+[CG] iter  3  obj=119261.94
+[CG] iter  4  obj=119261.94
+[CG] iter  5  obj=119261.94
+[CG] iter  6  obj=119261.94
+[CG] iter  7  obj=119261.94
+[CG] iter  8  obj=119261.94
+[CG] iter  9  obj=119261.94
+[CG] iter 10  obj=119261.94
+[CG] iter 11  obj=119261.94
+[CG] iter 12  obj=119261.94
+[CG] iter 13  obj=119261.94
+[CG] iter 14  obj=119261.94
+[CG] iter 15  obj=119261.94
+[CG] iter 16  obj=119261.94
+[CG] iter 17  obj=119261.94
+[CG] iter 18  obj=119261.94
+[CG] iter 19  obj=119261.94
+[CG] iter 20  obj=119261.94
+[CG] iter 21  obj=119261.94
+[CG] iter 22  obj=119261.94
+[CG] iter 23  obj=119261.94
+[CG] iter 24  obj=119261.94
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119261.94  best=118927.50  gap=-0.28%
+[CG] iter  1  obj=119481.55
+[CG] iter  2  obj=119481.55
+[CG] iter  3  obj=119481.55
+[CG] iter  4  obj=119481.55
+[CG] iter  5  obj=119481.55
+[CG] iter  6  obj=119481.55
+[CG] iter  7  obj=119481.55
+[CG] iter  8  obj=119481.55
+[CG] iter  9  obj=119481.55
+[CG] iter 10  obj=119481.55
+[CG] iter 11  obj=119481.55
+[CG] iter 12  obj=119481.55
+[CG] iter 13  obj=119481.55
+[CG] iter 14  obj=119481.55
+[CG] iter 15  obj=119481.55
+[CG] iter 16  obj=119481.55
+[CG] iter 17  obj=119481.55
+[CG] iter 18  obj=119481.55
+[CG] iter 19  obj=119481.55
+[CG] iter 20  obj=119481.55
+[CG] iter 21  obj=119481.55
+[CG] iter 22  obj=119481.55
+[CG] iter 23  obj=119481.55
+[CG] iter 24  obj=119481.55
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119481.55  best=118927.50  gap=-0.47%
+[CG] iter  1  obj=119502.77
+[CG] iter  2  obj=119502.77
+[CG] iter  3  obj=119502.77
+[CG] iter  4  obj=119502.77
+[CG] iter  5  obj=119502.77
+[CG] iter  6  obj=119502.77
+[CG] iter  7  obj=119502.77
+[CG] iter  8  obj=119502.77
+[CG] iter  9  obj=119502.77
+[CG] iter 10  obj=119502.77
+[CG] iter 11  obj=119502.77
+[CG] iter 12  obj=119502.77
+[CG] iter 13  obj=119502.77
+[CG] iter 14  obj=119502.77
+[CG] iter 15  obj=119502.77
+[CG] iter 16  obj=119502.77
+[CG] iter 17  obj=119502.77
+[CG] iter 18  obj=119502.77
+[CG] iter 19  obj=119502.77
+[CG] iter 20  obj=119502.77
+[CG] iter 21  obj=119502.77
+[CG] iter 22  obj=119502.77
+[CG] iter 23  obj=119502.77
+[CG] iter 24  obj=119502.77
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119502.77  best=118927.50  gap=-0.48%
+[CG] iter  1  obj=119540.07
+[CG] iter  2  obj=119540.07
+[CG] iter  3  obj=119540.07
+[CG] iter  4  obj=119540.07
+[CG] iter  5  obj=119540.07
+[CG] iter  6  obj=119540.07
+[CG] iter  7  obj=119540.07
+[CG] iter  8  obj=119540.07
+[CG] iter  9  obj=119540.07
+[CG] iter 10  obj=119540.07
+[CG] iter 11  obj=119540.07
+[CG] iter 12  obj=119540.07
+[CG] iter 13  obj=119540.07
+[CG] iter 14  obj=119540.07
+[CG] iter 15  obj=119540.07
+[CG] iter 16  obj=119540.07
+[CG] iter 17  obj=119540.07
+[CG] iter 18  obj=119540.07
+[CG] iter 19  obj=119540.07
+[CG] iter 20  obj=119540.07
+[CG] iter 21  obj=119540.07
+[CG] iter 22  obj=119540.07
+[CG] iter 23  obj=119540.07
+[CG] iter 24  obj=119540.07
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119540.07  best=118927.50  gap=-0.52%
+[CG] iter  1  obj=119478.05
+[ADD] item 2 pattern#40 cost=10346.90
+[CG] iter  2  obj=119473.43
+[ADD] item 2 pattern#41 cost=10367.90
+[CG] iter  3  obj=119471.52
+[CG] iter  4  obj=119471.52
+[CG] iter  5  obj=119471.52
+[CG] iter  6  obj=119471.52
+[CG] iter  7  obj=119471.52
+[CG] iter  8  obj=119471.52
+[CG] iter  9  obj=119471.52
+[CG] iter 10  obj=119471.52
+[CG] iter 11  obj=119471.52
+[CG] iter 12  obj=119471.52
+[CG] iter 13  obj=119471.52
+[CG] iter 14  obj=119471.52
+[CG] iter 15  obj=119471.52
+[CG] iter 16  obj=119471.52
+[CG] iter 17  obj=119471.52
+[CG] iter 18  obj=119471.52
+[CG] iter 19  obj=119471.52
+[CG] iter 20  obj=119471.52
+[CG] iter 21  obj=119471.52
+[CG] iter 22  obj=119471.52
+[CG] iter 23  obj=119471.52
+[CG] iter 24  obj=119471.52
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119471.52  best=118927.50  gap=-0.46%
+[CG] iter  1  obj=119594.73
+[ADD] item 0 pattern#19 cost=22790.70
+[ADD] item 1 pattern#12 cost=25031.00
+[ADD] item 2 pattern#39 cost=10410.80
+[CG] iter  2  obj=119499.18
+[ADD] item 2 pattern#40 cost=10369.90
+[CG] iter  3  obj=119484.06
+[CG] iter  4  obj=119484.06
+[ADD] item 2 pattern#41 cost=10429.70
+[CG] iter  5  obj=119483.87
+[CG] iter  6  obj=119483.87
+[CG] iter  7  obj=119483.87
+[CG] iter  8  obj=119483.87
+[CG] iter  9  obj=119483.87
+[CG] iter 10  obj=119483.87
+[CG] iter 11  obj=119483.87
+[CG] iter 12  obj=119483.87
+[CG] iter 13  obj=119483.87
+[CG] iter 14  obj=119483.87
+[CG] iter 15  obj=119483.87
+[CG] iter 16  obj=119483.87
+[CG] iter 17  obj=119483.87
+[CG] iter 18  obj=119483.87
+[CG] iter 19  obj=119483.87
+[CG] iter 20  obj=119483.87
+[CG] iter 21  obj=119483.87
+[CG] iter 22  obj=119483.87
+[CG] iter 23  obj=119483.87
+[CG] iter 24  obj=119483.87
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119483.87  best=118927.50  gap=-0.47%
+[WARN] RMP infeasible under current constraints. Attempting to restore feasibility via pricing.
+[FAIL] Unable to restore feasibility at this node. Pruning.
+[GAP] bound=inf  best=118927.50  gap=-inf%
+[CG] iter  1  obj=119551.33
+[ADD] item 1 pattern#11 cost=24783.20
+[ADD] item 2 pattern#37 cost=10388.90
+[CG] iter  2  obj=119541.78
+[ADD] item 1 pattern#12 cost=24858.00
+[ADD] item 2 pattern#38 cost=10327.00
+[CG] iter  3  obj=119502.12
+[CG] iter  4  obj=119502.12
+[ADD] item 2 pattern#39 cost=10386.80
+[CG] iter  5  obj=119501.94
+[CG] iter  6  obj=119501.94
+[CG] iter  7  obj=119501.94
+[CG] iter  8  obj=119501.94
+[CG] iter  9  obj=119501.94
+[CG] iter 10  obj=119501.94
+[CG] iter 11  obj=119501.94
+[CG] iter 12  obj=119501.94
+[CG] iter 13  obj=119501.94
+[CG] iter 14  obj=119501.94
+[CG] iter 15  obj=119501.94
+[CG] iter 16  obj=119501.94
+[CG] iter 17  obj=119501.94
+[CG] iter 18  obj=119501.94
+[CG] iter 19  obj=119501.94
+[CG] iter 20  obj=119501.94
+[CG] iter 21  obj=119501.94
+[CG] iter 22  obj=119501.94
+[CG] iter 23  obj=119501.94
+[CG] iter 24  obj=119501.94
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119501.94  best=118927.50  gap=-0.48%
+[CG] iter  1  obj=119502.59
+[CG] iter  2  obj=119502.59
+[CG] iter  3  obj=119502.59
+[CG] iter  4  obj=119502.59
+[CG] iter  5  obj=119502.59
+[CG] iter  6  obj=119502.59
+[CG] iter  7  obj=119502.59
+[CG] iter  8  obj=119502.59
+[CG] iter  9  obj=119502.59
+[CG] iter 10  obj=119502.59
+[CG] iter 11  obj=119502.59
+[CG] iter 12  obj=119502.59
+[CG] iter 13  obj=119502.59
+[CG] iter 14  obj=119502.59
+[CG] iter 15  obj=119502.59
+[CG] iter 16  obj=119502.59
+[CG] iter 17  obj=119502.59
+[CG] iter 18  obj=119502.59
+[CG] iter 19  obj=119502.59
+[CG] iter 20  obj=119502.59
+[CG] iter 21  obj=119502.59
+[CG] iter 22  obj=119502.59
+[CG] iter 23  obj=119502.59
+[CG] iter 24  obj=119502.59
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119502.59  best=118927.50  gap=-0.48%
+[CG] iter  1  obj=119577.97
+[ADD] item 0 pattern#19 cost=22790.70
+[ADD] item 1 pattern#10 cost=25031.00
+[ADD] item 2 pattern#34 cost=10351.00
+[ADD] item 4 pattern#34 cost=26111.20
+[CG] iter  2  obj=119494.80
+[ADD] item 0 pattern#20 cost=23051.70
+[ADD] item 2 pattern#35 cost=10369.90
+[ADD] item 3 pattern#16 cost=35831.50
+[ADD] item 4 pattern#35 cost=26190.40
+[CG] iter  3  obj=119460.06
+[CG] iter  4  obj=119460.06
+[CG] iter  5  obj=119460.06
+[CG] iter  6  obj=119460.06
+[CG] iter  7  obj=119460.06
+[CG] iter  8  obj=119460.06
+[CG] iter  9  obj=119460.06
+[CG] iter 10  obj=119460.06
+[CG] iter 11  obj=119460.06
+[CG] iter 12  obj=119460.06
+[CG] iter 13  obj=119460.06
+[CG] iter 14  obj=119460.06
+[CG] iter 15  obj=119460.06
+[CG] iter 16  obj=119460.06
+[CG] iter 17  obj=119460.06
+[CG] iter 18  obj=119460.06
+[CG] iter 19  obj=119460.06
+[CG] iter 20  obj=119460.06
+[CG] iter 21  obj=119460.06
+[CG] iter 22  obj=119460.06
+[CG] iter 23  obj=119460.06
+[CG] iter 24  obj=119460.06
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119460.06  best=118927.50  gap=-0.45%
+[CG] iter  1  obj=119470.47
+[ADD] item 1 pattern#10 cost=24848.20
+[CG] iter  2  obj=119466.59
+[CG] iter  3  obj=119466.59
+[CG] iter  4  obj=119466.59
+[CG] iter  5  obj=119466.59
+[CG] iter  6  obj=119466.59
+[CG] iter  7  obj=119466.59
+[CG] iter  8  obj=119466.59
+[CG] iter  9  obj=119466.59
+[CG] iter 10  obj=119466.59
+[CG] iter 11  obj=119466.59
+[CG] iter 12  obj=119466.59
+[CG] iter 13  obj=119466.59
+[CG] iter 14  obj=119466.59
+[CG] iter 15  obj=119466.59
+[CG] iter 16  obj=119466.59
+[CG] iter 17  obj=119466.59
+[CG] iter 18  obj=119466.59
+[CG] iter 19  obj=119466.59
+[CG] iter 20  obj=119466.59
+[CG] iter 21  obj=119466.59
+[CG] iter 22  obj=119466.59
+[CG] iter 23  obj=119466.59
+[CG] iter 24  obj=119466.59
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119466.59  best=118927.50  gap=-0.45%
+[CG] iter  1  obj=119411.30
+[CG] iter  2  obj=119411.30
+[ADD] item 2 pattern#30 cost=10262.30
+[CG] iter  3  obj=119411.26
+[CG] iter  4  obj=119411.26
+[CG] iter  5  obj=119411.26
+[CG] iter  6  obj=119411.26
+[CG] iter  7  obj=119411.26
+[CG] iter  8  obj=119411.26
+[CG] iter  9  obj=119411.26
+[CG] iter 10  obj=119411.26
+[CG] iter 11  obj=119411.26
+[CG] iter 12  obj=119411.26
+[CG] iter 13  obj=119411.26
+[CG] iter 14  obj=119411.26
+[CG] iter 15  obj=119411.26
+[CG] iter 16  obj=119411.26
+[CG] iter 17  obj=119411.26
+[CG] iter 18  obj=119411.26
+[CG] iter 19  obj=119411.26
+[CG] iter 20  obj=119411.26
+[CG] iter 21  obj=119411.26
+[CG] iter 22  obj=119411.26
+[CG] iter 23  obj=119411.26
+[CG] iter 24  obj=119411.26
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119411.26  best=118927.50  gap=-0.41%
+[CG] iter  1  obj=119413.71
+[CG] iter  2  obj=119413.71
+[CG] iter  3  obj=119413.71
+[CG] iter  4  obj=119413.71
+[CG] iter  5  obj=119413.71
+[CG] iter  6  obj=119413.71
+[CG] iter  7  obj=119413.71
+[CG] iter  8  obj=119413.71
+[CG] iter  9  obj=119413.71
+[CG] iter 10  obj=119413.71
+[CG] iter 11  obj=119413.71
+[CG] iter 12  obj=119413.71
+[CG] iter 13  obj=119413.71
+[CG] iter 14  obj=119413.71
+[CG] iter 15  obj=119413.71
+[CG] iter 16  obj=119413.71
+[CG] iter 17  obj=119413.71
+[CG] iter 18  obj=119413.71
+[CG] iter 19  obj=119413.71
+[CG] iter 20  obj=119413.71
+[CG] iter 21  obj=119413.71
+[CG] iter 22  obj=119413.71
+[CG] iter 23  obj=119413.71
+[CG] iter 24  obj=119413.71
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119413.71  best=118927.50  gap=-0.41%
+[CG] iter  1  obj=119417.62
+[ADD] item 4 pattern#27 cost=26198.00
+[CG] iter  2  obj=119407.61
+[ADD] item 4 pattern#28 cost=26179.20
+[CG] iter  3  obj=119405.09
+[ADD] item 4 pattern#29 cost=26178.80
+[CG] iter  4  obj=119405.08
+[ADD] item 4 pattern#30 cost=26210.40
+[CG] iter  5  obj=119405.03
+[ADD] item 4 pattern#31 cost=26210.80
+[CG] iter  6  obj=119405.01
+[ADD] item 4 pattern#32 cost=26205.60
+[CG] iter  7  obj=119404.71
+[ADD] item 4 pattern#33 cost=26166.40
+[CG] iter  8  obj=119404.66
+[CG] iter  9  obj=119404.66
+[CG] iter 10  obj=119404.66
+[CG] iter 11  obj=119404.66
+[CG] iter 12  obj=119404.66
+[CG] iter 13  obj=119404.66
+[CG] iter 14  obj=119404.66
+[CG] iter 15  obj=119404.66
+[CG] iter 16  obj=119404.66
+[CG] iter 17  obj=119404.66
+[CG] iter 18  obj=119404.66
+[CG] iter 19  obj=119404.66
+[CG] iter 20  obj=119404.66
+[CG] iter 21  obj=119404.66
+[CG] iter 22  obj=119404.66
+[CG] iter 23  obj=119404.66
+[CG] iter 24  obj=119404.66
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119404.66  best=118927.50  gap=-0.40%
+[CG] iter  1  obj=119421.86
+[ADD] item 2 pattern#26 cost=10326.30
+[CG] iter  2  obj=119410.63
+[ADD] item 2 pattern#27 cost=10334.60
+[CG] iter  3  obj=119410.34
+[ADD] item 2 pattern#28 cost=10326.90
+[CG] iter  4  obj=119410.02
+[ADD] item 2 pattern#29 cost=10310.10
+[CG] iter  5  obj=119409.71
+[CG] iter  6  obj=119409.71
+[CG] iter  7  obj=119409.71
+[CG] iter  8  obj=119409.71
+[CG] iter  9  obj=119409.71
+[CG] iter 10  obj=119409.71
+[CG] iter 11  obj=119409.71
+[CG] iter 12  obj=119409.71
+[CG] iter 13  obj=119409.71
+[CG] iter 14  obj=119409.71
+[CG] iter 15  obj=119409.71
+[CG] iter 16  obj=119409.71
+[CG] iter 17  obj=119409.71
+[CG] iter 18  obj=119409.71
+[CG] iter 19  obj=119409.71
+[CG] iter 20  obj=119409.71
+[CG] iter 21  obj=119409.71
+[CG] iter 22  obj=119409.71
+[CG] iter 23  obj=119409.71
+[CG] iter 24  obj=119409.71
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119409.71  best=118927.50  gap=-0.41%
+[CG] iter  1  obj=120093.15
+[ADD] item 1 pattern#8 cost=24809.80
+[ADD] item 3 pattern#14 cost=35455.50
+[ADD] item 4 pattern#13 cost=26597.20
+[CG] iter  2  obj=119654.42
+[ADD] item 3 pattern#15 cost=35427.00
+[ADD] item 4 pattern#14 cost=26620.00
+[CG] iter  3  obj=119629.40
+[ADD] item 4 pattern#15 cost=26584.40
+[CG] iter  4  obj=119628.99
+[CG] iter  5  obj=119628.99
+[CG] iter  6  obj=119628.99
+[CG] iter  7  obj=119628.99
+[CG] iter  8  obj=119628.99
+[CG] iter  9  obj=119628.99
+[CG] iter 10  obj=119628.99
+[CG] iter 11  obj=119628.99
+[CG] iter 12  obj=119628.99
+[CG] iter 13  obj=119628.99
+[CG] iter 14  obj=119628.99
+[CG] iter 15  obj=119628.99
+[CG] iter 16  obj=119628.99
+[CG] iter 17  obj=119628.99
+[CG] iter 18  obj=119628.99
+[CG] iter 19  obj=119628.99
+[CG] iter 20  obj=119628.99
+[CG] iter 21  obj=119628.99
+[CG] iter 22  obj=119628.99
+[CG] iter 23  obj=119628.99
+[CG] iter 24  obj=119628.99
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119628.99  best=118927.50  gap=-0.59%
+[CG] iter  1  obj=119925.67
+[ADD] item 0 pattern#12 cost=23004.00
+[ADD] item 3 pattern#11 cost=35370.50
+[ADD] item 4 pattern#10 cost=26730.80
+[CG] iter  2  obj=119597.84
+[ADD] item 1 pattern#7 cost=24809.80
+[ADD] item 2 pattern#12 cost=10603.40
+[ADD] item 3 pattern#12 cost=35387.00
+[ADD] item 4 pattern#11 cost=26620.00
+[CG] iter  3  obj=119572.59
+[ADD] item 4 pattern#12 cost=26584.40
+[CG] iter  4  obj=119572.49
+[CG] iter  5  obj=119572.49
+[CG] iter  6  obj=119572.49
+[CG] iter  7  obj=119572.49
+[CG] iter  8  obj=119572.49
+[CG] iter  9  obj=119572.49
+[CG] iter 10  obj=119572.49
+[CG] iter 11  obj=119572.49
+[CG] iter 12  obj=119572.49
+[CG] iter 13  obj=119572.49
+[CG] iter 14  obj=119572.49
+[CG] iter 15  obj=119572.49
+[CG] iter 16  obj=119572.49
+[CG] iter 17  obj=119572.49
+[CG] iter 18  obj=119572.49
+[CG] iter 19  obj=119572.49
+[CG] iter 20  obj=119572.49
+[CG] iter 21  obj=119572.49
+[CG] iter 22  obj=119572.49
+[CG] iter 23  obj=119572.49
+[CG] iter 24  obj=119572.49
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119572.49  best=118927.50  gap=-0.54%
+[CG] iter  1  obj=120368.21
+[ADD] item 0 pattern#9 cost=22002.10
+[ADD] item 2 pattern#9 cost=10562.80
+[CG] iter  2  obj=119475.92
+[ADD] item 1 pattern#6 cost=24508.00
+[ADD] item 2 pattern#10 cost=10596.30
+[ADD] item 3 pattern#8 cost=35738.50
+[ADD] item 4 pattern#7 cost=26562.40
+[CG] iter  3  obj=119196.50
+[ADD] item 1 pattern#7 cost=24492.20
+[ADD] item 2 pattern#11 cost=10645.50
+[CG] iter  4  obj=119182.17
+[ADD] item 0 pattern#10 cost=22027.40
+[ADD] item 4 pattern#8 cost=26588.00
+[CG] iter  5  obj=119181.92
+[ADD] item 0 pattern#11 cost=22000.20
+[CG] iter  6  obj=119181.71
+[CG] iter  7  obj=119181.71
+[CG] iter  8  obj=119181.71
+[CG] iter  9  obj=119181.71
+[CG] iter 10  obj=119181.71
+[CG] iter 11  obj=119181.71
+[CG] iter 12  obj=119181.71
+[CG] iter 13  obj=119181.71
+[CG] iter 14  obj=119181.71
+[CG] iter 15  obj=119181.71
+[CG] iter 16  obj=119181.71
+[CG] iter 17  obj=119181.71
+[CG] iter 18  obj=119181.71
+[CG] iter 19  obj=119181.71
+[CG] iter 20  obj=119181.71
+[CG] iter 21  obj=119181.71
+[CG] iter 22  obj=119181.71
+[CG] iter 23  obj=119181.71
+[CG] iter 24  obj=119181.71
+[EARLY-STOP] Column generation stagnation: < 5e-05 rel. improvement for 12 iterations.
+[GAP] bound=119181.71  best=118927.50  gap=-0.21%
+
+Final Objective: 118927.50   (Time elapsed: 354.88 s)
+
+[FINAL] bound=120173.81  best=118927.50  gap=-1.05%
+[INFO] Backorders allowed: False
+Item 0: pattern 10, y=[1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0], q=[99, 303, 0, 78, 0, 256, 0, 182, 0, 215, 0, 206, 0, 166, 0, 109, 0, 219, 0, 224, 0, 318, 0, 193, 0, 106, 0, 206, 0, 552, 0, 0, 0, 0, 203, 0, 238, 0, 217, 0, 265, 0, 248, 0, 252, 0, 0, 0, 0, 288, 0, 516, 0, 0, 0, 284, 0, 149, 0, 271, 0, 198, 0, 351, 0, 0, 0, 0, 300, 0, 0, 0, 213, 0, 154, 0, 220, 0, 256, 0]
+Item 1: pattern 13, y=[1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1], q=[163, 137, 155, 201, 0, 0, 32, 163, 49, 156, 179, 0, 125, 0, 135, 0, 0, 162, 0, 98, 0, 216, 0, 123, 54, 203, 0, 174, 146, 0, 109, 185, 0, 85, 0, 76, 0, 166, 78, 90, 112, 63, 0, 129, 131, 0, 179, 0, 180, 101, 52, 67, 92, 188, 121, 190, 0, 179, 173, 53, 212, 0, 215, 0, 42, 88, 136, 96, 0, 153, 114, 171, 49, 0, 121, 175, 105, 146, 131, 80]
+Item 2: pattern 14, y=[1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0], q=[185, 0, 224, 0, 0, 103, 281, 0, 141, 0, 0, 0, 184, 195, 0, 309, 0, 263, 0, 0, 0, 156, 218, 0, 150, 0, 224, 0, 148, 0, 102, 188, 0, 0, 217, 0, 0, 101, 0, 302, 0, 167, 325, 0, 0, 0, 99, 0, 0, 0, 53, 242, 0, 224, 0, 251, 0, 0, 192, 336, 0, 168, 310, 0, 283, 0, 164, 208, 0, 184, 0, 151, 0, 229, 0, 0, 75, 0, 156, 0]
+Item 3: pattern 24, y=[1, 0, 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0], q=[124, 0, 150, 242, 0, 161, 0, 139, 0, 0, 188, 0, 251, 0, 193, 257, 0, 0, 230, 0, 120, 0, 176, 0, 254, 0, 0, 78, 0, 215, 0, 93, 206, 0, 0, 153, 163, 0, 249, 0, 164, 284, 0, 261, 0, 257, 0, 256, 0, 163, 224, 0, 139, 217, 0, 0, 88, 181, 274, 0, 93, 0, 239, 0, 0, 195, 0, 98, 226, 0, 184, 181, 160, 0, 0, 161, 0, 0, 92, 0]
+Item 4: pattern 18, y=[1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1], q=[254, 0, 0, 0, 347, 0, 0, 272, 0, 0, 321, 0, 256, 0, 149, 0, 399, 0, 171, 0, 0, 157, 300, 0, 407, 0, 0, 374, 0, 0, 183, 269, 0, 0, 176, 0, 398, 0, 0, 192, 0, 0, 101, 210, 0, 243, 0, 209, 0, 194, 0, 0, 209, 0, 0, 0, 134, 317, 0, 203, 0, 83, 0, 360, 0, 329, 0, 314, 0, 238, 0, 147, 0, 0, 255, 0, 158, 0, 0, 107]
+
+=== Detailed execution report (per item) ===
+
+Item 0
+ t | demand | order | inventory_after | backlog
+--------------------------------------------
+ 0 |   99.0 |  99.0 |            0.0 |     0.0
+ 1 |  195.0 | 303.0 |          108.0 |     0.0
+ 2 |  108.0 |   0.0 |            0.0 |     0.0
+ 3 |   11.0 |  78.0 |           67.0 |     0.0
+ 4 |   67.0 |   0.0 |            0.0 |     0.0
+ 5 |  131.0 | 256.0 |          125.0 |     0.0
+ 6 |  125.0 |   0.0 |            0.0 |     0.0
+ 7 |  104.0 | 182.0 |           78.0 |     0.0
+ 8 |   78.0 |   0.0 |            0.0 |     0.0
+ 9 |  123.0 | 215.0 |           92.0 |     0.0
+10 |   92.0 |   0.0 |            0.0 |     0.0
+11 |  150.0 | 206.0 |           56.0 |     0.0
+12 |   56.0 |   0.0 |            0.0 |     0.0
+13 |  130.0 | 166.0 |           36.0 |     0.0
+14 |   36.0 |   0.0 |            0.0 |     0.0
+15 |   73.0 | 109.0 |           36.0 |     0.0
+16 |   36.0 |   0.0 |            0.0 |     0.0
+17 |  194.0 | 219.0 |           25.0 |     0.0
+18 |   25.0 |   0.0 |            0.0 |     0.0
+19 |  159.0 | 224.0 |           65.0 |     0.0
+20 |   65.0 |   0.0 |            0.0 |     0.0
+21 |  137.0 | 318.0 |          181.0 |     0.0
+22 |  181.0 |   0.0 |            0.0 |     0.0
+23 |  155.0 | 193.0 |           38.0 |     0.0
+24 |   38.0 |   0.0 |            0.0 |     0.0
+25 |   80.0 | 106.0 |           26.0 |     0.0
+26 |   26.0 |   0.0 |            0.0 |     0.0
+27 |  187.0 | 206.0 |           19.0 |     0.0
+28 |   19.0 |   0.0 |            0.0 |     0.0
+29 |  176.0 | 552.0 |          376.0 |     0.0
+30 |   85.0 |   0.0 |          291.0 |     0.0
+31 |  121.0 |   0.0 |          170.0 |     0.0
+32 |  144.0 |   0.0 |           26.0 |     0.0
+33 |   26.0 |   0.0 |            0.0 |     0.0
+34 |   91.0 | 203.0 |          112.0 |     0.0
+35 |  112.0 |   0.0 |            0.0 |     0.0
+36 |   81.0 | 238.0 |          157.0 |     0.0
+37 |  157.0 |   0.0 |            0.0 |     0.0
+38 |  164.0 | 217.0 |           53.0 |     0.0
+39 |   53.0 |   0.0 |            0.0 |     0.0
+40 |  142.0 | 265.0 |          123.0 |     0.0
+41 |  123.0 |   0.0 |            0.0 |     0.0
+42 |  114.0 | 248.0 |          134.0 |     0.0
+43 |  134.0 |   0.0 |            0.0 |     0.0
+44 |   67.0 | 252.0 |          185.0 |     0.0
+45 |   16.0 |   0.0 |          169.0 |     0.0
+46 |  141.0 |   0.0 |           28.0 |     0.0
+47 |    4.0 |   0.0 |           24.0 |     0.0
+48 |   24.0 |   0.0 |            0.0 |     0.0
+49 |  185.0 | 288.0 |          103.0 |     0.0
+50 |  103.0 |   0.0 |            0.0 |     0.0
+51 |  182.0 | 516.0 |          334.0 |     0.0
+52 |  172.0 |   0.0 |          162.0 |     0.0
+53 |  161.0 |   0.0 |            1.0 |     0.0
+54 |    1.0 |   0.0 |            0.0 |     0.0
+55 |  157.0 | 284.0 |          127.0 |     0.0
+56 |  127.0 |   0.0 |            0.0 |     0.0
+57 |   86.0 | 149.0 |           63.0 |     0.0
+58 |   63.0 |   0.0 |            0.0 |     0.0
+59 |  187.0 | 271.0 |           84.0 |     0.0
+60 |   84.0 |   0.0 |            0.0 |     0.0
+61 |  181.0 | 198.0 |           17.0 |     0.0
+62 |   17.0 |   0.0 |            0.0 |     0.0
+63 |   49.0 | 351.0 |          302.0 |     0.0
+64 |  146.0 |   0.0 |          156.0 |     0.0
+65 |   57.0 |   0.0 |           99.0 |     0.0
+66 |   62.0 |   0.0 |           37.0 |     0.0
+67 |   37.0 |   0.0 |            0.0 |     0.0
+68 |  140.0 | 300.0 |          160.0 |     0.0
+69 |  115.0 |   0.0 |           45.0 |     0.0
+70 |   24.0 |   0.0 |           21.0 |     0.0
+71 |   21.0 |   0.0 |            0.0 |     0.0
+72 |   82.0 | 213.0 |          131.0 |     0.0
+73 |  131.0 |   0.0 |            0.0 |     0.0
+74 |  126.0 | 154.0 |           28.0 |     0.0
+75 |   28.0 |   0.0 |            0.0 |     0.0
+76 |   78.0 | 220.0 |          142.0 |     0.0
+77 |  142.0 |   0.0 |            0.0 |     0.0
+78 |   75.0 | 256.0 |          181.0 |     0.0
+79 |  181.0 |   0.0 |            0.0 |     0.0
+
+Item 1
+ t | demand | order | inventory_after | backlog
+--------------------------------------------
+ 0 |  163.0 | 163.0 |            0.0 |     0.0
+ 1 |  137.0 | 137.0 |            0.0 |     0.0
+ 2 |  155.0 | 155.0 |            0.0 |     0.0
+ 3 |  175.0 | 201.0 |           26.0 |     0.0
+ 4 |   19.0 |   0.0 |            7.0 |     0.0
+ 5 |    7.0 |   0.0 |            0.0 |     0.0
+ 6 |   32.0 |  32.0 |            0.0 |     0.0
+ 7 |  163.0 | 163.0 |            0.0 |     0.0
+ 8 |   49.0 |  49.0 |            0.0 |     0.0
+ 9 |  156.0 | 156.0 |            0.0 |     0.0
+10 |  148.0 | 179.0 |           31.0 |     0.0
+11 |   31.0 |   0.0 |            0.0 |     0.0
+12 |  101.0 | 125.0 |           24.0 |     0.0
+13 |   24.0 |   0.0 |            0.0 |     0.0
+14 |   95.0 | 135.0 |           40.0 |     0.0
+15 |   30.0 |   0.0 |           10.0 |     0.0
+16 |   10.0 |   0.0 |            0.0 |     0.0
+17 |  156.0 | 162.0 |            6.0 |     0.0
+18 |    6.0 |   0.0 |            0.0 |     0.0
+19 |   50.0 |  98.0 |           48.0 |     0.0
+20 |   48.0 |   0.0 |            0.0 |     0.0
+21 |  184.0 | 216.0 |           32.0 |     0.0
+22 |   32.0 |   0.0 |            0.0 |     0.0
+23 |  123.0 | 123.0 |            0.0 |     0.0
+24 |   54.0 |  54.0 |            0.0 |     0.0
+25 |  187.0 | 203.0 |           16.0 |     0.0
+26 |   16.0 |   0.0 |            0.0 |     0.0
+27 |  174.0 | 174.0 |            0.0 |     0.0
+28 |    6.0 | 146.0 |          140.0 |     0.0
+29 |  140.0 |   0.0 |            0.0 |     0.0
+30 |  109.0 | 109.0 |            0.0 |     0.0
+31 |  159.0 | 185.0 |           26.0 |     0.0
+32 |   26.0 |   0.0 |            0.0 |     0.0
+33 |   67.0 |  85.0 |           18.0 |     0.0
+34 |   18.0 |   0.0 |            0.0 |     0.0
+35 |   57.0 |  76.0 |           19.0 |     0.0
+36 |   19.0 |   0.0 |            0.0 |     0.0
+37 |  166.0 | 166.0 |            0.0 |     0.0
+38 |   78.0 |  78.0 |            0.0 |     0.0
+39 |   90.0 |  90.0 |            0.0 |     0.0
+40 |  112.0 | 112.0 |            0.0 |     0.0
+41 |   47.0 |  63.0 |           16.0 |     0.0
+42 |   16.0 |   0.0 |            0.0 |     0.0
+43 |  129.0 | 129.0 |            0.0 |     0.0
+44 |  120.0 | 131.0 |           11.0 |     0.0
+45 |   11.0 |   0.0 |            0.0 |     0.0
+46 |  153.0 | 179.0 |           26.0 |     0.0
+47 |   26.0 |   0.0 |            0.0 |     0.0
+48 |  180.0 | 180.0 |            0.0 |     0.0
+49 |  101.0 | 101.0 |            0.0 |     0.0
+50 |   52.0 |  52.0 |            0.0 |     0.0
+51 |   67.0 |  67.0 |            0.0 |     0.0
+52 |   92.0 |  92.0 |            0.0 |     0.0
+53 |  188.0 | 188.0 |            0.0 |     0.0
+54 |  121.0 | 121.0 |            0.0 |     0.0
+55 |  146.0 | 190.0 |           44.0 |     0.0
+56 |   44.0 |   0.0 |            0.0 |     0.0
+57 |  179.0 | 179.0 |            0.0 |     0.0
+58 |  173.0 | 173.0 |            0.0 |     0.0
+59 |   53.0 |  53.0 |            0.0 |     0.0
+60 |  197.0 | 212.0 |           15.0 |     0.0
+61 |   15.0 |   0.0 |            0.0 |     0.0
+62 |  174.0 | 215.0 |           41.0 |     0.0
+63 |   41.0 |   0.0 |            0.0 |     0.0
+64 |   42.0 |  42.0 |            0.0 |     0.0
+65 |   88.0 |  88.0 |            0.0 |     0.0
+66 |  136.0 | 136.0 |            0.0 |     0.0
+67 |   65.0 |  96.0 |           31.0 |     0.0
+68 |   31.0 |   0.0 |            0.0 |     0.0
+69 |  153.0 | 153.0 |            0.0 |     0.0
+70 |  114.0 | 114.0 |            0.0 |     0.0
+71 |  171.0 | 171.0 |            0.0 |     0.0
+72 |   45.0 |  49.0 |            4.0 |     0.0
+73 |    4.0 |   0.0 |            0.0 |     0.0
+74 |  121.0 | 121.0 |            0.0 |     0.0
+75 |  175.0 | 175.0 |            0.0 |     0.0
+76 |  105.0 | 105.0 |            0.0 |     0.0
+77 |  146.0 | 146.0 |            0.0 |     0.0
+78 |  131.0 | 131.0 |            0.0 |     0.0
+79 |   80.0 |  80.0 |            0.0 |     0.0
+
+Item 2
+ t | demand | order | inventory_after | backlog
+--------------------------------------------
+ 0 |  163.0 | 185.0 |           22.0 |     0.0
+ 1 |   22.0 |   0.0 |            0.0 |     0.0
+ 2 |  186.0 | 224.0 |           38.0 |     0.0
+ 3 |   34.0 |   0.0 |            4.0 |     0.0
+ 4 |    4.0 |   0.0 |            0.0 |     0.0
+ 5 |  103.0 | 103.0 |            0.0 |     0.0
+ 6 |  174.0 | 281.0 |          107.0 |     0.0
+ 7 |  107.0 |   0.0 |            0.0 |     0.0
+ 8 |   81.0 | 141.0 |           60.0 |     0.0
+ 9 |    1.0 |   0.0 |           59.0 |     0.0
+10 |   55.0 |   0.0 |            4.0 |     0.0
+11 |    4.0 |   0.0 |            0.0 |     0.0
+12 |  184.0 | 184.0 |            0.0 |     0.0
+13 |  194.0 | 195.0 |            1.0 |     0.0
+14 |    1.0 |   0.0 |            0.0 |     0.0
+15 |  173.0 | 309.0 |          136.0 |     0.0
+16 |  136.0 |   0.0 |            0.0 |     0.0
+17 |  157.0 | 263.0 |          106.0 |     0.0
+18 |   26.0 |   0.0 |           80.0 |     0.0
+19 |   49.0 |   0.0 |           31.0 |     0.0
+20 |   31.0 |   0.0 |            0.0 |     0.0
+21 |  156.0 | 156.0 |            0.0 |     0.0
+22 |  167.0 | 218.0 |           51.0 |     0.0
+23 |   51.0 |   0.0 |            0.0 |     0.0
+24 |   78.0 | 150.0 |           72.0 |     0.0
+25 |   72.0 |   0.0 |            0.0 |     0.0
+26 |  177.0 | 224.0 |           47.0 |     0.0
+27 |   47.0 |   0.0 |            0.0 |     0.0
+28 |   26.0 | 148.0 |          122.0 |     0.0
+29 |  122.0 |   0.0 |            0.0 |     0.0
+30 |  102.0 | 102.0 |            0.0 |     0.0
+31 |  161.0 | 188.0 |           27.0 |     0.0
+32 |   21.0 |   0.0 |            6.0 |     0.0
+33 |    6.0 |   0.0 |            0.0 |     0.0
+34 |   71.0 | 217.0 |          146.0 |     0.0
+35 |  116.0 |   0.0 |           30.0 |     0.0
+36 |   30.0 |   0.0 |            0.0 |     0.0
+37 |   66.0 | 101.0 |           35.0 |     0.0
+38 |   35.0 |   0.0 |            0.0 |     0.0
+39 |  168.0 | 302.0 |          134.0 |     0.0
+40 |  134.0 |   0.0 |            0.0 |     0.0
+41 |  167.0 | 167.0 |            0.0 |     0.0
+42 |  166.0 | 325.0 |          159.0 |     0.0
+43 |   89.0 |   0.0 |           70.0 |     0.0
+44 |   30.0 |   0.0 |           40.0 |     0.0
+45 |   40.0 |   0.0 |            0.0 |     0.0
+46 |   72.0 |  99.0 |           27.0 |     0.0
+47 |    5.0 |   0.0 |           22.0 |     0.0
+48 |   11.0 |   0.0 |           11.0 |     0.0
+49 |   11.0 |   0.0 |            0.0 |     0.0
+50 |   53.0 |  53.0 |            0.0 |     0.0
+51 |  175.0 | 242.0 |           67.0 |     0.0
+52 |   67.0 |   0.0 |            0.0 |     0.0
+53 |  143.0 | 224.0 |           81.0 |     0.0
+54 |   81.0 |   0.0 |            0.0 |     0.0
+55 |   94.0 | 251.0 |          157.0 |     0.0
+56 |  146.0 |   0.0 |           11.0 |     0.0
+57 |   11.0 |   0.0 |            0.0 |     0.0
+58 |  192.0 | 192.0 |            0.0 |     0.0
+59 |  180.0 | 336.0 |          156.0 |     0.0
+60 |  156.0 |   0.0 |            0.0 |     0.0
+61 |  168.0 | 168.0 |            0.0 |     0.0
+62 |  127.0 | 310.0 |          183.0 |     0.0
+63 |  183.0 |   0.0 |            0.0 |     0.0
+64 |  165.0 | 283.0 |          118.0 |     0.0
+65 |  118.0 |   0.0 |            0.0 |     0.0
+66 |  164.0 | 164.0 |            0.0 |     0.0
+67 |  112.0 | 208.0 |           96.0 |     0.0
+68 |   96.0 |   0.0 |            0.0 |     0.0
+69 |  138.0 | 184.0 |           46.0 |     0.0
+70 |   46.0 |   0.0 |            0.0 |     0.0
+71 |   54.0 | 151.0 |           97.0 |     0.0
+72 |   97.0 |   0.0 |            0.0 |     0.0
+73 |  151.0 | 229.0 |           78.0 |     0.0
+74 |   75.0 |   0.0 |            3.0 |     0.0
+75 |    3.0 |   0.0 |            0.0 |     0.0
+76 |   36.0 |  75.0 |           39.0 |     0.0
+77 |   39.0 |   0.0 |            0.0 |     0.0
+78 |   70.0 | 156.0 |           86.0 |     0.0
+79 |   86.0 |   0.0 |            0.0 |     0.0
+
+Item 3
+ t | demand | order | inventory_after | backlog
+--------------------------------------------
+ 0 |   57.0 | 124.0 |           67.0 |     0.0
+ 1 |   67.0 |   0.0 |            0.0 |     0.0
+ 2 |  150.0 | 150.0 |            0.0 |     0.0
+ 3 |  199.0 | 242.0 |           43.0 |     0.0
+ 4 |   43.0 |   0.0 |            0.0 |     0.0
+ 5 |  111.0 | 161.0 |           50.0 |     0.0
+ 6 |   50.0 |   0.0 |            0.0 |     0.0
+ 7 |   92.0 | 139.0 |           47.0 |     0.0
+ 8 |   30.0 |   0.0 |           17.0 |     0.0
+ 9 |   17.0 |   0.0 |            0.0 |     0.0
+10 |  180.0 | 188.0 |            8.0 |     0.0
+11 |    8.0 |   0.0 |            0.0 |     0.0
+12 |  135.0 | 251.0 |          116.0 |     0.0
+13 |  116.0 |   0.0 |            0.0 |     0.0
+14 |  193.0 | 193.0 |            0.0 |     0.0
+15 |  174.0 | 257.0 |           83.0 |     0.0
+16 |   52.0 |   0.0 |           31.0 |     0.0
+17 |   31.0 |   0.0 |            0.0 |     0.0
+18 |  128.0 | 230.0 |          102.0 |     0.0
+19 |  102.0 |   0.0 |            0.0 |     0.0
+20 |   66.0 | 120.0 |           54.0 |     0.0
+21 |   54.0 |   0.0 |            0.0 |     0.0
+22 |  165.0 | 176.0 |           11.0 |     0.0
+23 |   11.0 |   0.0 |            0.0 |     0.0
+24 |   56.0 | 254.0 |          198.0 |     0.0
+25 |  160.0 |   0.0 |           38.0 |     0.0
+26 |   38.0 |   0.0 |            0.0 |     0.0
+27 |   27.0 |  78.0 |           51.0 |     0.0
+28 |   51.0 |   0.0 |            0.0 |     0.0
+29 |  118.0 | 215.0 |           97.0 |     0.0
+30 |   97.0 |   0.0 |            0.0 |     0.0
+31 |   93.0 |  93.0 |            0.0 |     0.0
+32 |  140.0 | 206.0 |           66.0 |     0.0
+33 |   39.0 |   0.0 |           27.0 |     0.0
+34 |   27.0 |   0.0 |            0.0 |     0.0
+35 |  153.0 | 153.0 |            0.0 |     0.0
+36 |  125.0 | 163.0 |           38.0 |     0.0
+37 |   38.0 |   0.0 |            0.0 |     0.0
+38 |  145.0 | 249.0 |          104.0 |     0.0
+39 |  104.0 |   0.0 |            0.0 |     0.0
+40 |  164.0 | 164.0 |            0.0 |     0.0
+41 |  175.0 | 284.0 |          109.0 |     0.0
+42 |  109.0 |   0.0 |            0.0 |     0.0
+43 |  134.0 | 261.0 |          127.0 |     0.0
+44 |  127.0 |   0.0 |            0.0 |     0.0
+45 |  174.0 | 257.0 |           83.0 |     0.0
+46 |   83.0 |   0.0 |            0.0 |     0.0
+47 |  128.0 | 256.0 |          128.0 |     0.0
+48 |  128.0 |   0.0 |            0.0 |     0.0
+49 |  163.0 | 163.0 |            0.0 |     0.0
+50 |  172.0 | 224.0 |           52.0 |     0.0
+51 |   52.0 |   0.0 |            0.0 |     0.0
+52 |  139.0 | 139.0 |            0.0 |     0.0
+53 |  157.0 | 217.0 |           60.0 |     0.0
+54 |   57.0 |   0.0 |            3.0 |     0.0
+55 |    3.0 |   0.0 |            0.0 |     0.0
+56 |   88.0 |  88.0 |            0.0 |     0.0
+57 |  181.0 | 181.0 |            0.0 |     0.0
+58 |  192.0 | 274.0 |           82.0 |     0.0
+59 |   82.0 |   0.0 |            0.0 |     0.0
+60 |   83.0 |  93.0 |           10.0 |     0.0
+61 |   10.0 |   0.0 |            0.0 |     0.0
+62 |  135.0 | 239.0 |          104.0 |     0.0
+63 |   38.0 |   0.0 |           66.0 |     0.0
+64 |   66.0 |   0.0 |            0.0 |     0.0
+65 |  155.0 | 195.0 |           40.0 |     0.0
+66 |   40.0 |   0.0 |            0.0 |     0.0
+67 |   98.0 |  98.0 |            0.0 |     0.0
+68 |  150.0 | 226.0 |           76.0 |     0.0
+69 |   76.0 |   0.0 |            0.0 |     0.0
+70 |  184.0 | 184.0 |            0.0 |     0.0
+71 |  181.0 | 181.0 |            0.0 |     0.0
+72 |  121.0 | 160.0 |           39.0 |     0.0
+73 |   17.0 |   0.0 |           22.0 |     0.0
+74 |   22.0 |   0.0 |            0.0 |     0.0
+75 |  133.0 | 161.0 |           28.0 |     0.0
+76 |   11.0 |   0.0 |           17.0 |     0.0
+77 |   17.0 |   0.0 |            0.0 |     0.0
+78 |   58.0 |  92.0 |           34.0 |     0.0
+79 |   34.0 |   0.0 |            0.0 |     0.0
+
+Item 4
+ t | demand | order | inventory_after | backlog
+--------------------------------------------
+ 0 |  200.0 | 254.0 |           54.0 |     0.0
+ 1 |   39.0 |   0.0 |           15.0 |     0.0
+ 2 |    6.0 |   0.0 |            9.0 |     0.0
+ 3 |    9.0 |   0.0 |            0.0 |     0.0
+ 4 |  154.0 | 347.0 |          193.0 |     0.0
+ 5 |  159.0 |   0.0 |           34.0 |     0.0
+ 6 |   34.0 |   0.0 |            0.0 |     0.0
+ 7 |  162.0 | 272.0 |          110.0 |     0.0
+ 8 |   83.0 |   0.0 |           27.0 |     0.0
+ 9 |   27.0 |   0.0 |            0.0 |     0.0
+10 |  180.0 | 321.0 |          141.0 |     0.0
+11 |  141.0 |   0.0 |            0.0 |     0.0
+12 |  167.0 | 256.0 |           89.0 |     0.0
+13 |   89.0 |   0.0 |            0.0 |     0.0
+14 |   50.0 | 149.0 |           99.0 |     0.0
+15 |   99.0 |   0.0 |            0.0 |     0.0
+16 |  199.0 | 399.0 |          200.0 |     0.0
+17 |  200.0 |   0.0 |            0.0 |     0.0
+18 |  126.0 | 171.0 |           45.0 |     0.0
+19 |   29.0 |   0.0 |           16.0 |     0.0
+20 |   16.0 |   0.0 |            0.0 |     0.0
+21 |  157.0 | 157.0 |            0.0 |     0.0
+22 |  180.0 | 300.0 |          120.0 |     0.0
+23 |  120.0 |   0.0 |            0.0 |     0.0
+24 |  158.0 | 407.0 |          249.0 |     0.0
+25 |  162.0 |   0.0 |           87.0 |     0.0
+26 |   87.0 |   0.0 |            0.0 |     0.0
+27 |  167.0 | 374.0 |          207.0 |     0.0
+28 |   32.0 |   0.0 |          175.0 |     0.0
+29 |  175.0 |   0.0 |            0.0 |     0.0
+30 |  183.0 | 183.0 |            0.0 |     0.0
+31 |  160.0 | 269.0 |          109.0 |     0.0
+32 |   76.0 |   0.0 |           33.0 |     0.0
+33 |   33.0 |   0.0 |            0.0 |     0.0
+34 |  100.0 | 176.0 |           76.0 |     0.0
+35 |   76.0 |   0.0 |            0.0 |     0.0
+36 |  191.0 | 398.0 |          207.0 |     0.0
+37 |  175.0 |   0.0 |           32.0 |     0.0
+38 |   32.0 |   0.0 |            0.0 |     0.0
+39 |  133.0 | 192.0 |           59.0 |     0.0
+40 |   49.0 |   0.0 |           10.0 |     0.0
+41 |   10.0 |   0.0 |            0.0 |     0.0
+42 |  101.0 | 101.0 |            0.0 |     0.0
+43 |  114.0 | 210.0 |           96.0 |     0.0
+44 |   96.0 |   0.0 |            0.0 |     0.0
+45 |  194.0 | 243.0 |           49.0 |     0.0
+46 |   49.0 |   0.0 |            0.0 |     0.0
+47 |  117.0 | 209.0 |           92.0 |     0.0
+48 |   92.0 |   0.0 |            0.0 |     0.0
+49 |  162.0 | 194.0 |           32.0 |     0.0
+50 |   20.0 |   0.0 |           12.0 |     0.0
+51 |   12.0 |   0.0 |            0.0 |     0.0
+52 |   11.0 | 209.0 |          198.0 |     0.0
+53 |  125.0 |   0.0 |           73.0 |     0.0
+54 |   66.0 |   0.0 |            7.0 |     0.0
+55 |    7.0 |   0.0 |            0.0 |     0.0
+56 |  134.0 | 134.0 |            0.0 |     0.0
+57 |  171.0 | 317.0 |          146.0 |     0.0
+58 |  146.0 |   0.0 |            0.0 |     0.0
+59 |  147.0 | 203.0 |           56.0 |     0.0
+60 |   56.0 |   0.0 |            0.0 |     0.0
+61 |   59.0 |  83.0 |           24.0 |     0.0
+62 |   24.0 |   0.0 |            0.0 |     0.0
+63 |  199.0 | 360.0 |          161.0 |     0.0
+64 |  161.0 |   0.0 |            0.0 |     0.0
+65 |  200.0 | 329.0 |          129.0 |     0.0
+66 |  129.0 |   0.0 |            0.0 |     0.0
+67 |  179.0 | 314.0 |          135.0 |     0.0
+68 |  135.0 |   0.0 |            0.0 |     0.0
+69 |  108.0 | 238.0 |          130.0 |     0.0
+70 |  130.0 |   0.0 |            0.0 |     0.0
+71 |   79.0 | 147.0 |           68.0 |     0.0
+72 |   30.0 |   0.0 |           38.0 |     0.0
+73 |   38.0 |   0.0 |            0.0 |     0.0
+74 |  110.0 | 255.0 |          145.0 |     0.0
+75 |  145.0 |   0.0 |            0.0 |     0.0
+76 |  109.0 | 158.0 |           49.0 |     0.0
+77 |   22.0 |   0.0 |           27.0 |     0.0
+78 |   27.0 |   0.0 |            0.0 |     0.0
+79 |  107.0 | 107.0 |            0.0 |     0.0
+
+=== Capacity utilization audit ===
+Period | Used  | Capacity | Slack
+-------------------------------
+     0 | 825.0 |    870.0 |  45.0
+     1 | 440.0 |    870.0 | 430.0
+     2 | 529.0 |    870.0 | 341.0
+     3 | 521.0 |    870.0 | 349.0
+     4 | 347.0 |    870.0 | 523.0
+     5 | 520.0 |    870.0 | 350.0
+     6 | 313.0 |    870.0 | 557.0
+     7 | 756.0 |    870.0 | 114.0
+     8 | 190.0 |    870.0 | 680.0
+     9 | 371.0 |    870.0 | 499.0
+    10 | 688.0 |    870.0 | 182.0
+    11 | 206.0 |    870.0 | 664.0
+    12 | 816.0 |    870.0 |  54.0
+    13 | 361.0 |    870.0 | 509.0
+    14 | 477.0 |    870.0 | 393.0
+    15 | 675.0 |    870.0 | 195.0
+    16 | 399.0 |    870.0 | 471.0
+    17 | 644.0 |    870.0 | 226.0
+    18 | 401.0 |    870.0 | 469.0
+    19 | 322.0 |    870.0 | 548.0
+    20 | 120.0 |    870.0 | 750.0
+    21 | 847.0 |    870.0 |  23.0
+    22 | 694.0 |    870.0 | 176.0
+    23 | 316.0 |    870.0 | 554.0
+    24 | 865.0 |    870.0 |   5.0
+    25 | 309.0 |    870.0 | 561.0
+    26 | 224.0 |    870.0 | 646.0
+    27 | 832.0 |    870.0 |  38.0
+    28 | 294.0 |    870.0 | 576.0
+    29 | 767.0 |    870.0 | 103.0
+    30 | 394.0 |    870.0 | 476.0
+    31 | 735.0 |    870.0 | 135.0
+    32 | 206.0 |    870.0 | 664.0
+    33 |  85.0 |    870.0 | 785.0
+    34 | 596.0 |    870.0 | 274.0
+    35 | 229.0 |    870.0 | 641.0
+    36 | 799.0 |    870.0 |  71.0
+    37 | 267.0 |    870.0 | 603.0
+    38 | 544.0 |    870.0 | 326.0
+    39 | 584.0 |    870.0 | 286.0
+    40 | 541.0 |    870.0 | 329.0
+    41 | 514.0 |    870.0 | 356.0
+    42 | 674.0 |    870.0 | 196.0
+    43 | 600.0 |    870.0 | 270.0
+    44 | 383.0 |    870.0 | 487.0
+    45 | 500.0 |    870.0 | 370.0
+    46 | 278.0 |    870.0 | 592.0
+    47 | 465.0 |    870.0 | 405.0
+    48 | 180.0 |    870.0 | 690.0
+    49 | 746.0 |    870.0 | 124.0
+    50 | 329.0 |    870.0 | 541.0
+    51 | 825.0 |    870.0 |  45.0
+    52 | 440.0 |    870.0 | 430.0
+    53 | 629.0 |    870.0 | 241.0
+    54 | 121.0 |    870.0 | 749.0
+    55 | 725.0 |    870.0 | 145.0
+    56 | 222.0 |    870.0 | 648.0
+    57 | 826.0 |    870.0 |  44.0
+    58 | 639.0 |    870.0 | 231.0
+    59 | 863.0 |    870.0 |   7.0
+    60 | 305.0 |    870.0 | 565.0
+    61 | 449.0 |    870.0 | 421.0
+    62 | 764.0 |    870.0 | 106.0
+    63 | 711.0 |    870.0 | 159.0
+    64 | 325.0 |    870.0 | 545.0
+    65 | 612.0 |    870.0 | 258.0
+    66 | 300.0 |    870.0 | 570.0
+    67 | 716.0 |    870.0 | 154.0
+    68 | 526.0 |    870.0 | 344.0
+    69 | 575.0 |    870.0 | 295.0
+    70 | 298.0 |    870.0 | 572.0
+    71 | 650.0 |    870.0 | 220.0
+    72 | 422.0 |    870.0 | 448.0
+    73 | 229.0 |    870.0 | 641.0
+    74 | 530.0 |    870.0 | 340.0
+    75 | 336.0 |    870.0 | 534.0
+    76 | 558.0 |    870.0 | 312.0
+    77 | 146.0 |    870.0 | 724.0
+    78 | 635.0 |    870.0 | 235.0
+    79 | 187.0 |    870.0 | 683.0
+
+Final Objective: 118927.50   (Time elapsed: 354.88 s)
