@@ -1,0 +1,5 @@
+streamlit>=1.37
+gurobipy>=11.0.0
+numpy>=1.26
+supabase>=2.5.1
+python-dotenv>=1.0.1
