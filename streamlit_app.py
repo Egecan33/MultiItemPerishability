@@ -1,9 +1,13 @@
-import os, json
+import os, json, time
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
+from typing import List, Dict, Any
 import numpy as np
+import pandas as pd
 import streamlit as st
 from supabase import create_client, Client
+import plotly.express as px
+import plotly.graph_objects as go
 
 from mip.solver_mip_lefo import solve_instance
 
@@ -12,7 +16,7 @@ DEFAULT_URL = "https://btqqbsnjcsgjvgpuutiw.supabase.co"
 DEFAULT_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0cXFic25qY3NnanZncHV1dGl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU1NDMwODMsImV4cCI6MjA3MTExOTA4M30.gissvSrKruPsYJOHOoLqfzQGLrB4oFVckVwhrUpGJXU"
 
 st.set_page_config(page_title="Perishable Lot-Sizing (LEFO MIP)", layout="wide")
-st.title("Perishable Lot-Sizing — Advanced Generator + LEFO MIP")
+st.title("Perishable Lot-Sizing — Generator • Classes • Batches • Visualizer")
 
 
 # ======================= Helpers ==========================
@@ -28,29 +32,25 @@ def clip_list(xs, lo=None, hi=None):
     return xs
 
 
-def make_series(mode: str, T: int, params: dict, seed: int):
+def make_series(mode: str, T: int, params: dict, seed: int) -> List[float]:
     """
-    Returns a list[float] of length T given:
-      mode in {"scalar","uniform","normal","linear","seasonal","manual"}
+    Returns list[float] of length T given mode in {"scalar","uniform","normal","linear","seasonal","manual"}.
+    If "scalar", returns T copies; caller may store the scalar itself if preferred.
     """
     g = rng(seed)
     if mode == "scalar":
         return [float(params.get("value", 0.0))] * T
-
     if mode == "uniform":
         lo = float(params.get("lo", 0.0))
         hi = float(params.get("hi", 1.0))
         return list(g.uniform(lo, hi, size=T))
-
     if mode == "normal":
         mu = float(params.get("mean", 0.0))
         sd = float(params.get("std", 1.0))
         lo = params.get("clip_lo", None)
         hi = params.get("clip_hi", None)
-        arr = g.normal(mu, sd, size=T)
-        arr = clip_list(arr, lo, hi)
+        arr = clip_list(g.normal(mu, sd, size=T), lo, hi)
         return list(arr)
-
     if mode == "linear":
         base = float(params.get("base", 0.0))
         slope = float(params.get("slope", 0.0))
@@ -60,7 +60,6 @@ def make_series(mode: str, T: int, params: dict, seed: int):
         hi = params.get("clip_hi", None)
         arr = clip_list(arr, lo, hi)
         return list(arr)
-
     if mode == "seasonal":
         base = float(params.get("base", 1.0))
         amp = float(params.get("amp", 0.0))
@@ -75,14 +74,23 @@ def make_series(mode: str, T: int, params: dict, seed: int):
         hi = params.get("clip_hi", None)
         arr = clip_list(arr, lo, hi)
         return list(arr)
-
     if mode == "manual":
         lst = params.get("list", [])
         if len(lst) != T:
             raise ValueError("Manual list length must equal T.")
         return [float(x) for x in lst]
-
     raise ValueError(f"Unknown mode: {mode}")
+
+
+def parse_manual_list(raw: str, T: int) -> List[float]:
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    parts = raw.replace(",", " ").split()
+    vals = [float(x) for x in parts]
+    if len(vals) != T:
+        raise ValueError(f"Manual list length {len(vals)} != T={T}")
+    return vals
 
 
 def supabase_client() -> Client | None:
@@ -103,14 +111,60 @@ def supabase_client() -> Client | None:
         return None
 
 
-# ======================= UI: Sidebar ======================
+# --- helpers for json/supabase ---
+def to_py(o):
+    """Recursively convert NumPy scalars/arrays to plain Python types."""
+    if isinstance(o, dict):
+        return {k: to_py(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [to_py(x) for x in o]
+    if isinstance(o, np.generic):
+        return o.item()
+    return o
+
+
+def ensure_class_row(sb: Client | None, cls: dict) -> str | None:
+    """
+    Upsert one row in 'classes' by name. Returns class_id (uuid) or None.
+    """
+    if sb is None:
+        return None
+    payload = {"name": cls["name"], "spec": to_py(cls)}
+    try:
+        sel = (
+            sb.table("classes")
+            .select("id")
+            .eq("name", payload["name"])
+            .limit(1)
+            .execute()
+        )
+        if sel.data:
+            cid = sel.data[0]["id"]
+            sb.table("classes").update({"spec": payload["spec"]}).eq(
+                "id", cid
+            ).execute()
+            return cid
+        ins = sb.table("classes").insert(payload).execute()
+        return ins.data[0]["id"]
+    except Exception as e:
+        st.warning(f"Could not save class '{payload['name']}': {e}")
+        return None
+
+
+# ======================= Sidebar: global ======================
 with st.sidebar:
     st.header("Global Settings")
-    T = st.number_input("Periods T", min_value=1, value=60, step=1)
-    SEED = st.number_input("Global seed", min_value=0, value=0, step=1)
+    T = st.number_input(
+        "Periods T",
+        min_value=1,
+        value=60,
+        step=1,
+        help="Default periods for ad-hoc Items tab and Classes.",
+    )
+    SEED = st.number_input("Global random seed", min_value=0, value=0, step=1)
 
     st.markdown("---")
-    st.subheader("Demand")
+    st.subheader("Default Demand (Items tab only)")
     dem_lo = st.number_input("Demand min", min_value=0, value=5, step=1)
     dem_hi = st.number_input("Demand max", min_value=1, value=80, step=1)
 
@@ -133,38 +187,809 @@ with st.sidebar:
         "Supabase anon key", value=DEFAULT_ANON, type="password"
     )
 
-# ======================= UI: Capacity tab =================
-st.header("Global Capacity cap_t")
-cap_tab, items_tab, run_tab = st.tabs(["Capacity", "Items", "Generate & Solve"])
+# ===== PRESETS LOADER (place above the Tabs section) =====
+st.session_state.setdefault("classes", [])
 
+# Paste your earlier long baseline block here if you want it preloaded:
+base_presets = [
+    {
+        "name": "baseline_T60_uniformCap_medItems",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 10000,
+    },
+    {
+        "name": "baseline_T60_constantCap_smallItems",
+        "period": 60,
+        "cap_mode": "Constant",
+        "cap_params": {"value": 10000},
+        "n_items": 5,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 10050,
+    },
+    {
+        "name": "baseline_T60_normalCap_medItems",
+        "period": 60,
+        "cap_mode": "Normal",
+        "cap_params": {"mean": 10000, "std": 500, "clip_lo": 8000, "clip_hi": 12000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 10100,
+    },
+    {
+        "name": "tightCap_T60_uniform_8k_9k_medItems",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 8000, "hi": 9000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 10200,
+    },
+    {
+        "name": "looseCap_T60_uniform_12k_14k_largeItems",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 12000, "hi": 14000},
+        "n_items": 15,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 10250,
+    },
+    {
+        "name": "jitteryCap_T60_normal_bigStd_medItems",
+        "period": 60,
+        "cap_mode": "Normal",
+        "cap_params": {"mean": 10000, "std": 1500, "clip_lo": 7000, "clip_hi": 14000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 10300,
+    },
+    {
+        "name": "highDemandVar_T60_uniformCap_medItems",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 150,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 10400,
+    },
+    {
+        "name": "shortShelf_T60_uniformCap_medItems",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 3,
+        "m_hi": 6,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 10450,
+    },
+    {
+        "name": "longShelf_T60_uniformCap_medItems",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 20,
+        "m_hi": 40,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 10500,
+    },
+    {
+        "name": "cheapProd_expensiveHold_T60",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 0.5},
+        "h_mode": "scalar",
+        "h_params": {"value": 1.0},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 10600,
+    },
+    {
+        "name": "expensiveProd_cheapHold_T60",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 5.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.05},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 10650,
+    },
+    {
+        "name": "inflationaryCosts_linear_T60",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "linear",
+        "c_params": {
+            "base": 1.5,
+            "slope": 0.02,
+            "noise_std": 0.05,
+            "clip_lo": 0.0,
+            "clip_hi": 10.0,
+        },
+        "h_mode": "linear",
+        "h_params": {
+            "base": 0.2,
+            "slope": 0.005,
+            "noise_std": 0.02,
+            "clip_lo": 0.0,
+            "clip_hi": 2.0,
+        },
+        "s_mode": "scalar",
+        "s_params": {"value": 50.0},
+        "batch_size": 50,
+        "seed_base": 10700,
+    },
+    {
+        "name": "seasonalCosts_plus_seasonalSetups_T60",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "seasonal",
+        "c_params": {
+            "base": 1.5,
+            "amp": 0.30,
+            "period": 20.0,
+            "phase": 0.0,
+            "noise_std": 0.05,
+        },
+        "h_mode": "seasonal",
+        "h_params": {
+            "base": 0.4,
+            "amp": 0.20,
+            "period": 20.0,
+            "phase": 5.0,
+            "noise_std": 0.02,
+        },
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 100.0,
+            "amp": 0.20,
+            "period": 15.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 10750,
+    },
+    {
+        "name": "spikySetups_normal_T60",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "normal",
+        "s_params": {"mean": 80.0, "std": 25.0, "clip_lo": 20.0, "clip_hi": 200.0},
+        "batch_size": 50,
+        "seed_base": 10800,
+    },
+    {
+        "name": "timeVarying_c_normal_h_uniform_T60",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "normal",
+        "c_params": {"mean": 2.0, "std": 0.8, "clip_lo": 0.5, "clip_hi": 5.0},
+        "h_mode": "uniform",
+        "h_params": {"lo": 0.1, "hi": 0.9},
+        "s_mode": "linear",
+        "s_params": {
+            "base": 60.0,
+            "slope": 0.5,
+            "noise_std": 3.0,
+            "clip_lo": 0.0,
+            "clip_hi": 1e6,
+        },
+        "batch_size": 50,
+        "seed_base": 10850,
+    },
+    {
+        "name": "XLitems_T60_uniformCap",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 40,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 10900,
+    },
+    {
+        "name": "XXLitems_T60_tighterCap",
+        "period": 60,
+        "cap_mode": "Normal",
+        "cap_params": {"mean": 9500, "std": 700, "clip_lo": 7500, "clip_hi": 11500},
+        "n_items": 100,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 20,
+        "seed_base": 10950,
+    },
+    {
+        "name": "longHorizon_T120_largeItems",
+        "period": 120,
+        "cap_mode": "Normal",
+        "cap_params": {"mean": 10000, "std": 800, "clip_lo": 8000, "clip_hi": 12000},
+        "n_items": 15,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 11000,
+    },
+    {
+        "name": "shortHorizon_T30_manyItems_tightCap",
+        "period": 30,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 7000, "hi": 8000},
+        "n_items": 15,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80.0,
+            "amp": 0.10,
+            "period": 30.0,
+            "phase": 0.0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 11050,
+    },
+    {
+        "name": "edge_lowDemand_tightCap_T60",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 100, "hi": 200},
+        "n_items": 8,
+        "dem_lo": 0,
+        "dem_hi": 10,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "scalar",
+        "s_params": {"value": 20.0},
+        "batch_size": 50,
+        "seed_base": 11100,
+    },
+]
+
+more_presets = [
+    {
+        "name": "zeroSetup_manyOrders_T60",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "scalar",
+        "s_params": {"value": 0.0},
+        "batch_size": 50,
+        "seed_base": 12000,
+    },
+    {
+        "name": "hugeSetup_fewOrders_T60",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "scalar",
+        "s_params": {"value": 300.0},
+        "batch_size": 50,
+        "seed_base": 12050,
+    },
+    {
+        "name": "highHold_normalWide_T60",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 1.5},
+        "h_mode": "normal",
+        "h_params": {"mean": 0.6, "std": 0.3, "clip_lo": 0.0, "clip_hi": 2.0},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80,
+            "amp": 0.10,
+            "period": 30,
+            "phase": 0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 12100,
+    },
+    {
+        "name": "costSeasonal_phaseShift_T60",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "seasonal",
+        "c_params": {
+            "base": 2.0,
+            "amp": 0.40,
+            "period": 20,
+            "phase": 5,
+            "noise_std": 0.05,
+        },
+        "h_mode": "seasonal",
+        "h_params": {
+            "base": 0.4,
+            "amp": 0.25,
+            "period": 20,
+            "phase": 0,
+            "noise_std": 0.05,
+        },
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 90,
+            "amp": 0.30,
+            "period": 15,
+            "phase": 10,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 12150,
+    },
+    {
+        "name": "lowDemand_shortShelf_T60",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 3000, "hi": 5000},
+        "n_items": 8,
+        "dem_lo": 0,
+        "dem_hi": 20,
+        "m_lo": 3,
+        "m_hi": 8,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "normal",
+        "s_params": {"mean": 60, "std": 20, "clip_lo": 10, "clip_hi": 200},
+        "batch_size": 50,
+        "seed_base": 12200,
+    },
+    {
+        "name": "highDemand_longShelf_T60",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 12000, "hi": 14000},
+        "n_items": 8,
+        "dem_lo": 50,
+        "dem_hi": 150,
+        "m_lo": 20,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "scalar",
+        "s_params": {"value": 80},
+        "batch_size": 50,
+        "seed_base": 12250,
+    },
+    {
+        "name": "shortHorizon_T20_5items_tightCap",
+        "period": 20,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 5000, "hi": 6000},
+        "n_items": 5,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 20,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "seasonal",
+        "s_params": {
+            "base": 80,
+            "amp": 0.10,
+            "period": 10,
+            "phase": 0,
+            "noise_std": 0.0,
+        },
+        "batch_size": 50,
+        "seed_base": 12300,
+    },
+    {
+        "name": "unstableCap_normalHugeStd_T60",
+        "period": 60,
+        "cap_mode": "Normal",
+        "cap_params": {"mean": 10000, "std": 2500, "clip_lo": 5000, "clip_hi": 16000},
+        "n_items": 8,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "normal",
+        "c_params": {"mean": 2.0, "std": 0.8, "clip_lo": 0.5, "clip_hi": 5.0},
+        "h_mode": "normal",
+        "h_params": {"mean": 0.4, "std": 0.2, "clip_lo": 0.0, "clip_hi": 1.5},
+        "s_mode": "normal",
+        "s_params": {"mean": 80, "std": 40, "clip_lo": 10, "clip_hi": 300},
+        "batch_size": 50,
+        "seed_base": 12350,
+    },
+    {
+        "name": "midHorizon_T90_15items_balanced",
+        "period": 90,
+        "cap_mode": "Normal",
+        "cap_params": {"mean": 10000, "std": 800, "clip_lo": 8000, "clip_hi": 12000},
+        "n_items": 15,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "linear",
+        "c_params": {
+            "base": 1.8,
+            "slope": 0.01,
+            "noise_std": 0.05,
+            "clip_lo": 0.0,
+            "clip_hi": 10.0,
+        },
+        "h_mode": "linear",
+        "h_params": {
+            "base": 0.3,
+            "slope": 0.003,
+            "noise_std": 0.02,
+            "clip_lo": 0.0,
+            "clip_hi": 2.0,
+        },
+        "s_mode": "scalar",
+        "s_params": {"value": 70.0},
+        "batch_size": 50,
+        "seed_base": 12400,
+    },
+    {
+        "name": "XLitems_varCosts_T60",
+        "period": 60,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 9000, "hi": 11000},
+        "n_items": 40,
+        "dem_lo": 5,
+        "dem_hi": 80,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "uniform",
+        "c_params": {"lo": 1.0, "hi": 4.0},
+        "h_mode": "normal",
+        "h_params": {"mean": 0.5, "std": 0.25, "clip_lo": 0.0, "clip_hi": 1.5},
+        "s_mode": "normal",
+        "s_params": {"mean": 100, "std": 35, "clip_lo": 20, "clip_hi": 250},
+        "batch_size": 50,
+        "seed_base": 12450,
+    },
+]
+
+# If nothing queued yet, initialize with presets
+if not st.session_state["classes"]:
+    st.session_state["classes"] = base_presets + more_presets
+else:
+    # Append only missing ones by name
+    have = {c["name"] for c in st.session_state["classes"]}
+    st.session_state["classes"].extend(
+        p for p in (base_presets + more_presets) if p["name"] not in have
+    )
+# ===== END PRESETS LOADER =====
+
+# ======================= Tabs ======================
+cap_tab, items_tab, classes_tab, batch_tab, viz_tab = st.tabs(
+    ["Capacity", "Items", "Classes", "Batch Runner", "Explore & Visualize"]
+)
+
+# ----------------- Capacity tab -----------------
 with cap_tab:
+    st.header("Global Capacity κ_t")
     cap_mode = st.radio(
         "Capacity series mode",
         ["Constant", "Uniform", "Normal", "Manual list/grid"],
         horizontal=True,
     )
     cap_series = None
+
     if cap_mode == "Constant":
-        v = st.number_input("cap value", min_value=0, value=10000, step=100)
+        v = st.number_input(
+            "cap value", min_value=0, value=10000, step=100, key="cap_tab_val"
+        )
         cap_series = [int(v)] * T
+
     elif cap_mode == "Uniform":
-        lo = st.number_input("lo", min_value=0, value=9000, step=100)
-        hi = st.number_input("hi", min_value=0, value=11000, step=100)
+        lo = st.number_input("lo", min_value=0, value=9000, step=100, key="cap_tab_lo")
+        hi = st.number_input("hi", min_value=0, value=11000, step=100, key="cap_tab_hi")
         cap_series = list(
             np.random.default_rng(SEED + 101).integers(lo, hi + 1, size=T)
         )
+
     elif cap_mode == "Normal":
-        mu = st.number_input("mean", min_value=0, value=10000, step=100)
-        sd = st.number_input("std", min_value=0, value=500, step=10)
-        clip_lo = st.number_input("clip_lo", min_value=0, value=0, step=100)
-        clip_hi = st.number_input("clip_hi", min_value=0, value=20000, step=100)
+        mu = st.number_input(
+            "mean", min_value=0, value=10000, step=100, key="cap_tab_mean"
+        )
+        sd = st.number_input("std", min_value=0, value=500, step=10, key="cap_tab_std")
+        clip_lo = st.number_input(
+            "clip_lo", min_value=0, value=0, step=100, key="cap_tab_clo"
+        )
+        clip_hi = st.number_input(
+            "clip_hi", min_value=0, value=20000, step=100, key="cap_tab_chi"
+        )
         arr = np.random.default_rng(SEED + 102).normal(mu, sd, size=T)
         arr = clip_list(arr, clip_lo, clip_hi).round().astype(int)
         cap_series = list(arr)
-    else:
-        # Manual editor
-        import pandas as pd
 
+    else:
         df = pd.DataFrame({"t": list(range(T)), "cap_t": [10000] * T})
         edited = st.data_editor(
             df, use_container_width=True, hide_index=True, num_rows="fixed"
@@ -172,14 +997,13 @@ with cap_tab:
         cap_series = [int(x) for x in edited["cap_t"].tolist()]
 
     st.line_chart(cap_series, height=140)
-    st.caption("Preview of cap_t")
+    st.caption("Preview of κ_t")
 
 
-# ======================= Item dataclass ===================
+# ----------------- Items tab (ad-hoc instance builder) -----------------
 @dataclass
 class ItemSpec:
     item_id: int
-    # costs can be scalar or series generated from chosen mode
     c_mode: str = "scalar"
     c_params: dict = None
     h_mode: str = "scalar"
@@ -216,11 +1040,11 @@ def default_item(i=0):
     )
 
 
-# ======================= UI: Items tab ====================
 if "item_specs" not in st.session_state:
     st.session_state["item_specs"] = [default_item(0), default_item(1), default_item(2)]
 
 with items_tab:
+    st.header("Ad-hoc Items (quick instance)")
     cols = st.columns(3)
     with cols[0]:
         if st.button("➕ Add item"):
@@ -257,8 +1081,7 @@ with items_tab:
                     "dem_hi", value=int(it.dem_hi), key=f"dhi_{idx}"
                 )
             with c4:
-                rcol = st.container()
-                it.remove = rcol.checkbox("Remove", key=f"rm_{idx}", value=False)
+                it.remove = st.checkbox("Remove", key=f"rm_{idx}", value=False)
 
             st.markdown("**c_{i,t} generator**")
             it.c_mode = st.selectbox(
@@ -359,7 +1182,7 @@ with items_tab:
                     value=float(it.c_params.get("clip_hi", 10.0)),
                     key=f"c_sch_{idx}",
                 )
-            else:  # manual
+            else:
                 st.caption("Enter exactly T numbers separated by commas or spaces.")
                 raw = st.text_area(
                     "c list", value=it.c_params.get("raw", ""), key=f"c_raw_{idx}"
@@ -595,84 +1418,58 @@ with items_tab:
                     "shelf life max", value=int(it.m_max), key=f"mhi_{idx}"
                 )
 
-    # Remove checked items
     st.session_state["item_specs"] = [
         it for it in st.session_state["item_specs"] if not it.remove
     ]
 
-# ======================= Generate & Solve =================
-with run_tab:
-    left, right = st.columns([1, 1])
-
-    def parse_manual_list(raw: str, T: int):
-        if not raw.strip():
-            return []
-        # allow commas/spaces/newlines
-        parts = raw.replace(",", " ").split()
-        vals = [float(x) for x in parts]
-        if len(vals) != T:
-            st.error(f"Manual list length {len(vals)} != T={T}")
-            return []
-        return vals
-
-    if st.button("🛠️ Generate instance"):
+    if st.button("🛠️ Generate instance (ad-hoc)"):
         items = {}
         for k, it in enumerate(st.session_state["item_specs"]):
             seed_k = int(SEED + 1000 + 17 * k)
-
-            # demand (integer uniform)
             D = list(
                 np.random.default_rng(seed_k).integers(
                     int(it.dem_lo), int(it.dem_hi) + 1, size=T
                 )
             )
-
-            # shelf life m_{i,t}
-            if it.m_min == it.m_max:
-                Mseq = [int(it.m_min)] * T
-            else:
-                Mseq = list(
+            Mseq = (
+                [int(it.m_min)] * T
+                if it.m_min == it.m_max
+                else list(
                     np.random.default_rng(seed_k + 1).integers(
                         int(it.m_min), int(it.m_max) + 1, size=T
                     )
                 )
-
-            # c_{i,t}
-            c_params = dict(it.c_params or {})
+            )
+            # c
             if it.c_mode == "manual":
-                c_list = parse_manual_list(c_params.get("raw", ""), T)
-                c = c_list if c_list else [float(c_params.get("value", 2.0))] * T
+                c_list = parse_manual_list(it.c_params.get("raw", ""), T)
+                c = c_list if c_list else [float(it.c_params.get("value", 2.0))] * T
             else:
-                c = make_series(it.c_mode, T, c_params, seed_k + 2)
-            # if scalar mode: store scalar; else list
+                c = make_series(it.c_mode, T, dict(it.c_params or {}), seed_k + 2)
             c_out = (
-                float(c_params.get("value", 0.0))
+                float(it.c_params.get("value", 0.0))
                 if it.c_mode == "scalar"
                 else [float(x) for x in c]
             )
-
-            # h_{i,t}
-            h_params = dict(it.h_params or {})
+            # h
             if it.h_mode == "manual":
-                h_list = parse_manual_list(h_params.get("raw", ""), T)
-                h = h_list if h_list else [float(h_params.get("value", 0.4))] * T
+                h_list = parse_manual_list(it.h_params.get("raw", ""), T)
+                h = h_list if h_list else [float(it.h_params.get("value", 0.4))] * T
             else:
-                h = make_series(it.h_mode, T, h_params, seed_k + 3)
+                h = make_series(it.h_mode, T, dict(it.h_params or {}), seed_k + 3)
             h_out = (
-                float(h_params.get("value", 0.0))
+                float(it.h_params.get("value", 0.0))
                 if it.h_mode == "scalar"
                 else [float(x) for x in h]
             )
-
-            # s_{i,t}
-            s_params = dict(it.s_params or {})
+            # s
             if it.s_mode == "manual":
-                s_list = parse_manual_list(s_params.get("raw", ""), T)
-                s = s_list if s_list else [float(s_params.get("value", 80.0))] * T
+                s_list = parse_manual_list(it.s_params.get("raw", ""), T)
+                s = s_list if s_list else [float(it.s_params.get("value", 80.0))] * T
             else:
-                s = make_series(it.s_mode, T, s_params, seed_k + 4)
+                s = make_series(it.s_mode, T, dict(it.s_params or {}), seed_k + 4)
             s_out = (
-                float(s_params.get("value", 0.0))
+                float(it.s_params.get("value", 0.0))
                 if it.s_mode == "scalar"
                 else [float(x) for x in s]
             )
@@ -691,17 +1488,15 @@ with run_tab:
             "items": items,
             "manual_capacity": [int(x) for x in cap_series],
             "warehouse_capacity": (float(W_txt) if W_txt.strip() != "" else None),
+            "meta": {"origin": "adhoc"},
         }
         Path("last_instance.json").write_text(
-            json.dumps(inst, indent=2), encoding="utf-8"
+            json.dumps(to_py(inst), indent=2), encoding="utf-8"
         )
         st.success("Instance saved → last_instance.json")
         st.code(Path("last_instance.json").read_text()[:3000], language="json")
-        with right:
-            st.line_chart(cap_series, height=140)
 
-    st.markdown("---")
-    if st.button("🚀 Solve with LEFO MIP"):
+    if st.button("🚀 Solve (ad-hoc)"):
         if not Path("last_instance.json").exists():
             st.error("Generate an instance first.")
         else:
@@ -713,8 +1508,6 @@ with run_tab:
             st.json(summary)
             st.subheader("Orders")
             st.text("\n".join(orders_txt))
-
-            # Optional logging
             sb = supabase_client()
             if sb is not None:
                 try:
@@ -728,7 +1521,7 @@ with run_tab:
                                 "warehouse_capacity": inst_json.get(
                                     "warehouse_capacity"
                                 ),
-                                "data": inst_json,
+                                "data": to_py(inst_json),
                             }
                         )
                         .execute()
@@ -752,8 +1545,7 @@ with run_tab:
                         .execute()
                     )
                     run_id = run_res.data[0]["id"]
-
-                    # parse orders into rows (item, t, qty)
+                    # parse orders
                     lines = [ln.strip() for ln in orders_txt if ln.strip()]
                     rows, cur_item = [], None
                     for ln in lines:
@@ -780,3 +1572,634 @@ with run_tab:
                     )
                 except Exception as e:
                     st.warning(f"Supabase logging failed: {e}")
+
+# ----------------- Classes tab -----------------
+st.session_state.setdefault("classes", [])
+st.session_state.setdefault("class_queue", [])
+
+with classes_tab:
+    st.header("Solution Classes (define and queue)")
+
+    c_name = st.text_input(
+        "Class name", value="demo_60_uniformcap_meditems", key="cls_name"
+    )
+    c_period = st.number_input(
+        "Periods", min_value=1, value=int(T), step=1, key="cls_period"
+    )
+
+    st.markdown("**Capacity generator (κ_t)**")
+    c_cap_mode = st.selectbox(
+        "mode", ["Constant", "Uniform", "Normal"], index=1, key="cls_cap_mode"
+    )
+    cap_params: Dict[str, Any] = {}
+    if c_cap_mode == "Constant":
+        cap_params["value"] = st.number_input(
+            "cap value", min_value=0, value=10000, step=100, key="cls_cap_val"
+        )
+    elif c_cap_mode == "Uniform":
+        cap_params["lo"] = st.number_input(
+            "lo", min_value=0, value=9000, step=100, key="cls_cap_lo"
+        )
+        cap_params["hi"] = st.number_input(
+            "hi", min_value=0, value=11000, step=100, key="cls_cap_hi"
+        )
+    else:
+        cap_params["mean"] = st.number_input(
+            "mean", min_value=0, value=10000, step=100, key="cls_cap_mean"
+        )
+        cap_params["std"] = st.number_input(
+            "std", min_value=0, value=500, step=10, key="cls_cap_std"
+        )
+        cap_params["clip_lo"] = st.number_input(
+            "clip_lo", min_value=0, value=0, step=100, key="cls_cap_clo"
+        )
+        cap_params["clip_hi"] = st.number_input(
+            "clip_hi", min_value=0, value=20000, step=100, key="cls_cap_chi"
+        )
+
+    st.markdown("**Item count bucket**")
+    bucket = st.selectbox(
+        "bucket",
+        ["Tiny(3)", "Small(5)", "Medium(8)", "Large(15)", "XL(40)", "XXL(100)"],
+        index=2,
+    )
+    bucket_map = {
+        "Tiny(3)": 3,
+        "Small(5)": 5,
+        "Medium(8)": 8,
+        "Large(15)": 15,
+        "XL(40)": 40,
+        "XXL(100)": 100,
+    }
+    n_items = bucket_map[bucket]
+
+    st.markdown("**Demand and Shelf-life per item**")
+    c_dem_lo = st.number_input("demand lo", min_value=0, value=5, step=1)
+    c_dem_hi = st.number_input("demand hi", min_value=1, value=80, step=1)
+    c_m_lo = st.number_input("m min", min_value=1, value=6, step=1)
+    c_m_hi = st.number_input("m max", min_value=1, value=50, step=1)
+
+    st.markdown("**c_it / h_it / s_it generators (applied to all items)**")
+    gen_modes = ["scalar", "uniform", "normal", "linear", "seasonal"]
+    c_mode = st.selectbox("mode (c_it)", gen_modes, index=0, key="cls_c_mode")
+    h_mode = st.selectbox("mode (h_it)", gen_modes, index=0, key="cls_h_mode")
+    s_mode = st.selectbox("mode (s_it)", gen_modes, index=4, key="cls_s_mode")
+
+    def ui_params(prefix: str, mode: str, defaults: dict, key_base: str) -> dict:
+        # key_base differentiates groups (cls_c / cls_h / cls_s)
+        p = {}
+        kb = f"{key_base}_{prefix}"
+
+        if mode == "scalar":
+            p["value"] = st.number_input(
+                f"{prefix} value",
+                value=float(defaults.get("value", 1.0)),
+                key=f"{kb}_value",
+            )
+
+        elif mode == "uniform":
+            p["lo"] = st.number_input(
+                f"{prefix} lo",
+                value=float(defaults.get("lo", 1.0)),
+                key=f"{kb}_lo",
+            )
+            p["hi"] = st.number_input(
+                f"{prefix} hi",
+                value=float(defaults.get("hi", 3.0)),
+                key=f"{kb}_hi",
+            )
+
+        elif mode == "normal":
+            p["mean"] = st.number_input(
+                f"{prefix} mean",
+                value=float(defaults.get("mean", 1.0)),
+                key=f"{kb}_mean",
+            )
+            p["std"] = st.number_input(
+                f"{prefix} std",
+                value=float(defaults.get("std", 0.2)),
+                key=f"{kb}_std",
+            )
+            p["clip_lo"] = st.number_input(
+                f"{prefix} clip_lo",
+                value=float(defaults.get("clip_lo", 0.0)),
+                key=f"{kb}_cliplo",
+            )
+            p["clip_hi"] = st.number_input(
+                f"{prefix} clip_hi",
+                value=float(defaults.get("clip_hi", 10.0)),
+                key=f"{kb}_cliphi",
+            )
+
+        elif mode == "linear":
+            p["base"] = st.number_input(
+                f"{prefix} base",
+                value=float(defaults.get("base", 1.0)),
+                key=f"{kb}_base",
+            )
+            p["slope"] = st.number_input(
+                f"{prefix} slope",
+                value=float(defaults.get("slope", 0.0)),
+                key=f"{kb}_slope",
+            )
+            p["noise_std"] = st.number_input(
+                f"{prefix} noise_std",
+                value=float(defaults.get("noise_std", 0.0)),
+                key=f"{kb}_noise",
+            )
+            p["clip_lo"] = st.number_input(
+                f"{prefix} clip_lo",
+                value=float(defaults.get("clip_lo", 0.0)),
+                key=f"{kb}_lcliplo",
+            )
+            p["clip_hi"] = st.number_input(
+                f"{prefix} clip_hi",
+                value=float(defaults.get("clip_hi", 10.0)),
+                key=f"{kb}_lcliphi",
+            )
+
+        elif mode == "seasonal":
+            p["base"] = st.number_input(
+                f"{prefix} base",
+                value=float(defaults.get("base", 1.0)),
+                key=f"{kb}_sbase",
+            )
+            p["amp"] = st.number_input(
+                f"{prefix} amp",
+                value=float(defaults.get("amp", 0.10)),
+                step=0.01,
+                key=f"{kb}_samp",
+            )
+            p["period"] = st.number_input(
+                f"{prefix} period",
+                value=float(defaults.get("period", 30.0)),
+                key=f"{kb}_speriod",
+            )
+            p["phase"] = st.number_input(
+                f"{prefix} phase",
+                value=float(defaults.get("phase", 0.0)),
+                key=f"{kb}_sphase",
+            )
+            p["noise_std"] = st.number_input(
+                f"{prefix} noise_std",
+                value=float(defaults.get("noise_std", 0.0)),
+                key=f"{kb}_snoise",
+            )
+            p["clip_lo"] = st.number_input(
+                f"{prefix} clip_lo",
+                value=float(defaults.get("clip_lo", 0.0)),
+                key=f"{kb}_scliplo",
+            )
+            p["clip_hi"] = st.number_input(
+                f"{prefix} clip_hi",
+                value=float(defaults.get("clip_hi", 1e6)),
+                key=f"{kb}_scliphi",
+            )
+
+        return p
+
+    # use keyed ui_params
+    c_params = ui_params("c", c_mode, {"value": 2.0}, key_base="cls_c")
+    h_params = ui_params("h", h_mode, {"value": 0.4}, key_base="cls_h")
+    s_params = ui_params(
+        "s", s_mode, {"base": 80.0, "amp": 0.10, "period": 30.0}, key_base="cls_s"
+    )
+
+    batch_size = st.number_input(
+        "Instances per class (batch size)",
+        min_value=1,
+        value=50,
+        step=1,
+        key="cls_batch",
+    )
+    seed_base = st.number_input(
+        "Base seed for this class",
+        min_value=0,
+        value=int(SEED + 10000),
+        step=1,
+        key="cls_seed",
+    )
+
+    if st.button("Add class to queue"):
+        st.session_state["classes"].append(
+            {
+                "name": c_name,
+                "period": int(c_period),
+                "cap_mode": c_cap_mode,
+                "cap_params": cap_params,
+                "n_items": int(n_items),
+                "dem_lo": int(c_dem_lo),
+                "dem_hi": int(c_dem_hi),
+                "m_lo": int(c_m_lo),
+                "m_hi": int(c_m_hi),
+                "c_mode": c_mode,
+                "c_params": c_params,
+                "h_mode": h_mode,
+                "h_params": h_params,
+                "s_mode": s_mode,
+                "s_params": s_params,
+                "batch_size": int(batch_size),
+                "seed_base": int(seed_base),
+            }
+        )
+
+    st.subheader("Queue & Order")
+    # try to use drag-and-drop if available
+    try:
+        from streamlit_sortables import sort_items
+
+        labels = [
+            f"{i+1}. {c['name']} (T={c['period']}, items={c['n_items']}, batch={c['batch_size']})"
+            for i, c in enumerate(st.session_state["classes"])
+        ]
+        order = sort_items(labels, direction="vertical", key="class_sort")
+        # rebuild order
+        new_classes = []
+        for lbl in order:
+            idx = int(lbl.split(".")[0]) - 1
+            new_classes.append(st.session_state["classes"][idx])
+        st.session_state["classes"] = new_classes
+        st.success("Drag-and-drop ordering active.")
+    except Exception:
+        # fallback: numeric order
+        if st.session_state["classes"]:
+            dfq = pd.DataFrame(
+                {
+                    "order": list(range(1, len(st.session_state["classes"]) + 1)),
+                    "name": [c["name"] for c in st.session_state["classes"]],
+                    "T": [c["period"] for c in st.session_state["classes"]],
+                    "items": [c["n_items"] for c in st.session_state["classes"]],
+                    "batch": [c["batch_size"] for c in st.session_state["classes"]],
+                }
+            )
+            edited = st.data_editor(dfq, use_container_width=True, hide_index=True)
+            # re-order by 'order'
+            edited = edited.sort_values("order")
+            new_order = edited["name"].tolist()
+            st.session_state["classes"] = sorted(
+                st.session_state["classes"], key=lambda c: new_order.index(c["name"])
+            )
+            st.info(
+                "Install streamlit-sortables for drag-and-drop: pip install streamlit-sortables"
+            )
+
+    st.dataframe(pd.DataFrame(st.session_state["classes"]))
+    sb_for_classes = supabase_client()
+    if sb_for_classes and st.button("💾 Save queued classes to Supabase"):
+        saved = 0
+        for cls in st.session_state["classes"]:
+            if ensure_class_row(sb_for_classes, cls):
+                saved += 1
+        st.success(f"Saved/updated {saved} class specs in Supabase.")
+
+
+# ----------------- Batch Runner tab -----------------
+with batch_tab:
+    st.header("Batch Runner (generate → solve → log)")
+    sb = supabase_client()
+    if sb is None:
+        st.warning("Supabase not configured (see sidebar). Logging will be skipped.")
+
+    # Prepare class id cache so we can stamp instances/runs
+    class_id_cache = {}
+    if sb is not None:
+        for cls in st.session_state["classes"]:
+            class_id_cache[cls["name"]] = ensure_class_row(sb, cls)
+
+    def generate_cap_series(
+        period: int, mode: str, params: dict, seed: int
+    ) -> List[int]:
+        g = rng(seed)
+        if mode == "Constant":
+            return [int(params.get("value", 10000))] * period
+        if mode == "Uniform":
+            lo, hi = int(params.get("lo", 9000)), int(params.get("hi", 11000))
+            # was: return list(g.integers(lo, hi + 1, size=period))
+            return [int(x) for x in g.integers(lo, hi + 1, size=period)]
+        # Normal
+        mu, sd = float(params.get("mean", 10000)), float(params.get("std", 500))
+        clip_lo, clip_hi = float(params.get("clip_lo", 0)), float(
+            params.get("clip_hi", 2 * mu)
+        )
+        arr = (
+            clip_list(g.normal(mu, sd, size=period), clip_lo, clip_hi)
+            .round()
+            .astype(int)
+        )
+        # was: return list(arr)
+        return [int(x) for x in arr]
+
+    def generate_instance_from_class(cls: dict, j: int) -> dict:
+        period = int(cls["period"])
+        cap = generate_cap_series(
+            period, cls["cap_mode"], cls["cap_params"], cls["seed_base"] + 31 * j
+        )
+        items = {}
+        for i in range(cls["n_items"]):
+            seed_k = int(cls["seed_base"] + 1000 * j + 17 * i)
+            D = list(
+                np.random.default_rng(seed_k).integers(
+                    int(cls["dem_lo"]), int(cls["dem_hi"]) + 1, size=period
+                )
+            )
+            Mseq = list(
+                np.random.default_rng(seed_k + 1).integers(
+                    int(cls["m_lo"]), int(cls["m_hi"]) + 1, size=period
+                )
+            )
+            # c,h,s as sequences (or scalar if mode==scalar)
+            c_seq = make_series(
+                cls["c_mode"], period, dict(cls["c_params"] or {}), seed_k + 2
+            )
+            h_seq = make_series(
+                cls["h_mode"], period, dict(cls["h_params"] or {}), seed_k + 3
+            )
+            s_seq = make_series(
+                cls["s_mode"], period, dict(cls["s_params"] or {}), seed_k + 4
+            )
+            c_out = (
+                float(cls["c_params"].get("value", 0.0))
+                if cls["c_mode"] == "scalar"
+                else [float(x) for x in c_seq]
+            )
+            h_out = (
+                float(cls["h_params"].get("value", 0.0))
+                if cls["h_mode"] == "scalar"
+                else [float(x) for x in h_seq]
+            )
+            s_out = (
+                float(cls["s_params"].get("value", 0.0))
+                if cls["s_mode"] == "scalar"
+                else [float(x) for x in s_seq]
+            )
+            items[str(i)] = {
+                "demand": [int(x) for x in D],
+                "setup": s_out,
+                "c_var": c_out,
+                "h": h_out,
+                "b_var": 0.0,
+                "shelf_seq": [int(x) for x in Mseq],
+            }
+        inst = {
+            "period": period,
+            "items": items,
+            # was: "manual_capacity": cap,
+            "manual_capacity": [int(x) for x in cap],
+            "warehouse_capacity": (float(W_txt) if W_txt.strip() != "" else None),
+            "meta": {"origin": "class", "class_key": cls["name"], "class_params": cls},
+        }
+        return inst
+
+    if st.button("Run queued classes"):
+        total_runs = sum(
+            int(c.get("batch_size", 0)) for c in st.session_state["classes"]
+        )
+        if total_runs <= 0:
+            st.error(
+                "No classes queued (or batch sizes are zero). Add presets or queue classes first."
+            )
+            st.stop()
+
+        prog = st.progress(0.0, text="Running batches...")
+        done = 0
+
+        # sanity log
+        st.write(f"Queued classes: {[c['name'] for c in st.session_state['classes']]}")
+        st.write(f"Total runs: {total_runs}")
+
+        for cls_idx, cls in enumerate(st.session_state["classes"], start=1):
+            st.write(
+                f"### Class {cls_idx}/{len(st.session_state['classes'])}: {cls['name']} (T={cls['period']}, items={cls['n_items']})"
+            )
+            for j in range(int(cls["batch_size"])):
+                st.write(f"- Instance {j+1}/{cls['batch_size']} for '{cls['name']}'")
+                inst = generate_instance_from_class(cls, j)
+
+                # write instance (debug visibility)
+                Path("last_instance.json").write_text(
+                    json.dumps(to_py(inst), indent=2), encoding="utf-8"
+                )
+
+                # solve
+                summary, orders_txt = solve_instance(
+                    "last_instance.json", time_limit=time_limit, mip_gap=mip_gap
+                )
+
+                # log to Supabase (if configured)
+                sb = supabase_client()
+                if sb is not None:
+                    try:
+                        cid = class_id_cache.get(cls["name"])
+                        inst_payload = {
+                            "period": int(inst["period"]),
+                            "manual_capacity": inst.get("manual_capacity"),
+                            "warehouse_capacity": inst.get("warehouse_capacity"),
+                            "data": to_py(inst),
+                        }
+                        if cid:
+                            inst_payload["class_id"] = cid
+                            inst["meta"][
+                                "class_id"
+                            ] = cid  # optional, keeps your meta in sync
+
+                        inst_res = sb.table("instances").insert(inst_payload).execute()
+                        instance_id = inst_res.data[0]["id"]
+
+                        run_payload = {
+                            "instance_id": instance_id,
+                            "time_limit_sec": int(time_limit),
+                            "mip_gap": float(mip_gap),
+                            "status": int(summary.get("status")),
+                            "objective": summary.get("objective"),
+                            "best_bound": summary.get("best_bound"),
+                            "gap": summary.get("gap"),
+                            "runtime_sec": summary.get("runtime_sec"),
+                            "solver_version": "lefo_mip_v2",
+                        }
+                        if cid:
+                            run_payload["class_id"] = cid
+
+                        run_res = sb.table("runs").insert(run_payload).execute()
+
+                        # orders
+                        lines = [ln.strip() for ln in orders_txt if ln.strip()]
+                        rows, cur_item = [], None
+                        for ln in lines:
+                            if ln.startswith("Item"):
+                                cur_item = int(ln.split()[1])
+                            elif "→" in ln:
+                                t_str, qty_str = ln.split("→")
+                                t = int(t_str.strip())
+                                qty = float(qty_str.strip())
+                                rows.append(
+                                    {
+                                        "run_id": run_id,
+                                        "item_id": cur_item,
+                                        "t": t,
+                                        "qty": qty,
+                                    }
+                                )
+                        if rows:
+                            CHUNK = 500
+                            for k in range(0, len(rows), CHUNK):
+                                sb.table("orders").insert(rows[k : k + CHUNK]).execute()
+
+                    except Exception as e:
+                        st.warning(f"Supabase logging failed: {e}")
+                else:
+                    st.info("Supabase disabled; skipping logging.")
+
+                done += 1
+                prog.progress(
+                    done / total_runs, text=f"Running batches... {done}/{total_runs}"
+                )
+
+        st.success("Batch run complete.")
+
+# ----------------- Explore & Visualize tab -----------------
+with viz_tab:
+    st.header("Explore & Visualize (Supabase)")
+    sb = supabase_client()
+    if sb is None:
+        st.info("Configure Supabase in sidebar.")
+    else:
+        # fetch last N runs and their instances, then join in pandas
+        limit = st.number_input("Fetch last N runs", min_value=10, value=1000, step=10)
+        try:
+            runs = (
+                sb.table("runs")
+                .select("*")
+                .order("created_at", desc=True)
+                .limit(int(limit))
+                .execute()
+                .data
+            )
+            inst_ids = list({r["instance_id"] for r in runs})
+            inst = []
+            if inst_ids:
+                # fetch in chunks to avoid URL size limits
+                CH = 500
+                for k in range(0, len(inst_ids), CH):
+                    chunk = inst_ids[k : k + CH]
+                    inst += (
+                        sb.table("instances")
+                        .select("id,period,manual_capacity,data")
+                        .in_("id", chunk)
+                        .execute()
+                        .data
+                    )
+            inst_map = {row["id"]: row for row in inst}
+
+            # Build dataframe
+            recs = []
+            for r in runs:
+                I = inst_map.get(r["instance_id"])
+                if not I:
+                    continue
+                data = I.get("data", {})
+                meta = data.get("meta") or {}
+                items = data.get("items") or {}
+                n_items = len(items)
+                cap = I.get("manual_capacity") or data.get("manual_capacity") or []
+                cap_mean = float(np.mean(cap)) if cap else None
+                class_key = meta.get("class_key", "adhoc")
+                period = I.get("period") or data.get("period")
+                recs.append(
+                    {
+                        "run_id": r["id"],
+                        "created_at": r["created_at"],
+                        "instance_id": r["instance_id"],
+                        "class_key": class_key,
+                        "period": period,
+                        "n_items": n_items,
+                        "cap_mean": cap_mean,
+                        "status": r.get("status"),
+                        "objective": r.get("objective"),
+                        "best_bound": r.get("best_bound"),
+                        "gap": r.get("gap"),
+                        "runtime_sec": r.get("runtime_sec"),
+                    }
+                )
+            df = pd.DataFrame(recs)
+            if df.empty:
+                st.info("No runs found.")
+            else:
+                st.subheader("Summary table")
+                st.dataframe(df)
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    fig = px.scatter(
+                        df,
+                        x="n_items",
+                        y="runtime_sec",
+                        color="class_key",
+                        hover_data=["gap", "objective", "status"],
+                    )
+                    fig.update_layout(height=380, title="Runtime vs #Items")
+                    st.plotly_chart(fig, use_container_width=True)
+                with c2:
+                    fig = px.scatter(
+                        df,
+                        x="cap_mean",
+                        y="runtime_sec",
+                        color="class_key",
+                        hover_data=["gap", "objective", "status"],
+                    )
+                    fig.update_layout(height=380, title="Runtime vs Mean Capacity")
+                    st.plotly_chart(fig, use_container_width=True)
+
+                st.subheader("3D scatter")
+                # choose axes
+                x_axis = st.selectbox("X", ["n_items", "period", "cap_mean"])
+                y_axis = st.selectbox("Y", ["runtime_sec", "gap", "objective"])
+                z_axis = st.selectbox("Z", ["runtime_sec", "gap", "objective"])
+                color_by = st.selectbox("Color", ["class_key", "status"])
+                fig3d = px.scatter_3d(
+                    df.dropna(subset=[x_axis, y_axis, z_axis]),
+                    x=x_axis,
+                    y=y_axis,
+                    z=z_axis,
+                    color=color_by,
+                    symbol="class_key",
+                    hover_data=["run_id", "instance_id"],
+                )
+                fig3d.update_layout(
+                    height=520,
+                    scene=dict(
+                        xaxis_title=x_axis, yaxis_title=y_axis, zaxis_title=z_axis
+                    ),
+                )
+                st.plotly_chart(fig3d, use_container_width=True)
+
+                st.subheader("Class aggregates")
+                agg = (
+                    df.groupby("class_key")
+                    .agg(
+                        runs=("run_id", "count"),
+                        n_items_mean=("n_items", "mean"),
+                        runtime_p50=("runtime_sec", "median"),
+                        runtime_p90=(
+                            "runtime_sec",
+                            lambda x: (
+                                np.percentile(x.dropna(), 90)
+                                if len(x.dropna())
+                                else None
+                            ),
+                        ),
+                        gap_p95=(
+                            "gap",
+                            lambda x: (
+                                np.percentile(
+                                    pd.to_numeric(x, errors="coerce").dropna(), 95
+                                )
+                                if len(pd.to_numeric(x, errors="coerce").dropna())
+                                else None
+                            ),
+                        ),
+                    )
+                    .reset_index()
+                )
+                st.dataframe(agg)
+        except Exception as e:
+            st.error(f"Supabase query failed: {e}")
