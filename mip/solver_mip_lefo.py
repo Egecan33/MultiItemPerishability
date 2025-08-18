@@ -1,5 +1,6 @@
+# mip/solver_mip_lefo.py
 from __future__ import annotations
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple, Optional
 import json
 from pathlib import Path
 import gurobipy as gp
@@ -16,14 +17,6 @@ def _cap_global_from_dem(items: Dict[int, dict], T: int) -> List[int]:
     return [c + buf for c in cap_raw]
 
 
-def _val_at(seq_or_scalar: Union[float, List[float]], t: int) -> float:
-    return (
-        float(seq_or_scalar[t])
-        if isinstance(seq_or_scalar, list)
-        else float(seq_or_scalar)
-    )
-
-
 def solve_instance(
     instance_path: str | Path = "last_instance.json",
     time_limit: int = 0,
@@ -35,12 +28,20 @@ def solve_instance(
     Periods = list(range(T))
     items_raw: Dict[int, dict] = {int(k): v for k, v in data["items"].items()}
 
+    # Global capacity per production period
     cap_global = data.get("manual_capacity")
     if not cap_global:
         cap_global = _cap_global_from_dem(items_raw, T)
 
     W = data.get("warehouse_capacity", None)
 
+    # Helper to read scalar OR per-t sequence
+    def _val_seq(v, t):
+        if isinstance(v, list):
+            return float(v[t])
+        return float(v)
+
+    # model
     m = gp.Model("perishable_LS_compact_LEFO")
     m.Params.OutputFlag = 1
     if time_limit:
@@ -48,7 +49,7 @@ def solve_instance(
     if mip_gap:
         m.Params.MIPGap = float(mip_gap)
 
-    # Feasible arcs and triples with m_{i,t}
+    # Feasible arcs Gamma[(i,t)] and triples
     Gamma: Dict[Tuple[int, int], List[int]] = {}
     Triples: List[Tuple[int, int, int]] = []
     for i, it in items_raw.items():
@@ -60,7 +61,7 @@ def solve_instance(
             for u in us:
                 Triples.append((i, t, u))
 
-    # μ_{i,t}
+    # μ_{it} for setup-link (tight demand window)
     mu = {}
     for i, it in items_raw.items():
         d = list(it["demand"])
@@ -69,11 +70,12 @@ def solve_instance(
             u_max = min(T - 1, t + int(mseq[t]) - 1)
             mu[(i, t)] = sum(d[u] for u in range(t, u_max + 1))
 
-    # Variables
+    # variables
     X = m.addVars(Triples, vtype=GRB.CONTINUOUS, lb=0.0, name="X")
     Y = m.addVars(
         [(i, t) for i in items_raw for t in Periods], vtype=GRB.BINARY, name="Y"
     )
+    # S[i,u,τ] only for τ=0..u-1
     S = {}
     for i, it in items_raw.items():
         for u in Periods:
@@ -82,35 +84,36 @@ def solve_instance(
                     vtype=GRB.CONTINUOUS, lb=0.0, name=f"S_{i}_{u}_{tau}"
                 )
 
-    # Objective with time-varying c_{i,t}, h_{i,t} allowed
+    # objective (g_{itu} = c_{it} + h_{it}(u-t))
     obj = gp.LinExpr()
     for i, t, u in Triples:
-        c = items_raw[i]["c_var"]
-        h = items_raw[i]["h"]
-        g_itu = _val_at(c, t) + _val_at(h, t) * (u - t)
+        c_it = _val_seq(items_raw[i]["c_var"], t)
+        h_it = _val_seq(items_raw[i]["h"], t)
+        g_itu = c_it + h_it * (u - t)
         obj += g_itu * X[i, t, u]
 
-    def s_at(i: int, t: int) -> float:
-        return _val_at(items_raw[i]["setup"], t)
-
+    # setup cost: scalar or s_{i,t} sequence
     for i, t in Y.keys():
-        obj += s_at(i, t) * Y[i, t]
+        s_it = _val_seq(items_raw[i]["setup"], t)
+        obj += s_it * Y[i, t]
     m.setObjective(obj, GRB.MINIMIZE)
 
-    # Global capacity
+    # (1) global capacity per production period
     for t in Periods:
         m.addConstr(
             gp.quicksum(X[i, t, u] for (i, tt, u) in Triples if tt == t)
             <= cap_global[t],
             name=f"cap_global_{t}",
         )
-    # Setup-link with tight μ
+
+    # (2) setup-link with μ_{it}
     for i, t in Y.keys():
         m.addConstr(
             gp.quicksum(X[i, t, u] for u in Gamma[(i, t)]) <= mu[(i, t)] * Y[i, t],
             name=f"setupLink_{i}_{t}",
         )
-    # Warehouse capacity
+
+    # (3) warehouse capacity (optional)
     if W is not None:
         for u in Periods[:-1]:
             inv_u = gp.quicksum(
@@ -122,7 +125,7 @@ def solve_instance(
             )
             m.addConstr(inv_u <= float(W), name=f"whcap_{u}")
 
-    # Demand balance (no backorders)
+    # (4) demand balance (no backorders)
     for i, it in items_raw.items():
         d = list(it["demand"])
         for u in Periods:
@@ -131,7 +134,7 @@ def solve_instance(
                 gp.quicksum(X[i, t, u] for t in origins) == d[u], name=f"demand_{i}_{u}"
             )
 
-    # LEFO
+    # (5) LEFO (freshest-first)
     for i, it in items_raw.items():
         d = list(it["demand"])
         for u in Periods:
@@ -153,9 +156,10 @@ def solve_instance(
                         name=f"lefo_older_{i}_{u}_{tau}",
                     )
 
+    # solve
     m.optimize()
 
-    # Reports
+    # simple report
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     orders_txt = []
