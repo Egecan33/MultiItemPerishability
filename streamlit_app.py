@@ -184,9 +184,7 @@ def ensure_class_row(sb: Client | None, cls: dict) -> str | None:
 
 
 def dedupe_queue_by_name():
-    """Keep first occurrence; drop later duplicates by 'name'."""
-    seen = set()
-    out = []
+    seen, out = set(), []
     for c in st.session_state.get("classes", []):
         nm = c.get("name")
         if nm not in seen:
@@ -935,6 +933,14 @@ with classes_tab:
     # --- Classes in Supabase ---
     db_map = st.session_state.get("db_classes", {})
     st.subheader("Classes in Supabase")
+
+    # Reload DB
+    cdb0 = st.columns(1)[0]
+    if cdb0.button("🔄 Refresh from Supabase"):
+        rows = fetch_classes(supabase_client())
+        st.session_state["db_classes"] = {r["name"]: r for r in rows}
+        st.success("Reloaded classes from DB.")
+
     if db_map:
         df_db = pd.DataFrame(
             [
@@ -954,39 +960,23 @@ with classes_tab:
             "Select DB classes", options=sorted(db_map.keys()), key="pick_db"
         )
 
-        cdb1, cdb2, cdb3 = st.columns(3)
+        cdb1, cdb2 = st.columns(2)
         with cdb1:
-            if st.button("➕ Queue selected DB"):
-                existing = {c["name"] for c in st.session_state["classes"]}
-                added = 0
-                for name in pick_db:
-                    spec = db_map[name]["spec"]
-                    if spec["name"] not in existing:
-                        st.session_state["classes"].append(spec)
-                        added += 1
+            if st.button("➕ Queue selected (DB)"):
+                # Add chosen specs to queue (no duplicates)
+                st.session_state["classes"] += [
+                    db_map[name]["spec"] for name in pick_db
+                ]
                 dedupe_queue_by_name()
-                st.success(f"Queued {added} DB class(es).")
+                st.success("Queued selected DB class(es).")
 
         with cdb2:
-            if st.button("📥 Queue ALL DB (replace queue)"):
-                # replace queue with everything in DB, then dedupe just in case
+            if st.button("📥 Replace queue with ALL DB"):
                 st.session_state["classes"] = [r["spec"] for r in db_map.values()]
                 dedupe_queue_by_name()
                 st.success(
-                    f"Queued {len(st.session_state['classes'])} class(es) from DB."
+                    f"Queue replaced with {len(st.session_state['classes'])} DB class(es)."
                 )
-
-        with cdb3:
-            if st.button("🔄 Refresh classes from Supabase"):
-                rows = fetch_classes(supabase_client())
-                st.session_state["db_classes"] = {r["name"]: r for r in rows}
-                # convenience: if queue is empty, auto-fill from DB
-                if not st.session_state.get("classes"):
-                    st.session_state["classes"] = [r["spec"] for r in rows]
-                    dedupe_queue_by_name()
-                    st.success("Reloaded & filled queue from DB.")
-                else:
-                    st.success("Reloaded.")
     else:
         st.info("No classes in Supabase yet. Save some or push local presets.")
 
@@ -1073,12 +1063,8 @@ with classes_tab:
             "clip_hi", min_value=0, value=20000, step=100, key="cls_cap_chi"
         )
 
-    st.markdown("**Item count bucket**")
-    bucket = st.selectbox(
-        "bucket",
-        ["Tiny(3)", "Small(5)", "Medium(8)", "Large(15)", "XL(40)", "XXL(100)"],
-        index=2,
-    )
+    st.markdown("**Item count**")
+    use_custom_n = st.checkbox("Use custom item count", value=False, key="use_custom_n")
     bucket_map = {
         "Tiny(3)": 3,
         "Small(5)": 5,
@@ -1087,7 +1073,16 @@ with classes_tab:
         "XL(40)": 40,
         "XXL(100)": 100,
     }
-    n_items = bucket_map[bucket]
+    if use_custom_n:
+        n_items = st.number_input("n_items (custom)", min_value=1, value=8, step=1)
+    else:
+        bucket = st.selectbox(
+            "bucket",
+            list(bucket_map.keys()),
+            index=2,
+            key="bucket_pick",
+        )
+        n_items = bucket_map[bucket]
 
     st.markdown("**Demand and Shelf-life per item**")
     c_dem_lo = st.number_input("demand lo", min_value=0, value=5, step=1)
@@ -1259,60 +1254,90 @@ with classes_tab:
             }
         )
 
+    dedupe_queue_by_name()
+
     st.subheader("Queue & Order")
-    # try to use drag-and-drop if available
+
+    # stable labels (no numeric prefixes)
+    labels = [
+        f"{c['name']} · T={c['period']} · items={c['n_items']} · batch={c['batch_size']}"
+        for c in st.session_state["classes"]
+    ]
+    label_to_class = {lbl: cls for lbl, cls in zip(labels, st.session_state["classes"])}
+
     try:
-        from streamlit_sortables import sort_items
+        from streamlit_sortables import sort_items  # type: ignore
 
-        labels = [
-            f"{i+1}. {c['name']} (T={c['period']}, items={c['n_items']}, batch={c['batch_size']})"
-            for i, c in enumerate(st.session_state["classes"])
+        # dynamic key forces refresh when labels change
+        sort_key = f"class_sort_{hash(tuple(labels))}"
+        ordered_labels = sort_items(labels, direction="vertical", key=sort_key)
+
+        # rebuild queue from the *labels* we just got back
+        st.session_state["classes"] = [
+            label_to_class[lbl] for lbl in ordered_labels if lbl in label_to_class
         ]
-        order = sort_items(labels, direction="vertical", key="class_sort")
-        # rebuild order
-        new_classes = []
-        for lbl in order:
-            idx = int(lbl.split(".")[0]) - 1
-            new_classes.append(st.session_state["classes"][idx])
-        st.session_state["classes"] = new_classes
-        st.success("Drag-and-drop ordering active.")
+        st.caption("Drag-and-drop ordering active.")
     except Exception:
-        # fallback: numeric order
-        if st.session_state["classes"]:
-            dfq = pd.DataFrame(
+        st.info(
+            "Install streamlit-sortables for drag-and-drop: pip install streamlit-sortables"
+        )
+
+    def _reset_sortables_state():
+        for k in list(st.session_state.keys()):
+            if k.startswith("class_sort_"):
+                st.session_state.pop(k, None)
+
+    # Quick table view
+    if st.session_state["classes"]:
+        dfq = pd.DataFrame(
+            [
                 {
-                    "order": list(range(1, len(st.session_state["classes"]) + 1)),
-                    "name": [c["name"] for c in st.session_state["classes"]],
-                    "T": [c["period"] for c in st.session_state["classes"]],
-                    "items": [c["n_items"] for c in st.session_state["classes"]],
-                    "batch": [c["batch_size"] for c in st.session_state["classes"]],
+                    "name": c["name"],
+                    "T": c["period"],
+                    "items": c["n_items"],
+                    "batch": c["batch_size"],
                 }
-            )
-            edited = st.data_editor(dfq, use_container_width=True, hide_index=True)
-            # re-order by 'order'
-            edited = edited.sort_values("order")
-            new_order = edited["name"].tolist()
-            st.session_state["classes"] = sorted(
-                st.session_state["classes"], key=lambda c: new_order.index(c["name"])
-            )
-            st.info(
-                "Install streamlit-sortables for drag-and-drop: pip install streamlit-sortables"
+                for c in st.session_state["classes"]
+            ]
+        )
+        st.dataframe(dfq, use_container_width=True)
+
+    # Remove/clear controls
+    rm_names = st.multiselect(
+        "Select queued classes to remove",
+        options=[c["name"] for c in st.session_state["classes"]],
+        key="rm_from_queue",
+    )
+    c_rm, c_clr, c_save = st.columns(3)
+    with c_rm:
+        if st.button("🗑️ Remove selected from queue"):
+            before = len(st.session_state["classes"])
+            st.session_state["classes"] = [
+                c for c in st.session_state["classes"] if c["name"] not in rm_names
+            ]
+            _reset_sortables_state()
+            st.success(
+                f"Removed {before - len(st.session_state['classes'])} class(es)."
             )
 
-    st.dataframe(pd.DataFrame(st.session_state["classes"]))
-    sb_for_classes = supabase_client()
-    if sb_for_classes and st.button("💾 Save queued classes to Supabase"):
-        dedupe_queue_by_name()
-        saved = 0
-        for cls in st.session_state["classes"]:
-            if ensure_class_row(sb_for_classes, cls):  # updates if name exists
-                saved += 1
-        st.success(f"Saved/updated {saved} class spec(s) in Supabase (unique by name).")
+    with c_clr:
+        if st.button("🧹 Clear queue"):
+            st.session_state["classes"] = []
+            _reset_sortables_state()
+            st.success("Queue cleared.")
 
-    if st.button("🔄 Reload classes from Supabase"):
-        rows = fetch_classes(supabase_client())
-        st.session_state["db_classes"] = {r["name"]: r for r in rows}
-        st.success("Reloaded.")
+    with c_save:
+        sb_for_classes = supabase_client()
+        if sb_for_classes and st.button(
+            "💾 Save queued classes to Supabase", key="save_to_db"
+        ):
+            dedupe_queue_by_name()
+            saved = 0
+            for cls in st.session_state["classes"]:
+                if ensure_class_row(sb_for_classes, cls):  # upsert by name
+                    saved += 1
+            _reset_sortables_state()
+            st.success(f"Saved/updated {saved} unique class spec(s) to Supabase.")
 
 
 # ----------------- Batch Runner tab -----------------
@@ -1520,29 +1545,61 @@ with batch_tab:
 
         st.success("Batch run complete.")
 
-# ----------------- Explore & Visualize tab -----------------
+# new tab
 with viz_tab:
+    # ----------------- Explore & Visualize tab -----------------
     st.header("Explore & Visualize (Supabase)")
     sb = supabase_client()
     if sb is None:
         st.info("Configure Supabase in sidebar.")
     else:
-        # fetch last N runs and their instances, then join in pandas
-        limit = st.number_input("Fetch last N runs", min_value=10, value=1000, step=10)
-        try:
-            runs = (
-                sb.table("runs")
-                .select("*")
-                .order("created_at", desc=True)
-                .limit(int(limit))
-                .execute()
-                .data
+        # ---- Controls: limit + refresh ----
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            limit = st.number_input(
+                "Fetch last N runs",
+                min_value=10,
+                value=3000,  # ⬅️ default 3000
+                step=100,
+                key="vis_limit",
             )
+        with c2:
+            if st.button("🔄 Refresh data", key="vis_refresh"):
+                try:
+                    st.rerun()
+                except Exception:
+                    st.experimental_rerun()
+
+        # ---- Helper: paginate Supabase fetch to bypass 1000-row caps ----
+        def fetch_runs_keyset(sb_client: Client, total: int, page_size: int = 1000):
+            out, last_seen = [], None
+            select_cols = (
+                "id,created_at,instance_id,status,objective,best_bound,gap,runtime_sec"
+            )
+            while len(out) < total:
+                need = min(page_size, total - len(out))
+                q = (
+                    sb_client.table("runs")
+                    .select(select_cols)
+                    .order("created_at", desc=True)
+                )
+                if last_seen is not None:
+                    q = q.lt("created_at", last_seen)  # ← keyset (seek) pagination
+                batch = q.limit(need).execute().data
+                if not batch:
+                    break
+                out.extend(batch)
+                last_seen = batch[-1]["created_at"]  # next page starts “after” this
+            return out
+
+        try:
+            # ⚠️ Use the paginated fetch instead of .limit()
+            runs = fetch_runs_keyset(sb, int(limit))
+
             inst_ids = list({r["instance_id"] for r in runs})
             inst = []
             if inst_ids:
-                # fetch in chunks to avoid URL size limits
-                CH = 500
+                CH = 500  # chunk to avoid URL size limits
                 for k in range(0, len(inst_ids), CH):
                     chunk = inst_ids[k : k + CH]
                     inst += (
@@ -1585,11 +1642,12 @@ with viz_tab:
                     }
                 )
             df = pd.DataFrame(recs)
+
             if df.empty:
                 st.info("No runs found.")
             else:
                 st.subheader("Summary table")
-                st.dataframe(df)
+                st.dataframe(df, use_container_width=True)
 
                 c1, c2 = st.columns(2)
                 with c1:
@@ -1614,7 +1672,6 @@ with viz_tab:
                     st.plotly_chart(fig, use_container_width=True)
 
                 st.subheader("3D scatter")
-                # choose axes
                 x_axis = st.selectbox("X", ["n_items", "period", "cap_mean"])
                 y_axis = st.selectbox("Y", ["runtime_sec", "gap", "objective"])
                 z_axis = st.selectbox("Z", ["runtime_sec", "gap", "objective"])
@@ -1664,6 +1721,94 @@ with viz_tab:
                     )
                     .reset_index()
                 )
-                st.dataframe(agg)
+                st.dataframe(agg, use_container_width=True)
+
+                # -------- More visuals (only if df exists) --------
+                st.subheader("More visuals")
+
+                # 1) Runtime distribution per class (box)
+                fig_box = px.box(
+                    df.dropna(subset=["runtime_sec"]),
+                    x="class_key",
+                    y="runtime_sec",
+                    points="all",
+                    hover_data=["n_items", "period", "gap", "objective", "status"],
+                )
+                fig_box.update_layout(
+                    height=420, title="Runtime distribution per class"
+                )
+                st.plotly_chart(fig_box, use_container_width=True)
+
+                # 2) Gap vs Runtime (log-x), color by class
+                df_numgap = df.copy()
+                df_numgap["gap_num"] = pd.to_numeric(df_numgap["gap"], errors="coerce")
+                fig_gap = px.scatter(
+                    df_numgap.dropna(subset=["gap_num", "runtime_sec"]),
+                    x="runtime_sec",
+                    y="gap_num",
+                    color="class_key",
+                    hover_data=["n_items", "period", "objective", "status"],
+                )
+                fig_gap.update_layout(height=380, title="Gap vs Runtime (log x)")
+                fig_gap.update_xaxes(type="log")
+                st.plotly_chart(fig_gap, use_container_width=True)
+
+                # 3) Heatmap (NaNs remain transparent)
+                bins = [0, 5, 10, 20, 50, 100, np.inf]
+                labels = ["≤5", "6-10", "11-20", "21-50", "51-100", "100+"]
+                df_hm = df.copy()
+                df_hm["items_bin"] = pd.cut(df_hm["n_items"], bins=bins, labels=labels)
+                pt = (
+                    df_hm.dropna(subset=["runtime_sec"])
+                    .groupby(["class_key", "items_bin"])["runtime_sec"]
+                    .median()
+                    .unstack("items_bin")
+                    .reindex(columns=labels)
+                )
+                fig_hm = px.imshow(
+                    pt,
+                    labels=dict(
+                        x="items_bin", y="class_key", color="median runtime (sec)"
+                    ),
+                    aspect="auto",
+                )
+                fig_hm.update_layout(
+                    height=420, title="Median runtime heatmap (class × #items bin)"
+                )
+                fig_hm.update_traces(hoverongaps=False)
+                st.plotly_chart(fig_hm, use_container_width=True)
+
+                # 4) Runs over time (daily)
+                df_time = df.copy()
+                dt_parsed = pd.to_datetime(
+                    df_time["created_at"], format="ISO8601", utc=True, errors="coerce"
+                )
+                df_time["date"] = dt_parsed.dt.date
+                ts = df_time.groupby(["date", "class_key"], as_index=False)[
+                    "run_id"
+                ].count()
+                fig_ts = px.line(
+                    ts, x="date", y="run_id", color="class_key", markers=True
+                )
+                fig_ts.update_layout(
+                    height=380, title="Runs per day by class", yaxis_title="# runs"
+                )
+                st.plotly_chart(fig_ts, use_container_width=True)
+
+                # 5) Objective vs Runtime, bubble size = #items
+                fig_bub = px.scatter(
+                    df.dropna(subset=["objective", "runtime_sec"]),
+                    x="runtime_sec",
+                    y="objective",
+                    size="n_items",
+                    color="class_key",
+                    hover_data=["gap", "status", "cap_mean", "period"],
+                    size_max=20,
+                )
+                fig_bub.update_layout(
+                    height=420, title="Objective vs Runtime (bubble size = #items)"
+                )
+                st.plotly_chart(fig_bub, use_container_width=True)
+
         except Exception as e:
             st.error(f"Supabase query failed: {e}")

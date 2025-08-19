@@ -1,5 +1,6 @@
 # mip/solver_mip_lefo.py
 from __future__ import annotations
+import time
 from typing import Dict, List, Tuple, Optional
 import json
 from pathlib import Path
@@ -171,29 +172,72 @@ def solve_instance(
 
     m.optimize()
 
-    # report
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    orders_txt = []
-    for i in items_raw:
-        orders_txt.append(f"Item {i} — orders (t → qty)")
-        for t in Periods:
-            qty = sum(X[i, t, u].X for u in Gamma[(i, t)] if (i, t, u) in X)
-            if qty > 1e-6:
-                orders_txt.append(f"  {t:2d} → {qty:8.3f}")
-        orders_txt.append("")
-    (out_dir / "orders.txt").write_text("\n".join(orders_txt), encoding="utf-8")
-
+    status = m.Status
     summary = {
-        "status": int(m.Status),
-        "objective": getattr(m, "ObjVal", None),
-        "best_bound": getattr(m, "ObjBound", None),
-        "gap": getattr(m, "MIPGap", None),
-        "runtime_sec": getattr(m, "Runtime", None),
-        "n_items": len(items_raw),
-        "T": T,
+        "status": int(status),
+        "objective": None,
+        "best_bound": None,
+        "gap": None,
+        "runtime_sec": float(getattr(m, "Runtime", 0.0)),
+        "solver_version": "gurobi_12_0_3",
     }
-    (out_dir / "summary.json").write_text(
-        json.dumps(summary, indent=2), encoding="utf-8"
-    )
+
+    # best bound, gap if available
+    try:
+        summary["best_bound"] = float(m.ObjBound)
+    except Exception:
+        pass
+    try:
+        # MIPGap only defined when there's an incumbent
+        summary["gap"] = float(m.MIPGap)
+    except Exception:
+        pass
+
+    orders_txt = []
+
+    # Only read variable values if a solution exists
+    if m.SolCount and status not in (
+        GRB.INFEASIBLE,
+        GRB.INF_OR_UNBD,
+        GRB.UNBOUNDED,
+    ):
+        # report
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        orders_txt = []
+        for i in items_raw:
+            orders_txt.append(f"Item {i} — orders (t → qty)")
+            for t in Periods:
+                qty = sum(X[i, t, u].X for u in Gamma[(i, t)] if (i, t, u) in X)
+                if qty > 1e-6:
+                    orders_txt.append(f"  {t:2d} → {qty:8.3f}")
+            orders_txt.append("")
+        (out_dir / "orders.txt").write_text("\n".join(orders_txt), encoding="utf-8")
+
+        summary = {
+            "status": int(m.Status),
+            "objective": getattr(m, "ObjVal", None),
+            "best_bound": getattr(m, "ObjBound", None),
+            "gap": getattr(m, "MIPGap", None),
+            "runtime_sec": getattr(m, "Runtime", None),
+            "n_items": len(items_raw),
+            "T": T,
+        }
+        (out_dir / "summary.json").write_text(
+            json.dumps(summary, indent=2), encoding="utf-8"
+        )
+        try:
+            summary["objective"] = float(m.ObjVal)
+        except Exception:
+            pass
+    else:
+        # Infeasible or no incumbent: try to write an IIS for debugging
+        try:
+            m.computeIIS()
+            iis_path = f"iis_{int(time.time())}.ilp"
+            m.write(iis_path)
+            summary["iis_file"] = iis_path
+        except Exception:
+            pass
+
     return summary, orders_txt
