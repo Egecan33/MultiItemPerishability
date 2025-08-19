@@ -1,6 +1,8 @@
 streamlit>=1.37
-gurobipy>=11.0.0
 numpy>=1.26
+pandas>=2.2
+plotly>=5.20.0
 supabase>=2.5.1
 python-dotenv>=1.0.1
-plotly>=5.20.0
+gurobipy>=11.0.0
+streamlit-sortables>=0.2.0

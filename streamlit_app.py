@@ -111,6 +111,38 @@ def supabase_client() -> Client | None:
         return None
 
 
+# --- Safe JSON dumper that converts NumPy types ---
+def dumps_safe(obj) -> str:
+    def _conv(o):
+        import numpy as _np
+
+        if isinstance(o, (_np.integer,)):
+            return int(o)
+        if isinstance(o, (_np.floating,)):
+            return float(o)
+        if isinstance(o, _np.ndarray):
+            return o.tolist()
+        raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
+    return json.dumps(obj, default=_conv, indent=2)
+
+
+def fetch_classes(sb: Client | None) -> list[dict]:
+    if sb is None:
+        return []
+    try:
+        return (
+            sb.table("classes")
+            .select("id,name,spec,created_at")
+            .order("created_at", desc=False)
+            .execute()
+            .data
+        )
+    except Exception as e:
+        st.warning(f"Could not load classes: {e}")
+        return []
+
+
 # --- helpers for json/supabase ---
 def to_py(o):
     """Recursively convert NumPy scalars/arrays to plain Python types."""
@@ -151,6 +183,18 @@ def ensure_class_row(sb: Client | None, cls: dict) -> str | None:
         return None
 
 
+def dedupe_queue_by_name():
+    """Keep first occurrence; drop later duplicates by 'name'."""
+    seen = set()
+    out = []
+    for c in st.session_state.get("classes", []):
+        nm = c.get("name")
+        if nm not in seen:
+            out.append(c)
+            seen.add(nm)
+    st.session_state["classes"] = out
+
+
 # ======================= Sidebar: global ======================
 with st.sidebar:
     st.header("Global Settings")
@@ -187,11 +231,19 @@ with st.sidebar:
         "Supabase anon key", value=DEFAULT_ANON, type="password"
     )
 
-# ===== PRESETS LOADER (place above the Tabs section) =====
-st.session_state.setdefault("classes", [])
+# ===== CLASS SOURCE OF TRUTH: Supabase + optional local presets =====
+st.session_state.setdefault("classes", [])  # queue to run
+st.session_state.setdefault("db_classes", {})  # classes from DB
+st.session_state.setdefault("local_presets", {})  # small, in-code stash
 
-# Paste your earlier long baseline block here if you want it preloaded:
-base_presets = [
+# 1) Load from Supabase (source of truth)
+_sb_boot = supabase_client()
+_rows = fetch_classes(_sb_boot)
+st.session_state["db_classes"] = {r["name"]: r for r in _rows}  # name -> row
+
+# 2) (Optional) keep a FEW local presets here for convenience.
+#    They are NOT auto-queued and NOT auto-saved; you'll pick them in the UI.
+LOCAL_PRESETS = [
     {
         "name": "baseline_T60_uniformCap_medItems",
         "period": 60,
@@ -218,31 +270,6 @@ base_presets = [
         "seed_base": 10000,
     },
     {
-        "name": "baseline_T60_constantCap_smallItems",
-        "period": 60,
-        "cap_mode": "Constant",
-        "cap_params": {"value": 10000},
-        "n_items": 5,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 10050,
-    },
-    {
         "name": "baseline_T60_normalCap_medItems",
         "period": 60,
         "cap_mode": "Normal",
@@ -267,684 +294,9 @@ base_presets = [
         "batch_size": 50,
         "seed_base": 10100,
     },
-    {
-        "name": "tightCap_T60_uniform_8k_9k_medItems",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 8000, "hi": 9000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 10200,
-    },
-    {
-        "name": "looseCap_T60_uniform_12k_14k_largeItems",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 12000, "hi": 14000},
-        "n_items": 15,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 10250,
-    },
-    {
-        "name": "jitteryCap_T60_normal_bigStd_medItems",
-        "period": 60,
-        "cap_mode": "Normal",
-        "cap_params": {"mean": 10000, "std": 1500, "clip_lo": 7000, "clip_hi": 14000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 10300,
-    },
-    {
-        "name": "highDemandVar_T60_uniformCap_medItems",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 150,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 10400,
-    },
-    {
-        "name": "shortShelf_T60_uniformCap_medItems",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 3,
-        "m_hi": 6,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 10450,
-    },
-    {
-        "name": "longShelf_T60_uniformCap_medItems",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 20,
-        "m_hi": 40,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 10500,
-    },
-    {
-        "name": "cheapProd_expensiveHold_T60",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 0.5},
-        "h_mode": "scalar",
-        "h_params": {"value": 1.0},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 10600,
-    },
-    {
-        "name": "expensiveProd_cheapHold_T60",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 5.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.05},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 10650,
-    },
-    {
-        "name": "inflationaryCosts_linear_T60",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "linear",
-        "c_params": {
-            "base": 1.5,
-            "slope": 0.02,
-            "noise_std": 0.05,
-            "clip_lo": 0.0,
-            "clip_hi": 10.0,
-        },
-        "h_mode": "linear",
-        "h_params": {
-            "base": 0.2,
-            "slope": 0.005,
-            "noise_std": 0.02,
-            "clip_lo": 0.0,
-            "clip_hi": 2.0,
-        },
-        "s_mode": "scalar",
-        "s_params": {"value": 50.0},
-        "batch_size": 50,
-        "seed_base": 10700,
-    },
-    {
-        "name": "seasonalCosts_plus_seasonalSetups_T60",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "seasonal",
-        "c_params": {
-            "base": 1.5,
-            "amp": 0.30,
-            "period": 20.0,
-            "phase": 0.0,
-            "noise_std": 0.05,
-        },
-        "h_mode": "seasonal",
-        "h_params": {
-            "base": 0.4,
-            "amp": 0.20,
-            "period": 20.0,
-            "phase": 5.0,
-            "noise_std": 0.02,
-        },
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 100.0,
-            "amp": 0.20,
-            "period": 15.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 10750,
-    },
-    {
-        "name": "spikySetups_normal_T60",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "normal",
-        "s_params": {"mean": 80.0, "std": 25.0, "clip_lo": 20.0, "clip_hi": 200.0},
-        "batch_size": 50,
-        "seed_base": 10800,
-    },
-    {
-        "name": "timeVarying_c_normal_h_uniform_T60",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "normal",
-        "c_params": {"mean": 2.0, "std": 0.8, "clip_lo": 0.5, "clip_hi": 5.0},
-        "h_mode": "uniform",
-        "h_params": {"lo": 0.1, "hi": 0.9},
-        "s_mode": "linear",
-        "s_params": {
-            "base": 60.0,
-            "slope": 0.5,
-            "noise_std": 3.0,
-            "clip_lo": 0.0,
-            "clip_hi": 1e6,
-        },
-        "batch_size": 50,
-        "seed_base": 10850,
-    },
-    {
-        "name": "XLitems_T60_uniformCap",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 40,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 10900,
-    },
-    {
-        "name": "XXLitems_T60_tighterCap",
-        "period": 60,
-        "cap_mode": "Normal",
-        "cap_params": {"mean": 9500, "std": 700, "clip_lo": 7500, "clip_hi": 11500},
-        "n_items": 100,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 20,
-        "seed_base": 10950,
-    },
-    {
-        "name": "longHorizon_T120_largeItems",
-        "period": 120,
-        "cap_mode": "Normal",
-        "cap_params": {"mean": 10000, "std": 800, "clip_lo": 8000, "clip_hi": 12000},
-        "n_items": 15,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 11000,
-    },
-    {
-        "name": "shortHorizon_T30_manyItems_tightCap",
-        "period": 30,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 7000, "hi": 8000},
-        "n_items": 15,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 11050,
-    },
-    {
-        "name": "edge_lowDemand_tightCap_T60",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 100, "hi": 200},
-        "n_items": 8,
-        "dem_lo": 0,
-        "dem_hi": 10,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "scalar",
-        "s_params": {"value": 20.0},
-        "batch_size": 50,
-        "seed_base": 11100,
-    },
 ]
-
-more_presets = [
-    {
-        "name": "zeroSetup_manyOrders_T60",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "scalar",
-        "s_params": {"value": 0.0},
-        "batch_size": 50,
-        "seed_base": 12000,
-    },
-    {
-        "name": "hugeSetup_fewOrders_T60",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "scalar",
-        "s_params": {"value": 300.0},
-        "batch_size": 50,
-        "seed_base": 12050,
-    },
-    {
-        "name": "highHold_normalWide_T60",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 1.5},
-        "h_mode": "normal",
-        "h_params": {"mean": 0.6, "std": 0.3, "clip_lo": 0.0, "clip_hi": 2.0},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80,
-            "amp": 0.10,
-            "period": 30,
-            "phase": 0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 12100,
-    },
-    {
-        "name": "costSeasonal_phaseShift_T60",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "seasonal",
-        "c_params": {
-            "base": 2.0,
-            "amp": 0.40,
-            "period": 20,
-            "phase": 5,
-            "noise_std": 0.05,
-        },
-        "h_mode": "seasonal",
-        "h_params": {
-            "base": 0.4,
-            "amp": 0.25,
-            "period": 20,
-            "phase": 0,
-            "noise_std": 0.05,
-        },
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 90,
-            "amp": 0.30,
-            "period": 15,
-            "phase": 10,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 12150,
-    },
-    {
-        "name": "lowDemand_shortShelf_T60",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 3000, "hi": 5000},
-        "n_items": 8,
-        "dem_lo": 0,
-        "dem_hi": 20,
-        "m_lo": 3,
-        "m_hi": 8,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "normal",
-        "s_params": {"mean": 60, "std": 20, "clip_lo": 10, "clip_hi": 200},
-        "batch_size": 50,
-        "seed_base": 12200,
-    },
-    {
-        "name": "highDemand_longShelf_T60",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 12000, "hi": 14000},
-        "n_items": 8,
-        "dem_lo": 50,
-        "dem_hi": 150,
-        "m_lo": 20,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "scalar",
-        "s_params": {"value": 80},
-        "batch_size": 50,
-        "seed_base": 12250,
-    },
-    {
-        "name": "shortHorizon_T20_5items_tightCap",
-        "period": 20,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 5000, "hi": 6000},
-        "n_items": 5,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 20,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80,
-            "amp": 0.10,
-            "period": 10,
-            "phase": 0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 12300,
-    },
-    {
-        "name": "unstableCap_normalHugeStd_T60",
-        "period": 60,
-        "cap_mode": "Normal",
-        "cap_params": {"mean": 10000, "std": 2500, "clip_lo": 5000, "clip_hi": 16000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "normal",
-        "c_params": {"mean": 2.0, "std": 0.8, "clip_lo": 0.5, "clip_hi": 5.0},
-        "h_mode": "normal",
-        "h_params": {"mean": 0.4, "std": 0.2, "clip_lo": 0.0, "clip_hi": 1.5},
-        "s_mode": "normal",
-        "s_params": {"mean": 80, "std": 40, "clip_lo": 10, "clip_hi": 300},
-        "batch_size": 50,
-        "seed_base": 12350,
-    },
-    {
-        "name": "midHorizon_T90_15items_balanced",
-        "period": 90,
-        "cap_mode": "Normal",
-        "cap_params": {"mean": 10000, "std": 800, "clip_lo": 8000, "clip_hi": 12000},
-        "n_items": 15,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "linear",
-        "c_params": {
-            "base": 1.8,
-            "slope": 0.01,
-            "noise_std": 0.05,
-            "clip_lo": 0.0,
-            "clip_hi": 10.0,
-        },
-        "h_mode": "linear",
-        "h_params": {
-            "base": 0.3,
-            "slope": 0.003,
-            "noise_std": 0.02,
-            "clip_lo": 0.0,
-            "clip_hi": 2.0,
-        },
-        "s_mode": "scalar",
-        "s_params": {"value": 70.0},
-        "batch_size": 50,
-        "seed_base": 12400,
-    },
-    {
-        "name": "XLitems_varCosts_T60",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 40,
-        "dem_lo": 5,
-        "dem_hi": 80,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "uniform",
-        "c_params": {"lo": 1.0, "hi": 4.0},
-        "h_mode": "normal",
-        "h_params": {"mean": 0.5, "std": 0.25, "clip_lo": 0.0, "clip_hi": 1.5},
-        "s_mode": "normal",
-        "s_params": {"mean": 100, "std": 35, "clip_lo": 20, "clip_hi": 250},
-        "batch_size": 50,
-        "seed_base": 12450,
-    },
-]
-
-# If nothing queued yet, initialize with presets
-if not st.session_state["classes"]:
-    st.session_state["classes"] = base_presets + more_presets
-else:
-    # Append only missing ones by name
-    have = {c["name"] for c in st.session_state["classes"]}
-    st.session_state["classes"].extend(
-        p for p in (base_presets + more_presets) if p["name"] not in have
-    )
-# ===== END PRESETS LOADER =====
+st.session_state["local_presets"] = {p["name"]: p for p in LOCAL_PRESETS}
+# ===== END =====
 
 # ======================= Tabs ======================
 cap_tab, items_tab, classes_tab, batch_tab, viz_tab = st.tabs(
@@ -1580,6 +932,110 @@ st.session_state.setdefault("class_queue", [])
 with classes_tab:
     st.header("Solution Classes (define and queue)")
 
+    # --- Classes in Supabase ---
+    db_map = st.session_state.get("db_classes", {})
+    st.subheader("Classes in Supabase")
+    if db_map:
+        df_db = pd.DataFrame(
+            [
+                {
+                    "name": r["name"],
+                    "period": r["spec"].get("period"),
+                    "#items": r["spec"].get("n_items"),
+                    "cap_mode": r["spec"].get("cap_mode"),
+                    "created_at": r.get("created_at"),
+                }
+                for r in db_map.values()
+            ]
+        )
+        st.dataframe(df_db, use_container_width=True)
+
+        pick_db = st.multiselect(
+            "Select DB classes", options=sorted(db_map.keys()), key="pick_db"
+        )
+
+        cdb1, cdb2, cdb3 = st.columns(3)
+        with cdb1:
+            if st.button("➕ Queue selected DB"):
+                existing = {c["name"] for c in st.session_state["classes"]}
+                added = 0
+                for name in pick_db:
+                    spec = db_map[name]["spec"]
+                    if spec["name"] not in existing:
+                        st.session_state["classes"].append(spec)
+                        added += 1
+                dedupe_queue_by_name()
+                st.success(f"Queued {added} DB class(es).")
+
+        with cdb2:
+            if st.button("📥 Queue ALL DB (replace queue)"):
+                # replace queue with everything in DB, then dedupe just in case
+                st.session_state["classes"] = [r["spec"] for r in db_map.values()]
+                dedupe_queue_by_name()
+                st.success(
+                    f"Queued {len(st.session_state['classes'])} class(es) from DB."
+                )
+
+        with cdb3:
+            if st.button("🔄 Refresh classes from Supabase"):
+                rows = fetch_classes(supabase_client())
+                st.session_state["db_classes"] = {r["name"]: r for r in rows}
+                # convenience: if queue is empty, auto-fill from DB
+                if not st.session_state.get("classes"):
+                    st.session_state["classes"] = [r["spec"] for r in rows]
+                    dedupe_queue_by_name()
+                    st.success("Reloaded & filled queue from DB.")
+                else:
+                    st.success("Reloaded.")
+    else:
+        st.info("No classes in Supabase yet. Save some or push local presets.")
+
+    # --- Local presets (in code) ---
+    lp_map = st.session_state.get("local_presets", {})
+    st.subheader("Local presets (in code)")
+    if lp_map:
+        df_lp = pd.DataFrame(
+            [
+                {
+                    "name": p["name"],
+                    "period": p["period"],
+                    "#items": p["n_items"],
+                    "cap_mode": p["cap_mode"],
+                }
+                for p in lp_map.values()
+            ]
+        )
+        st.dataframe(df_lp, use_container_width=True)
+
+        pick_local = st.multiselect(
+            "Select local presets", options=sorted(lp_map.keys()), key="pick_local"
+        )
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("➕ Queue selected local"):
+                for name in pick_local:
+                    st.session_state["classes"].append(lp_map[name])
+                dedupe_queue_by_name()
+                st.success("Queued selected local preset(s).")
+
+        with c2:
+            if st.button("⬆️ Save selected local to Supabase"):
+                sbx = supabase_client()
+                saved = 0
+                for name in pick_local:
+                    if ensure_class_row(sbx, lp_map[name]):
+                        saved += 1
+                # refresh DB list so they appear immediately
+                st.session_state["db_classes"] = {
+                    r["name"]: r for r in fetch_classes(sbx)
+                }
+                st.success(f"Saved/updated {saved} class(es) in Supabase.")
+    else:
+        st.caption(
+            "No local presets defined. Edit LOCAL_PRESETS near the top to add some."
+        )
+
     c_name = st.text_input(
         "Class name", value="demo_60_uniformcap_meditems", key="cls_name"
     )
@@ -1846,11 +1302,17 @@ with classes_tab:
     st.dataframe(pd.DataFrame(st.session_state["classes"]))
     sb_for_classes = supabase_client()
     if sb_for_classes and st.button("💾 Save queued classes to Supabase"):
+        dedupe_queue_by_name()
         saved = 0
         for cls in st.session_state["classes"]:
-            if ensure_class_row(sb_for_classes, cls):
+            if ensure_class_row(sb_for_classes, cls):  # updates if name exists
                 saved += 1
-        st.success(f"Saved/updated {saved} class specs in Supabase.")
+        st.success(f"Saved/updated {saved} class spec(s) in Supabase (unique by name).")
+
+    if st.button("🔄 Reload classes from Supabase"):
+        rows = fetch_classes(supabase_client())
+        st.session_state["db_classes"] = {r["name"]: r for r in rows}
+        st.success("Reloaded.")
 
 
 # ----------------- Batch Runner tab -----------------
@@ -1872,10 +1334,12 @@ with batch_tab:
         g = rng(seed)
         if mode == "Constant":
             return [int(params.get("value", 10000))] * period
+
         if mode == "Uniform":
             lo, hi = int(params.get("lo", 9000)), int(params.get("hi", 11000))
-            # was: return list(g.integers(lo, hi + 1, size=period))
+            # cast each element to builtin int
             return [int(x) for x in g.integers(lo, hi + 1, size=period)]
+
         # Normal
         mu, sd = float(params.get("mean", 10000)), float(params.get("std", 500))
         clip_lo, clip_hi = float(params.get("clip_lo", 0)), float(
@@ -1886,8 +1350,7 @@ with batch_tab:
             .round()
             .astype(int)
         )
-        # was: return list(arr)
-        return [int(x) for x in arr]
+        return [int(x) for x in arr]  # cast to builtin ints
 
     def generate_instance_from_class(cls: dict, j: int) -> dict:
         period = int(cls["period"])
@@ -2020,6 +1483,7 @@ with batch_tab:
                             run_payload["class_id"] = cid
 
                         run_res = sb.table("runs").insert(run_payload).execute()
+                        run_id = run_res.data[0]["id"]
 
                         # orders
                         lines = [ln.strip() for ln in orders_txt if ln.strip()]
