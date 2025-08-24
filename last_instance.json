@@ -1597,33 +1597,33 @@
     "origin": "class",
     "class_key": "1_test",
     "class_params": {
-      "name": "1_test",
-      "period": 60,
-      "cap_mode": "Uniform",
-      "cap_params": {
-        "lo": 1000,
-        "hi": 1500
-      },
-      "n_items": 8,
-      "dem_lo": 5,
-      "dem_hi": 80,
-      "m_lo": 2,
       "m_hi": 10,
+      "m_lo": 2,
+      "name": "1_test",
       "c_mode": "scalar",
+      "dem_hi": 80,
+      "dem_lo": 5,
+      "h_mode": "scalar",
+      "period": 60,
+      "s_mode": "uniform",
+      "n_items": 8,
       "c_params": {
         "value": 2.0
       },
-      "h_mode": "scalar",
+      "cap_mode": "Uniform",
       "h_params": {
         "value": 0.4
       },
-      "s_mode": "uniform",
       "s_params": {
-        "lo": 200.0,
-        "hi": 1000.0
+        "hi": 1000.0,
+        "lo": 200.0
       },
+      "seed_base": 10000,
       "batch_size": 50,
-      "seed_base": 10000
+      "cap_params": {
+        "hi": 1500,
+        "lo": 1000
+      }
     }
   }
 }

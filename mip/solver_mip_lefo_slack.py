@@ -42,22 +42,19 @@ def solve_instance(
     if mip_gap:
         m.Params.MIPGap = float(mip_gap)
 
-    # ----------------------------
     # Feasible arcs and triples
-    # ----------------------------
     Gamma: Dict[Tuple[int, int], List[int]] = {}
     Triples: List[Tuple[int, int, int]] = []
     for i, it in items_raw.items():
         mseq = list(it["shelf_seq"])
         for t in Periods:
-            # Allowed consumption indices given shelf life at t
             u_max = min(T - 1, t + int(mseq[t]) - 1)
             us = [u for u in range(t, u_max + 1)]
             Gamma[(i, t)] = us
             for u in us:
                 Triples.append((i, t, u))
 
-    # Tight μ_it for setup linking
+    # Tight μ_it
     mu = {}
     for i, it in items_raw.items():
         d = list(it["demand"])
@@ -66,29 +63,20 @@ def solve_instance(
             u_max = min(T - 1, t + int(mseq[t]) - 1)
             mu[(i, t)] = sum(d[u] for u in range(t, u_max + 1))
 
-    # ----------------------------
-    # Variables
-    # ----------------------------
+    # Vars
     X = m.addVars(Triples, vtype=GRB.CONTINUOUS, lb=0.0, name="X")
     Y = m.addVars(
         [(i, t) for i in items_raw for t in Periods], vtype=GRB.BINARY, name="Y"
     )
-
-    # NEW: LEFO permission binaries L_{i,u,a}
-    # Only create for ages 'a' that actually have feasible arcs at (i,u).
-    L_keys: List[Tuple[int, int, int]] = []
-    for i in items_raw:
+    S = {}
+    for i, it in items_raw.items():
         for u in Periods:
-            ages = sorted(
-                {u - t for t in range(0, u + 1) if u in Gamma.get((i, t), [])}
-            )
-            for a in ages:
-                L_keys.append((i, u, a))
-    L = m.addVars(L_keys, vtype=GRB.BINARY, name="L")
+            for tau in range(0, u):
+                S[(i, u, tau)] = m.addVar(
+                    vtype=GRB.CONTINUOUS, lb=0.0, name=f"S_{i}_{u}_{tau}"
+                )
 
-    # ----------------------------
     # Helpers for time-varying costs
-    # ----------------------------
     def c_at(i: int, t: int) -> float:
         c = items_raw[i]["c_var"]
         return float(c[t]) if isinstance(c, list) else float(c)
@@ -115,9 +103,7 @@ def solve_instance(
         s = items_raw[i]["setup"]
         return float(s[t]) if isinstance(s, list) else float(s)
 
-    # ----------------------------
     # Objective
-    # ----------------------------
     obj = gp.LinExpr()
     for i, t, u in Triples:
         g_itu = c_at(i, t) + hsum(i, t, u)
@@ -126,11 +112,7 @@ def solve_instance(
         obj += s_at(i, t) * Y[i, t]
     m.setObjective(obj, GRB.MINIMIZE)
 
-    # ----------------------------
-    # Constraints
-    # ----------------------------
-
-    # (1) global capacity
+    # (1) capacity
     for t in Periods:
         m.addConstr(
             gp.quicksum(X[i, t, u] for (i, tt, u) in Triples if tt == t)
@@ -145,7 +127,7 @@ def solve_instance(
             name=f"setupLink_{i}_{t}",
         )
 
-    # (3) warehouse capacity (inventory between u and u+1)
+    # (3) warehouse cap
     if W is not None:
         for u in Periods[:-1]:
             inv_u = gp.quicksum(
@@ -166,65 +148,28 @@ def solve_instance(
                 gp.quicksum(X[i, t, u] for t in origins) == d[u], name=f"demand_{i}_{u}"
             )
 
-    # (5) LEFO (permission-based): Gate + Monotonicity + Sufficiency
-    EPS = 1e-6
+    # (5) LEFO
     for i, it in items_raw.items():
         d = list(it["demand"])
         for u in Periods:
-            Ciu = float(d[u])  # tight gating bound; no-backorder case
-            # Ages that exist at (i,u)
-            ages = sorted(
-                {u - t for t in range(0, u + 1) if u in Gamma.get((i, t), [])}
-            )
-            if not ages:
-                continue
-
-            # (5a) Gate: sum over arcs of age a <= Ciu * L_{i,u,a}
-            for a in ages:
-                # all production times that yield age a at consumption u
-                T_a = [
-                    t
-                    for t in range(0, u + 1)
-                    if (u in Gamma.get((i, t), []) and (u - t) == a)
-                ]
-                if T_a:
+            for tau in range(0, u):
+                newer = [t for t in range(tau + 1, u + 1) if u in Gamma[(i, t)]]
+                older = [t for t in range(0, tau + 1) if u in Gamma[(i, t)]]
+                if newer:
                     m.addConstr(
-                        gp.quicksum(X[i, t, u] for t in T_a) <= Ciu * L[i, u, a],
-                        name=f"lefo_gate_{i}_{u}_{a}",
+                        S[(i, u, tau)] >= d[u] - gp.quicksum(X[i, t, u] for t in newer),
+                        name=f"lefo_slack_{i}_{u}_{tau}",
+                    )
+                else:
+                    m.addConstr(
+                        S[(i, u, tau)] >= d[u], name=f"lefo_slack_{i}_{u}_{tau}"
+                    )
+                if older:
+                    m.addConstr(
+                        gp.quicksum(X[i, t, u] for t in older) <= S[(i, u, tau)],
+                        name=f"lefo_older_{i}_{u}_{tau}",
                     )
 
-            # (5b) Monotonicity: L_{i,u,a} >= L_{i,u,a+1}
-            for k in range(len(ages) - 1):
-                a = ages[k]
-                ap1 = ages[k + 1]
-                m.addConstr(L[i, u, a] >= L[i, u, ap1], name=f"lefo_mono_{i}_{u}_{a}")
-
-            # (5c) Sufficiency cut: only add when d[u] > 0 to avoid Ciu=0 degeneracy
-            if Ciu > 0.0:
-                for k in range(len(ages) - 1):
-                    a = ages[k]
-                    ap1 = ages[k + 1]
-                    # sum of all newer-or-equal ages 0..a
-                    newer_terms = []
-                    for j in ages:
-                        if j <= a:
-                            T_j = [
-                                t
-                                for t in range(0, u + 1)
-                                if (u in Gamma.get((i, t), []) and (u - t) == j)
-                            ]
-                            if T_j:
-                                newer_terms.append(gp.quicksum(X[i, t, u] for t in T_j))
-                    if newer_terms:
-                        m.addConstr(
-                            Ciu * (1 - L[i, u, ap1])
-                            >= gp.quicksum(newer_terms) - Ciu + EPS,
-                            name=f"lefo_suff_{i}_{u}_{ap1}",
-                        )
-
-    # ----------------------------
-    # Optimize and report
-    # ----------------------------
     m.optimize()
 
     status = m.Status
@@ -243,6 +188,7 @@ def solve_instance(
     except Exception:
         pass
     try:
+        # MIPGap only defined when there's an incumbent
         summary["gap"] = float(m.MIPGap)
     except Exception:
         pass
@@ -255,6 +201,7 @@ def solve_instance(
         GRB.INF_OR_UNBD,
         GRB.UNBOUNDED,
     ):
+        # report
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         orders_txt = []
