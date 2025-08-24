@@ -10,6 +10,33 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from mip.solver_mip_lefo import solve_instance
+import math
+
+
+def _safe_float(x):
+    """Return a finite float or None."""
+    try:
+        f = float(x)
+    except Exception:
+        return None
+    return f if math.isfinite(f) else None
+
+
+def sanitize_json(obj):
+    """
+    Recursively replace NaN/±Inf with None and convert numpy scalars/arrays.
+    Safe for any dict/list you are about to send to Supabase.
+    """
+    if isinstance(obj, dict):
+        return {k: sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [sanitize_json(v) for v in obj]
+    if isinstance(obj, np.generic):
+        obj = obj.item()
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    return obj
+
 
 # ======================= App Config =======================
 DEFAULT_URL = "https://btqqbsnjcsgjvgpuutiw.supabase.co"
@@ -17,6 +44,11 @@ DEFAULT_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 st.set_page_config(page_title="Perishable Lot-Sizing (LEFO MIP)", layout="wide")
 st.title("Perishable Lot-Sizing — Generator • Classes • Batches • Visualizer")
+
+# ----------------------------------------------------------------------------
+CAP_TIGHT_BETAS = {"Loose": 0.70, "Medium": 0.60, "Tight": 0.50}  # demand-based cap
+DEFAULT_TBO_CHOICES = [1, 2, 4]  # target TBO set
+SETUP_TBO_JITTER_DEFAULT = 10.0  # +/- percent
 
 
 # ======================= Helpers ==========================
@@ -242,55 +274,345 @@ st.session_state["db_classes"] = {r["name"]: r for r in _rows}  # name -> row
 # 2) (Optional) keep a FEW local presets here for convenience.
 #    They are NOT auto-queued and NOT auto-saved; you'll pick them in the UI.
 LOCAL_PRESETS = [
+    # ---------- T=20 • Demand-based (β from Loose/Medium/Tight) ----------
     {
-        "name": "baseline_T60_uniformCap_medItems",
-        "period": 60,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 9000, "hi": 11000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
+        "name": "prof_T20_N10_DBLoose_TBO1_CVlow",
+        "period": 20,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Loose",
+        "n_items": 10,
+        "dem_lo": 50,
+        "dem_hi": 110,  # low CV
         "m_lo": 6,
         "m_hi": 50,
         "c_mode": "scalar",
         "c_params": {"value": 2.0},
         "h_mode": "scalar",
         "h_params": {"value": 0.4},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 10000,
+        "s_mode": "tbo",
+        "s_params": {"L": 1.0, "jitter_pct": 10.0},
+        "zero_head": 0,
+        "batch_size": 30,
+        "seed_base": 20000,
     },
     {
-        "name": "baseline_T60_normalCap_medItems",
-        "period": 60,
-        "cap_mode": "Normal",
-        "cap_params": {"mean": 10000, "std": 500, "clip_lo": 8000, "clip_hi": 12000},
-        "n_items": 8,
-        "dem_lo": 5,
-        "dem_hi": 80,
+        "name": "prof_T20_N20_DBLoose_TBO2_CVmed",
+        "period": 20,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Loose",
+        "n_items": 20,
+        "dem_lo": 30,
+        "dem_hi": 130,  # medium CV
         "m_lo": 6,
         "m_hi": 50,
         "c_mode": "scalar",
         "c_params": {"value": 2.0},
         "h_mode": "scalar",
         "h_params": {"value": 0.4},
-        "s_mode": "seasonal",
-        "s_params": {
-            "base": 80.0,
-            "amp": 0.10,
-            "period": 30.0,
-            "phase": 0.0,
-            "noise_std": 0.0,
-        },
-        "batch_size": 50,
-        "seed_base": 10100,
+        "s_mode": "tbo",
+        "s_params": {"L": 2.0, "jitter_pct": 10.0},
+        "zero_head": 0,
+        "batch_size": 30,
+        "seed_base": 20050,
+    },
+    {
+        "name": "prof_T20_N30_DBLoose_TBO4_CVhigh",
+        "period": 20,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Loose",
+        "n_items": 30,
+        "dem_lo": 0,
+        "dem_hi": 160,  # high CV
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 4.0, "jitter_pct": 10.0},
+        "zero_head": 0,
+        "batch_size": 30,
+        "seed_base": 20100,
+    },
+    {
+        "name": "prof_T20_N10_DBMedium_TBO1_CVlow",
+        "period": 20,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Medium",
+        "n_items": 10,
+        "dem_lo": 50,
+        "dem_hi": 110,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 1.0, "jitter_pct": 10.0},
+        "zero_head": 1,
+        "batch_size": 30,
+        "seed_base": 20200,
+    },
+    {
+        "name": "prof_T20_N20_DBMedium_TBO2_CVmed",
+        "period": 20,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Medium",
+        "n_items": 20,
+        "dem_lo": 30,
+        "dem_hi": 130,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 2.0, "jitter_pct": 10.0},
+        "zero_head": 2,
+        "batch_size": 30,
+        "seed_base": 20250,
+    },
+    {
+        "name": "prof_T20_N30_DBMedium_TBO4_CVhigh",
+        "period": 20,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Medium",
+        "n_items": 30,
+        "dem_lo": 0,
+        "dem_hi": 160,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 4.0, "jitter_pct": 12.0},
+        "zero_head": 2,
+        "batch_size": 30,
+        "seed_base": 20300,
+    },
+    {
+        "name": "prof_T20_N10_DBTight_TBO1_CVlow",
+        "period": 20,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Tight",
+        "n_items": 10,
+        "dem_lo": 50,
+        "dem_hi": 110,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 1.0, "jitter_pct": 10.0},
+        "zero_head": 3,
+        "batch_size": 30,
+        "seed_base": 20400,
+    },
+    {
+        "name": "prof_T20_N20_DBTight_TBO2_CVmed",
+        "period": 20,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Tight",
+        "n_items": 20,
+        "dem_lo": 30,
+        "dem_hi": 130,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 2.0, "jitter_pct": 12.0},
+        "zero_head": 3,
+        "batch_size": 30,
+        "seed_base": 20450,
+    },
+    {
+        "name": "prof_T20_N30_DBTight_TBO4_CVhigh",
+        "period": 20,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Tight",
+        "n_items": 30,
+        "dem_lo": 0,
+        "dem_hi": 160,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 4.0, "jitter_pct": 15.0},
+        "zero_head": 4,
+        "batch_size": 30,
+        "seed_base": 20500,
+    },
+    # ---------- T=40 • Demand-based ----------
+    {
+        "name": "prof_T40_N20_DBMedium_TBO2_CVmed",
+        "period": 40,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Medium",
+        "n_items": 20,
+        "dem_lo": 30,
+        "dem_hi": 130,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 2.0, "jitter_pct": 10.0},
+        "zero_head": 2,
+        "batch_size": 30,
+        "seed_base": 20600,
+    },
+    {
+        "name": "prof_T40_N30_DBTight_TBO2_CVmed",
+        "period": 40,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Tight",
+        "n_items": 30,
+        "dem_lo": 30,
+        "dem_hi": 130,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 2.0, "jitter_pct": 12.0},
+        "zero_head": 4,
+        "batch_size": 30,
+        "seed_base": 20650,
+    },
+    {
+        "name": "prof_T40_N30_DBLoose_TBO4_CVhigh",
+        "period": 40,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Loose",
+        "n_items": 30,
+        "dem_lo": 0,
+        "dem_hi": 160,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 4.0, "jitter_pct": 10.0},
+        "zero_head": 0,
+        "batch_size": 30,
+        "seed_base": 20700,
+    },
+    # ---------- T=60 • Demand-based ----------
+    {
+        "name": "prof_T60_N40_DBMedium_TBO2_CVmed",
+        "period": 60,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Medium",
+        "n_items": 40,
+        "dem_lo": 30,
+        "dem_hi": 130,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 2.0, "jitter_pct": 10.0},
+        "zero_head": 2,
+        "batch_size": 30,
+        "seed_base": 20800,
+    },
+    {
+        "name": "prof_T60_N40_DBTight_TBO4_CVhigh",
+        "period": 60,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Tight",
+        "n_items": 40,
+        "dem_lo": 0,
+        "dem_hi": 160,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 4.0, "jitter_pct": 12.0},
+        "zero_head": 4,
+        "batch_size": 30,
+        "seed_base": 20850,
+    },
+    # ---------- Non–demand-based capacity (for contrast) ----------
+    # Uniform capacity around ~0.6 * mean(total demand) for N=20, μ≈80 → ~960
+    {
+        "name": "prof_T20_N20_UniformCap_900to1100_TBO2_CVmed",
+        "period": 20,
+        "cap_mode": "Uniform",
+        "cap_params": {"lo": 900, "hi": 1100},
+        "n_items": 20,
+        "dem_lo": 30,
+        "dem_hi": 130,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 2.0, "jitter_pct": 10.0},
+        "zero_head": 2,
+        "batch_size": 30,
+        "seed_base": 20900,
+    },
+    # Normal capacity with mild noise around the same target
+    {
+        "name": "prof_T20_N20_NormalCap_mu1000_sd80_TBO2_CVmed",
+        "period": 20,
+        "cap_mode": "Normal",
+        "cap_params": {"mean": 1000, "std": 80, "clip_lo": 700, "clip_hi": 1300},
+        "n_items": 20,
+        "dem_lo": 30,
+        "dem_hi": 130,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 2.0, "jitter_pct": 10.0},
+        "zero_head": 2,
+        "batch_size": 30,
+        "seed_base": 20950,
     },
 ]
 st.session_state["local_presets"] = {p["name"]: p for p in LOCAL_PRESETS}
@@ -1029,15 +1351,28 @@ with classes_tab:
     c_name = st.text_input(
         "Class name", value="demo_60_uniformcap_meditems", key="cls_name"
     )
-    c_period = st.number_input(
-        "Periods", min_value=1, value=int(T), step=1, key="cls_period"
+
+    st.markdown("**Periods**")
+    pchoice = st.radio(
+        "Choose T", ["20", "40", "60", "Custom"], horizontal=True, key="cls_Tpick"
     )
+    if pchoice == "Custom":
+        c_period = st.number_input(
+            "Custom T", min_value=1, value=int(T), step=1, key="cls_period_custom"
+        )
+    else:
+        c_period = int(pchoice)
 
     st.markdown("**Capacity generator (κ_t)**")
     c_cap_mode = st.selectbox(
-        "mode", ["Constant", "Uniform", "Normal"], index=1, key="cls_cap_mode"
+        "mode",
+        ["Constant", "Uniform", "Normal", "Demand-based (L/M/T)"],
+        index=1,
+        key="cls_cap_mode",
     )
+
     cap_params: Dict[str, Any] = {}
+    cap_tight = None
     if c_cap_mode == "Constant":
         cap_params["value"] = st.number_input(
             "cap value", min_value=0, value=10000, step=100, key="cls_cap_val"
@@ -1049,7 +1384,7 @@ with classes_tab:
         cap_params["hi"] = st.number_input(
             "hi", min_value=0, value=11000, step=100, key="cls_cap_hi"
         )
-    else:
+    elif c_cap_mode == "Normal":
         cap_params["mean"] = st.number_input(
             "mean", min_value=0, value=10000, step=100, key="cls_cap_mean"
         )
@@ -1062,7 +1397,14 @@ with classes_tab:
         cap_params["clip_hi"] = st.number_input(
             "clip_hi", min_value=0, value=20000, step=100, key="cls_cap_chi"
         )
-
+    else:  # Demand-based
+        cap_tight = st.selectbox(
+            "Tightness", ["Loose", "Medium", "Tight"], index=1, key="cls_cap_tight"
+        )
+        st.caption(
+            "Capacity per period = β × mean(total demand). β: Loose=0.70, Medium=0.60, Tight=0.50"
+        )
+    # -----------------------------------------------------------------------------
     st.markdown("**Item count**")
     use_custom_n = st.checkbox("Use custom item count", value=False, key="use_custom_n")
     bucket_map = {
@@ -1090,11 +1432,21 @@ with classes_tab:
     c_m_lo = st.number_input("m min", min_value=1, value=6, step=1)
     c_m_hi = st.number_input("m max", min_value=1, value=50, step=1)
 
+    zero_head = st.number_input(
+        "Force first Z periods demand=0",
+        min_value=0,
+        max_value=int(c_period),
+        value=0,
+        step=1,
+        key="cls_zero_head",
+    )
+    # -----------------------------------------------------------------------------
+
     st.markdown("**c_it / h_it / s_it generators (applied to all items)**")
     gen_modes = ["scalar", "uniform", "normal", "linear", "seasonal"]
     c_mode = st.selectbox("mode (c_it)", gen_modes, index=0, key="cls_c_mode")
     h_mode = st.selectbox("mode (h_it)", gen_modes, index=0, key="cls_h_mode")
-    s_mode = st.selectbox("mode (s_it)", gen_modes, index=4, key="cls_s_mode")
+    s_mode = st.selectbox("mode (s_it)", gen_modes + ["tbo"], index=4, key="cls_s_mode")
 
     def ui_params(prefix: str, mode: str, defaults: dict, key_base: str) -> dict:
         # key_base differentiates groups (cls_c / cls_h / cls_s)
@@ -1212,9 +1564,24 @@ with classes_tab:
     # use keyed ui_params
     c_params = ui_params("c", c_mode, {"value": 2.0}, key_base="cls_c")
     h_params = ui_params("h", h_mode, {"value": 0.4}, key_base="cls_h")
-    s_params = ui_params(
-        "s", s_mode, {"base": 80.0, "amp": 0.10, "period": 30.0}, key_base="cls_s"
-    )
+    if s_mode == "tbo":
+        st.markdown("**Setup from TBO target**")
+        tbo_L = st.selectbox(
+            "Target TBO (L)", DEFAULT_TBO_CHOICES, index=1, key="cls_tbo_L"
+        )
+        tbo_jit = st.number_input(
+            "Jitter (±%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=SETUP_TBO_JITTER_DEFAULT,
+            step=1.0,
+            key="cls_tbo_jit",
+        )
+        s_params = {"L": float(tbo_L), "jitter_pct": float(tbo_jit)}
+    else:
+        s_params = ui_params(
+            "s", s_mode, {"base": 80.0, "amp": 0.10, "period": 30.0}, key_base="cls_s"
+        )
 
     batch_size = st.number_input(
         "Instances per class (batch size)",
@@ -1236,13 +1603,19 @@ with classes_tab:
             {
                 "name": c_name,
                 "period": int(c_period),
-                "cap_mode": c_cap_mode,
+                "cap_mode": (
+                    "DemandBased"
+                    if c_cap_mode.startswith("Demand-based")
+                    else c_cap_mode
+                ),
                 "cap_params": cap_params,
+                "cap_tight": cap_tight,  # None unless DemandBased
                 "n_items": int(n_items),
                 "dem_lo": int(c_dem_lo),
                 "dem_hi": int(c_dem_hi),
                 "m_lo": int(c_m_lo),
                 "m_hi": int(c_m_hi),
+                "zero_head": int(zero_head),  # <-- new
                 "c_mode": c_mode,
                 "c_params": c_params,
                 "h_mode": h_mode,
@@ -1339,6 +1712,224 @@ with classes_tab:
             _reset_sortables_state()
             st.success(f"Saved/updated {saved} unique class spec(s) to Supabase.")
 
+    # ---cascade delete portion in this tab ----
+
+    def _delete_in_chunks(
+        sb: Client, table: str, col: str, ids: list[str], chunk: int = 500
+    ) -> int:
+        total = 0
+        for k in range(0, len(ids), chunk):
+            part = ids[k : k + chunk]
+            if not part:
+                continue
+            try:
+                res = sb.table(table).delete().in_(col, part).execute()
+                total += len(part) if (res.data is None) else len(res.data)
+            except Exception:
+                # bazı kurulumlarda returning kapalı veya RLS uyarısı baskılanmış olabilir
+                total += len(part)
+        return total
+
+    def _select_ids_eq(
+        sb: Client, table: str, col: str, val: str, step: int = 1000
+    ) -> list[str]:
+        """eq ile sayfa sayfa id topla (RLS varsa erişilebilenleri döner)."""
+        out, start = [], 0
+        while True:
+            res = (
+                sb.table(table)
+                .select("id")
+                .eq(col, val)
+                .range(start, start + step - 1)
+                .order("id")
+                .execute()
+            )
+            rows = res.data or []
+            if not rows:
+                break
+            out.extend([r["id"] for r in rows])
+            if len(rows) < step:
+                break
+            start += len(rows)
+        return out
+
+    def _fetch_ids_or(
+        sb: Client, table: str, or_expr: str, step: int = 1000
+    ) -> list[str]:
+        """
+        or_expr: PostgREST or= ifadesi, ör: "class_id.eq.<uuid>,data->meta->>class_key.eq.<name>"
+        """
+        out, start = [], 0
+        while True:
+            q = (
+                sb.table(table)
+                .select("id")
+                .or_(or_expr)
+                .order("id", desc=False)
+                .range(start, start + step - 1)
+            )
+            res = q.execute()
+            rows = res.data or []
+            if not rows:
+                break
+            out.extend([r["id"] for r in rows])
+            if len(rows) < step:
+                break
+            start += len(rows)
+        return out
+
+    def delete_class_everywhere(sb: Client, class_name: str) -> Dict[str, int]:
+        # 0) class_id çek
+        cls_res = (
+            sb.table("classes").select("id").eq("name", class_name).limit(1).execute()
+        )
+        cls_rows = cls_res.data or []
+        if not cls_rows:
+            return {"classes": 0, "instances": 0, "runs": 0, "orders": 0}
+        cid = cls_rows[0]["id"]
+
+        deleted_orders = 0
+        deleted_runs = 0
+        deleted_insts = 0
+
+        # 1) Döngü: class_id=cid olan INSTANCES bitene kadar silme adımlarını tekrarla
+        while True:
+            inst_ids = _select_ids_eq(sb, "instances", "class_id", cid, step=1000)
+            if not inst_ids:
+                break
+
+            # Bu instance'lara bağlı RUN id'lerini topla
+            run_ids = []
+            for k in range(0, len(inst_ids), 500):
+                part = inst_ids[k : k + 500]
+                r = (
+                    sb.table("runs")
+                    .select("id")
+                    .in_("instance_id", part)
+                    .order("id")
+                    .execute()
+                )
+                run_ids.extend([x["id"] for x in (r.data or [])])
+
+            # Orders → Runs → Instances sırayla sil
+            if run_ids:
+                deleted_orders += _delete_in_chunks(
+                    sb, "orders", "run_id", run_ids, chunk=500
+                )
+                deleted_runs += _delete_in_chunks(sb, "runs", "id", run_ids, chunk=500)
+
+            deleted_insts += _delete_in_chunks(
+                sb, "instances", "id", inst_ids, chunk=500
+            )
+
+            # Döngü başına dönüp kalan var mı tekrar bakacağız
+
+        # 2) Emniyet: class_id=cid bağlı RUN varsa (nadiren) onları da temizle
+        # (ör. biri instance_id=NULL, class_id=cid kalmış olabilir)
+        extra_run_ids = _select_ids_eq(sb, "runs", "class_id", cid, step=1000)
+        if extra_run_ids:
+            deleted_orders += _delete_in_chunks(
+                sb, "orders", "run_id", extra_run_ids, chunk=500
+            )
+            deleted_runs += _delete_in_chunks(
+                sb, "runs", "id", extra_run_ids, chunk=500
+            )
+
+        # 3) Hâlâ class_id=cid'li instance var mı? Varsa NULL'la ve bir kez daha dene
+        try:
+            chk = (
+                sb.table("instances")
+                .select("id", count="exact")
+                .eq("class_id", cid)
+                .execute()
+            )
+            remain = getattr(chk, "count", 0) or 0
+        except Exception:
+            remain = 0
+
+        if remain > 0:
+            # class_id NULL'la
+            try:
+                sb.table("instances").update({"class_id": None}).eq(
+                    "class_id", cid
+                ).execute()
+            except Exception:
+                pass
+            # tekrar dene
+            inst_ids = _select_ids_eq(sb, "instances", "class_id", cid, step=1000)
+            if inst_ids:
+                deleted_insts += _delete_in_chunks(
+                    sb, "instances", "id", inst_ids, chunk=500
+                )
+
+        # 4) Son kontrol: sınıf bağlı instance kaldıysa, RLS/policy engelliyordur → hata göster
+        try:
+            chk2 = (
+                sb.table("instances")
+                .select("id", count="exact")
+                .eq("class_id", cid)
+                .execute()
+            )
+            remain2 = getattr(chk2, "count", 0) or 0
+        except Exception:
+            remain2 = 0
+
+        if remain2 > 0:
+            # Bu durumda sınıfı silmeye kalkarsan tekrar 23503 alırsın.
+            # UI'da kullanıcıya net hata gösterebilmen için Exception fırlatıyorum.
+            raise RuntimeError(
+                f"Cannot delete class '{class_name}': {remain2} instance(s) still reference it. "
+                "Check RLS/Policies or use a service key / ON DELETE CASCADE."
+            )
+
+        # 5) Artık class'ı sil
+        sb.table("classes").delete().eq("id", cid).execute()
+
+        # (İSTEĞE BAĞLI) meta.class_key eşleşen yetim 'instances' varsa onları da temizlemek istersen:
+        #   NOT: class silmek için şart değil; sadece temizlik amaçlı.
+        # try:
+        #     # JSON path ile: data->meta->>class_key = class_name
+        #     # Bu kısım RLS'e takılabilir; takılırsa görmezden gel.
+        #     orphans = sb.table("instances").select("id").or_(f"data->meta->>class_key.eq.{class_name}").execute().data or []
+        #     orphan_ids = [x["id"] for x in orphans]
+        #     if orphan_ids:
+        #         _delete_in_chunks(sb, "instances", "id", orphan_ids, chunk=500)
+        # except Exception:
+        #     pass
+
+        return {
+            "classes": 1,
+            "instances": deleted_insts,
+            "runs": deleted_runs,
+            "orders": deleted_orders,
+        }
+
+    # ### deletion
+    st.markdown("### Danger zone")
+    to_del = st.multiselect(
+        "Select DB classes to DELETE (cascade)",
+        options=sorted(db_map.keys()),
+        key="pick_db_del",
+    )
+
+    if st.button("🗑️ Delete selected classes (DB + instances + runs + orders)"):
+        sbx = supabase_client()
+        if not sbx:
+            st.error("Supabase not configured.")
+        else:
+            total = {"classes": 0, "instances": 0, "runs": 0, "orders": 0}
+            for nm in to_del:
+                cnt = delete_class_everywhere(sbx, nm)
+                for k in total:
+                    total[k] += cnt.get(k, 0)
+            st.success(
+                f"Deleted: classes={total['classes']} instances={total['instances']} runs={total['runs']} orders={total['orders']}"
+            )
+            # refresh DB list
+            rows = fetch_classes(sbx)
+            st.session_state["db_classes"] = {r["name"]: r for r in rows}
+    # -----------------------------------------------------------------------------
+
 
 # ----------------- Batch Runner tab -----------------
 with batch_tab:
@@ -1377,33 +1968,41 @@ with batch_tab:
         )
         return [int(x) for x in arr]  # cast to builtin ints
 
+    # --- generate_instance_from_class
     def generate_instance_from_class(cls: dict, j: int) -> dict:
         period = int(cls["period"])
-        cap = generate_cap_series(
-            period, cls["cap_mode"], cls["cap_params"], cls["seed_base"] + 31 * j
-        )
+        zero_head = int(cls.get("zero_head", 0))
+        rng_local = np.random.default_rng(int(cls["seed_base"] + 31 * j))
+
         items = {}
+        total_by_t = np.zeros(period, dtype=float)
+
         for i in range(cls["n_items"]):
             seed_k = int(cls["seed_base"] + 1000 * j + 17 * i)
+
+            # demand
             D = list(
                 np.random.default_rng(seed_k).integers(
                     int(cls["dem_lo"]), int(cls["dem_hi"]) + 1, size=period
                 )
             )
+            if zero_head > 0:
+                for z in range(min(zero_head, period)):
+                    D[z] = 0
+
+            # shelf life
             Mseq = list(
                 np.random.default_rng(seed_k + 1).integers(
                     int(cls["m_lo"]), int(cls["m_hi"]) + 1, size=period
                 )
             )
-            # c,h,s as sequences (or scalar if mode==scalar)
+
+            # c, h sequences or scalar
             c_seq = make_series(
                 cls["c_mode"], period, dict(cls["c_params"] or {}), seed_k + 2
             )
             h_seq = make_series(
                 cls["h_mode"], period, dict(cls["h_params"] or {}), seed_k + 3
-            )
-            s_seq = make_series(
-                cls["s_mode"], period, dict(cls["s_params"] or {}), seed_k + 4
             )
             c_out = (
                 float(cls["c_params"].get("value", 0.0))
@@ -1415,11 +2014,35 @@ with batch_tab:
                 if cls["h_mode"] == "scalar"
                 else [float(x) for x in h_seq]
             )
-            s_out = (
-                float(cls["s_params"].get("value", 0.0))
-                if cls["s_mode"] == "scalar"
-                else [float(x) for x in s_seq]
-            )
+
+            # setup (support TBO)
+            if cls["s_mode"] == "tbo":
+                # h average for this item
+                h_avg = (
+                    float(h_out) if isinstance(h_out, float) else float(np.mean(h_out))
+                )
+                d_avg = float(np.mean(D)) if len(D) else 0.0
+                L = float(cls["s_params"].get("L", 2.0))
+                jitter_pct = float(
+                    cls["s_params"].get("jitter_pct", SETUP_TBO_JITTER_DEFAULT)
+                )
+                base_s = 0.5 * h_avg * d_avg * (L**2)
+                if base_s <= 0:
+                    base_s = 1e-6
+                jitter = 1.0 + rng_local.uniform(
+                    -jitter_pct / 100.0, jitter_pct / 100.0
+                )
+                s_out = float(base_s * jitter)  # scalar setup
+            else:
+                s_seq = make_series(
+                    cls["s_mode"], period, dict(cls["s_params"] or {}), seed_k + 4
+                )
+                s_out = (
+                    float(cls["s_params"].get("value", 0.0))
+                    if cls["s_mode"] == "scalar"
+                    else [float(x) for x in s_seq]
+                )
+
             items[str(i)] = {
                 "demand": [int(x) for x in D],
                 "setup": s_out,
@@ -1428,15 +2051,34 @@ with batch_tab:
                 "b_var": 0.0,
                 "shelf_seq": [int(x) for x in Mseq],
             }
+            total_by_t += np.array(D, dtype=float)
+
+        # capacity
+        cap_mode = cls.get("cap_mode", "Uniform")
+        if cap_mode == "DemandBased":
+            beta = CAP_TIGHT_BETAS.get(cls.get("cap_tight") or "Medium", 0.60)
+            mean_total = float(np.mean(total_by_t)) if period > 0 else 0.0
+            cap_value = int(round(beta * mean_total))
+            cap = [max(0, cap_value)] * period
+        else:
+            cap = generate_cap_series(
+                period, cap_mode, cls.get("cap_params") or {}, cls["seed_base"] + 31 * j
+            )
+
         inst = {
             "period": period,
             "items": items,
-            # was: "manual_capacity": cap,
             "manual_capacity": [int(x) for x in cap],
             "warehouse_capacity": (float(W_txt) if W_txt.strip() != "" else None),
-            "meta": {"origin": "class", "class_key": cls["name"], "class_params": cls},
+            "meta": {
+                "origin": "class",
+                "class_key": cls["name"],
+                "class_params": cls,
+            },
         }
         return inst
+
+    # -----------------------------------------------------------------------------
 
     if st.button("Run queued classes"):
         total_runs = sum(
