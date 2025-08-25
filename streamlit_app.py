@@ -2285,6 +2285,7 @@ with batch_tab:
 
 # new tab
 # ----------------- Explore & Visualize tab -----------------
+# ----------------- Explore & Visualize tab -----------------
 with viz_tab:
     st.header("Explore & Visualize (Supabase)")
     sb = supabase_client()
