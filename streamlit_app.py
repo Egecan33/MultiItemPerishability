@@ -2284,24 +2284,27 @@ with batch_tab:
         st.success("Batch run complete.")
 
 # new tab
+# ----------------- Explore & Visualize tab -----------------
 with viz_tab:
-    # ----------------- Explore & Visualize tab -----------------
     st.header("Explore & Visualize (Supabase)")
     sb = supabase_client()
     if sb is None:
         st.info("Configure Supabase in sidebar.")
     else:
         # ---- Controls: limit + refresh ----
-        c1, c2 = st.columns([1, 1])
+        c1, c2, c3 = st.columns([1, 1, 1])
         with c1:
             limit = st.number_input(
                 "Fetch last N runs",
                 min_value=10,
-                value=3000,  # ⬅️ default 3000
+                value=3000,
                 step=100,
                 key="vis_limit",
             )
         with c2:
+            # New: toggle to include non-optimal runs
+            only_optimal = st.checkbox("Show only OPTIMAL runs", value=False)
+        with c3:
             if st.button("🔄 Refresh data", key="vis_refresh"):
                 try:
                     st.rerun()
@@ -2322,22 +2325,40 @@ with viz_tab:
                     .order("created_at", desc=True)
                 )
                 if last_seen is not None:
-                    q = q.lt("created_at", last_seen)  # ← keyset (seek) pagination
+                    q = q.lt("created_at", last_seen)  # keyset pagination
                 batch = q.limit(need).execute().data
                 if not batch:
                     break
                 out.extend(batch)
-                last_seen = batch[-1]["created_at"]  # next page starts “after” this
+                last_seen = batch[-1]["created_at"]
             return out
 
+        # ---- Status mapping (Gurobi) ----
+        STATUS_MAP = {
+            1: "LOADED",
+            2: "OPTIMAL",
+            3: "INFEASIBLE",
+            4: "INF_OR_UNBD",
+            5: "UNBOUNDED",
+            6: "CUTOFF",
+            7: "ITERATION_LIMIT",
+            8: "NODE_LIMIT",
+            9: "TIME_LIMIT",
+            10: "SOLUTION_LIMIT",
+            11: "INTERRUPTED",
+            12: "NUMERIC",
+            13: "SUBOPTIMAL",
+            14: "INPROGRESS",
+            15: "USER_OBJ_LIMIT",
+        }
+
         try:
-            # ⚠️ Use the paginated fetch instead of .limit()
             runs = fetch_runs_keyset(sb, int(limit))
 
-            inst_ids = list({r["instance_id"] for r in runs})
+            inst_ids = list({r["instance_id"] for r in runs if r.get("instance_id")})
             inst = []
             if inst_ids:
-                CH = 500  # chunk to avoid URL size limits
+                CH = 500
                 for k in range(0, len(inst_ids), CH):
                     chunk = inst_ids[k : k + CH]
                     inst += (
@@ -2349,204 +2370,238 @@ with viz_tab:
                     )
             inst_map = {row["id"]: row for row in inst}
 
-            # Build dataframe
+            # Build dataframe (include ALL runs we fetched)
             recs = []
             for r in runs:
                 I = inst_map.get(r["instance_id"])
-                if not I:
-                    continue
-                data = I.get("data", {})
-                meta = data.get("meta") or {}
-                items = data.get("items") or {}
-                n_items = len(items)
-                cap = I.get("manual_capacity") or data.get("manual_capacity") or []
+                # Keep row even if instance is missing (rare / RLS), but label it
+                period = None
+                cap = None
+                class_key = "adhoc"
+                n_items = None
+                if I:
+                    data = I.get("data", {}) or {}
+                    meta = data.get("meta") or {}
+                    items = data.get("items") or {}
+                    n_items = len(items)
+                    cap = I.get("manual_capacity") or data.get("manual_capacity") or []
+                    class_key = meta.get("class_key", "adhoc")
+                    period = I.get("period") or data.get("period")
+
                 cap_mean = float(np.mean(cap)) if cap else None
-                class_key = meta.get("class_key", "adhoc")
-                period = I.get("period") or data.get("period")
+                status_code = r.get("status")
+                status_label = STATUS_MAP.get(status_code, str(status_code))
+
                 recs.append(
                     {
-                        "run_id": r["id"],
-                        "created_at": r["created_at"],
-                        "instance_id": r["instance_id"],
+                        "run_id": r.get("id"),
+                        "created_at": r.get("created_at"),
+                        "instance_id": r.get("instance_id"),
                         "class_key": class_key,
                         "period": period,
                         "n_items": n_items,
                         "cap_mean": cap_mean,
-                        "status": r.get("status"),
+                        "status": status_code,
+                        "status_label": status_label,
                         "objective": r.get("objective"),
                         "best_bound": r.get("best_bound"),
                         "gap": r.get("gap"),
                         "runtime_sec": r.get("runtime_sec"),
+                        "has_instance": bool(I),
                     }
                 )
+
             df = pd.DataFrame(recs)
 
             if df.empty:
                 st.info("No runs found.")
-            else:
-                st.subheader("Summary table")
-                st.dataframe(df, use_container_width=True)
+                st.stop()
 
-                c1, c2 = st.columns(2)
-                with c1:
-                    fig = px.scatter(
-                        df,
-                        x="n_items",
-                        y="runtime_sec",
-                        color="class_key",
-                        hover_data=["gap", "objective", "status"],
-                    )
-                    fig.update_layout(height=380, title="Runtime vs #Items")
-                    st.plotly_chart(fig, use_container_width=True)
-                with c2:
-                    fig = px.scatter(
-                        df,
-                        x="cap_mean",
-                        y="runtime_sec",
-                        color="class_key",
-                        hover_data=["gap", "objective", "status"],
-                    )
-                    fig.update_layout(height=380, title="Runtime vs Mean Capacity")
-                    st.plotly_chart(fig, use_container_width=True)
+            # Optional filter by status
+            if only_optimal:
+                df = df[df["status"] == 2]
 
-                st.subheader("3D scatter")
-                x_axis = st.selectbox("X", ["n_items", "period", "cap_mean"])
-                y_axis = st.selectbox("Y", ["runtime_sec", "gap", "objective"])
-                z_axis = st.selectbox("Z", ["runtime_sec", "gap", "objective"])
-                color_by = st.selectbox("Color", ["class_key", "status"])
-                fig3d = px.scatter_3d(
-                    df.dropna(subset=[x_axis, y_axis, z_axis]),
-                    x=x_axis,
-                    y=y_axis,
-                    z=z_axis,
-                    color=color_by,
-                    symbol="class_key",
-                    hover_data=["run_id", "instance_id"],
-                )
-                fig3d.update_layout(
-                    height=520,
-                    scene=dict(
-                        xaxis_title=x_axis, yaxis_title=y_axis, zaxis_title=z_axis
-                    ),
-                )
-                st.plotly_chart(fig3d, use_container_width=True)
+            # --- Summary tables ---
+            st.subheader("Summary")
+            st.dataframe(df, use_container_width=True)
 
-                st.subheader("Class aggregates")
-                agg = (
-                    df.groupby("class_key")
-                    .agg(
-                        runs=("run_id", "count"),
-                        n_items_mean=("n_items", "mean"),
-                        runtime_p50=("runtime_sec", "median"),
-                        runtime_p90=(
-                            "runtime_sec",
-                            lambda x: (
-                                np.percentile(x.dropna(), 90)
-                                if len(x.dropna())
-                                else None
-                            ),
-                        ),
-                        gap_p95=(
-                            "gap",
-                            lambda x: (
-                                np.percentile(
-                                    pd.to_numeric(x, errors="coerce").dropna(), 95
-                                )
-                                if len(pd.to_numeric(x, errors="coerce").dropna())
-                                else None
-                            ),
-                        ),
-                    )
-                    .reset_index()
-                )
-                st.dataframe(agg, use_container_width=True)
+            st.markdown("**Status breakdown (counts)**")
+            cnt = (
+                df.groupby(["class_key", "status_label"], dropna=False)
+                .size()
+                .reset_index(name="runs")
+            )
+            st.dataframe(cnt, use_container_width=True)
 
-                # -------- More visuals (only if df exists) --------
-                st.subheader("More visuals")
+            # --- Plots (robust to missing objective/best_bound) ---
+            # Ensure numeric columns are numeric
+            df["runtime_sec"] = pd.to_numeric(df["runtime_sec"], errors="coerce")
+            df["cap_mean"] = pd.to_numeric(df["cap_mean"], errors="coerce")
+            df["n_items"] = pd.to_numeric(df["n_items"], errors="coerce")
 
-                # 1) Runtime distribution per class (box)
-                fig_box = px.box(
-                    df.dropna(subset=["runtime_sec"]),
-                    x="class_key",
+            c1, c2 = st.columns(2)
+            with c1:
+                fig = px.scatter(
+                    df.dropna(subset=["n_items", "runtime_sec"]),
+                    x="n_items",
                     y="runtime_sec",
-                    points="all",
-                    hover_data=["n_items", "period", "gap", "objective", "status"],
-                )
-                fig_box.update_layout(
-                    height=420, title="Runtime distribution per class"
-                )
-                st.plotly_chart(fig_box, use_container_width=True)
-
-                # 2) Gap vs Runtime (log-x), color by class
-                df_numgap = df.copy()
-                df_numgap["gap_num"] = pd.to_numeric(df_numgap["gap"], errors="coerce")
-                fig_gap = px.scatter(
-                    df_numgap.dropna(subset=["gap_num", "runtime_sec"]),
-                    x="runtime_sec",
-                    y="gap_num",
                     color="class_key",
-                    hover_data=["n_items", "period", "objective", "status"],
+                    symbol="status_label",
+                    hover_data=["gap", "objective", "status_label"],
                 )
-                fig_gap.update_layout(height=380, title="Gap vs Runtime (log x)")
-                fig_gap.update_xaxes(type="log")
-                st.plotly_chart(fig_gap, use_container_width=True)
+                fig.update_layout(height=380, title="Runtime vs #Items")
+                st.plotly_chart(fig, use_container_width=True)
+            with c2:
+                fig = px.scatter(
+                    df.dropna(subset=["cap_mean", "runtime_sec"]),
+                    x="cap_mean",
+                    y="runtime_sec",
+                    color="class_key",
+                    symbol="status_label",
+                    hover_data=["gap", "objective", "status_label"],
+                )
+                fig.update_layout(height=380, title="Runtime vs Mean Capacity")
+                st.plotly_chart(fig, use_container_width=True)
 
-                # 3) Heatmap (NaNs remain transparent)
-                bins = [0, 5, 10, 20, 50, 100, np.inf]
-                labels = ["≤5", "6-10", "11-20", "21-50", "51-100", "100+"]
-                df_hm = df.copy()
-                df_hm["items_bin"] = pd.cut(df_hm["n_items"], bins=bins, labels=labels)
-                pt = (
-                    df_hm.dropna(subset=["runtime_sec"])
-                    .groupby(["class_key", "items_bin"])["runtime_sec"]
-                    .median()
-                    .unstack("items_bin")
-                    .reindex(columns=labels)
-                )
-                fig_hm = px.imshow(
-                    pt,
-                    labels=dict(
-                        x="items_bin", y="class_key", color="median runtime (sec)"
+            st.subheader("3D scatter")
+            x_axis = st.selectbox("X", ["n_items", "period", "cap_mean"], key="x3d")
+            y_axis = st.selectbox(
+                "Y", ["runtime_sec", "gap", "objective", "best_bound"], key="y3d"
+            )
+            z_axis = st.selectbox(
+                "Z", ["runtime_sec", "gap", "objective", "best_bound"], key="z3d"
+            )
+            color_by = st.selectbox("Color", ["class_key", "status_label"], key="c3d")
+            fig3d = px.scatter_3d(
+                df.dropna(subset=[x_axis, y_axis, z_axis]),
+                x=x_axis,
+                y=y_axis,
+                z=z_axis,
+                color=color_by,
+                symbol="class_key",
+                hover_data=["run_id", "instance_id", "status_label"],
+            )
+            fig3d.update_layout(
+                height=520,
+                scene=dict(xaxis_title=x_axis, yaxis_title=y_axis, zaxis_title=z_axis),
+            )
+            st.plotly_chart(fig3d, use_container_width=True)
+
+            st.subheader("Class aggregates (including non-optimal)")
+            df_numgap = df.copy()
+            df_numgap["gap_num"] = pd.to_numeric(df_numgap["gap"], errors="coerce")
+            agg = (
+                df.groupby("class_key")
+                .agg(
+                    runs=("run_id", "count"),
+                    n_items_mean=("n_items", "mean"),
+                    runtime_p50=("runtime_sec", "median"),
+                    runtime_p90=(
+                        "runtime_sec",
+                        lambda x: (
+                            np.percentile(x.dropna(), 90) if len(x.dropna()) else None
+                        ),
                     ),
-                    aspect="auto",
+                    gap_p95=(
+                        "gap_num",
+                        lambda x: (
+                            np.percentile(x.dropna(), 95) if len(x.dropna()) else None
+                        ),
+                    ),
+                    infeasible=("status", lambda s: int(np.sum(s == 3))),
+                    time_limit=("status", lambda s: int(np.sum(s == 9))),
+                    suboptimal=("status", lambda s: int(np.sum(s == 13))),
+                    optimal=("status", lambda s: int(np.sum(s == 2))),
                 )
-                fig_hm.update_layout(
-                    height=420, title="Median runtime heatmap (class × #items bin)"
-                )
-                fig_hm.update_traces(hoverongaps=False)
-                st.plotly_chart(fig_hm, use_container_width=True)
+                .reset_index()
+            )
+            st.dataframe(agg, use_container_width=True)
 
-                # 4) Runs over time (daily)
-                df_time = df.copy()
-                dt_parsed = pd.to_datetime(
-                    df_time["created_at"], format="ISO8601", utc=True, errors="coerce"
-                )
-                df_time["date"] = dt_parsed.dt.date
-                ts = df_time.groupby(["date", "class_key"], as_index=False)[
+            st.subheader("Status counts per class")
+            fig_bar = px.bar(
+                cnt,
+                x="class_key",
+                y="runs",
+                color="status_label",
+                barmode="stack",
+                text_auto=True,
+            )
+            fig_bar.update_layout(height=420, xaxis_title="", yaxis_title="# runs")
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+            st.subheader("Runtime distribution per class (all statuses)")
+            fig_box = px.box(
+                df.dropna(subset=["runtime_sec"]),
+                x="class_key",
+                y="runtime_sec",
+                color="status_label",
+                points="all",
+                hover_data=["n_items", "period", "gap", "objective"],
+            )
+            fig_box.update_layout(height=420, title="Runtime distribution per class")
+            st.plotly_chart(fig_box, use_container_width=True)
+
+            # Heatmap remains on OPTIMAL or ALL depending on the toggle
+            st.subheader("Median runtime heatmap (class × #items bin)")
+            bins = [0, 5, 10, 20, 50, 100, np.inf]
+            labels = ["≤5", "6-10", "11-20", "21-50", "51-100", "100+"]
+            df_hm = df.copy()
+            df_hm["items_bin"] = pd.cut(df_hm["n_items"], bins=bins, labels=labels)
+            pt = (
+                df_hm.dropna(subset=["runtime_sec"])
+                .groupby(["class_key", "items_bin"])["runtime_sec"]
+                .median()
+                .unstack("items_bin")
+                .reindex(columns=labels)
+            )
+            fig_hm = px.imshow(
+                pt,
+                labels=dict(x="items_bin", y="class_key", color="median runtime (sec)"),
+                aspect="auto",
+            )
+            fig_hm.update_layout(height=420)
+            fig_hm.update_traces(hoverongaps=False)
+            st.plotly_chart(fig_hm, use_container_width=True)
+
+            st.subheader("Runs over time (daily)")
+            df_time = df.copy()
+            dt_parsed = pd.to_datetime(
+                df_time["created_at"], format="ISO8601", utc=True, errors="coerce"
+            )
+            df_time["date"] = dt_parsed.dt.date
+            ts = (
+                df_time.groupby(["date", "class_key", "status_label"], as_index=False)[
                     "run_id"
-                ].count()
-                fig_ts = px.line(
-                    ts, x="date", y="run_id", color="class_key", markers=True
-                )
-                fig_ts.update_layout(
-                    height=380, title="Runs per day by class", yaxis_title="# runs"
-                )
-                st.plotly_chart(fig_ts, use_container_width=True)
+                ]
+                .count()
+                .rename(columns={"run_id": "runs"})
+            )
+            fig_ts = px.line(
+                ts,
+                x="date",
+                y="runs",
+                color="class_key",
+                line_dash="status_label",
+                markers=True,
+            )
+            fig_ts.update_layout(height=380, title="Runs per day by class and status")
+            st.plotly_chart(fig_ts, use_container_width=True)
 
-                # 5) Objective vs Runtime, bubble size = #items
-                fig_bub = px.scatter(
-                    df.dropna(subset=["objective", "runtime_sec"]),
-                    x="runtime_sec",
-                    y="objective",
-                    size="n_items",
-                    color="class_key",
-                    hover_data=["gap", "status", "cap_mean", "period"],
-                    size_max=20,
-                )
-                fig_bub.update_layout(
-                    height=420, title="Objective vs Runtime (bubble size = #items)"
-                )
-                st.plotly_chart(fig_bub, use_container_width=True)
+            st.subheader("Objective vs Runtime")
+            fig_bub = px.scatter(
+                df.dropna(subset=["objective", "runtime_sec"]),
+                x="runtime_sec",
+                y="objective",
+                size="n_items",
+                color="class_key",
+                symbol="status_label",
+                hover_data=["gap", "cap_mean", "period"],
+                size_max=20,
+            )
+            fig_bub.update_layout(
+                height=420, title="Objective vs Runtime (bubble size = #items)"
+            )
+            st.plotly_chart(fig_bub, use_container_width=True)
 
         except Exception as e:
             st.error(f"Supabase query failed: {e}")

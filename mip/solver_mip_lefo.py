@@ -46,7 +46,7 @@ def solve_instance(
     # κ_t : production capacity per period (NOT inventory capacity)
     prod_cap = data.get("production_capacity")
     if prod_cap is None:
-        # keep backwards-compat alias
+        # backwards-compat alias
         prod_cap = data.get("manual_capacity")
     prod_cap = (
         _as_len_T_vector(prod_cap, T)
@@ -83,22 +83,25 @@ def solve_instance(
         m.Params.MIPGap = float(mip_gap)
 
     # ----------------------------
-    # Feasible arcs and triples (build from consumption windows)
+    # Feasible arcs and triples (production-based shelf lives m_it)
     # ----------------------------
-    Gamma: Dict[Tuple[int, int], List[int]] = {
-        (i, t): [] for i in items_raw for t in Periods
-    }
+    # Interpret items_raw[i]["shelf_seq"][t] as m_{it} (shelf life of a lot produced at t)
+    Gamma: Dict[Tuple[int, int], List[int]] = {}  # (i,t) -> list of u
     Triples: List[Tuple[int, int, int]] = []
     for i, it in items_raw.items():
-        # Interpret shelf_seq[u] as max allowed age at consumption u
         mseq = list(it["shelf_seq"])
-        for u in Periods:
-            L_u = int(mseq[u])
-            if L_u <= 0:
+        if len(mseq) != T:
+            raise ValueError(f"items[{i}]['shelf_seq'] must have length {T}")
+        for t in Periods:
+            m_it = int(mseq[t])
+            if m_it <= 0:
+                Gamma[(i, t)] = []
                 continue
-            t_min = max(0, u - (L_u - 1))
-            for t in range(t_min, u + 1):
-                Gamma[(i, t)].append(u)
+            # lot produced at t can be consumed at u in [t, t + m_it - 1], clipped to horizon
+            u_max = min(T - 1, t + m_it - 1)
+            us = [u for u in range(t, u_max + 1)]
+            Gamma[(i, t)] = us
+            for u in us:
                 Triples.append((i, t, u))
 
     # Tight µ_it for setup linking: sum of demands that (i,t) can serve
@@ -106,7 +109,29 @@ def solve_instance(
     for i, it in items_raw.items():
         d = list(it["demand"])
         for t in Periods:
-            mu[(i, t)] = float(sum(d[u] for u in Gamma[(i, t)]))  # 0 if no arcs
+            mu[(i, t)] = float(sum(d[u] for u in Gamma.get((i, t), [])))  # 0 if no arcs
+
+    # ----------------------------
+    # Expiry groups per (i,u) for Last-Expiry-First
+    # ----------------------------
+    # For each (i,u), collect origins t in Gamma with expiry e_{itu} = t + m_{it}
+    # Group by distinct expiry dates; sort groups from latest to earliest
+    expiry_groups: Dict[Tuple[int, int], List[List[int]]] = (
+        {}
+    )  # (i,u) -> list of groups [t,...]
+    for i, it in items_raw.items():
+        mseq = list(it["shelf_seq"])
+        for u in Periods:
+            origins = [t for t in range(0, u + 1) if u in Gamma.get((i, t), [])]
+            if not origins:
+                continue
+            groups_by_expiry: Dict[int, List[int]] = {}
+            for t in origins:
+                e_itu = t + int(mseq[t])
+                groups_by_expiry.setdefault(e_itu, []).append(t)
+            # sort expiry dates descending (latest first)
+            ordered_expiries = sorted(groups_by_expiry.keys(), reverse=True)
+            expiry_groups[(i, u)] = [groups_by_expiry[e] for e in ordered_expiries]
 
     # ----------------------------
     # Variables
@@ -116,15 +141,11 @@ def solve_instance(
         [(i, t) for i in items_raw for t in Periods], vtype=GRB.BINARY, name="Y"
     )
 
-    # LEFO permission binaries L_{i,u,a} only for ages present at (i,u)
+    # LEFO permission binaries L_{i,u,g} only for groups present at (i,u)
     L_keys: List[Tuple[int, int, int]] = []
-    for i in items_raw:
-        for u in Periods:
-            ages = sorted(
-                {u - t for t in range(0, u + 1) if u in Gamma.get((i, t), [])}
-            )
-            for a in ages:
-                L_keys.append((i, u, a))
+    for (i, u), groups in expiry_groups.items():
+        for g in range(len(groups)):
+            L_keys.append((i, u, g))
     L = m.addVars(L_keys, vtype=GRB.BINARY, name="L")
 
     # ----------------------------
@@ -181,17 +202,22 @@ def solve_instance(
     # (1b) Optional per–item production cap p_it
     if per_item_cap:
         for (i, t), pit in per_item_cap.items():
-            m.addConstr(
-                gp.quicksum(X[i, t, u] for u in Gamma[(i, t)]) <= float(pit),
-                name=f"item_cap_{i}_{t}",
-            )
+            if Gamma.get((i, t)):
+                m.addConstr(
+                    gp.quicksum(X[i, t, u] for u in Gamma[(i, t)]) <= float(pit),
+                    name=f"item_cap_{i}_{t}",
+                )
 
     # (1c) Setup linking
     for i, t in Y.keys():
-        m.addConstr(
-            gp.quicksum(X[i, t, u] for u in Gamma[(i, t)]) <= mu[(i, t)] * Y[i, t],
-            name=f"setupLink_{i}_{t}",
-        )
+        if Gamma.get((i, t)):
+            m.addConstr(
+                gp.quicksum(X[i, t, u] for u in Gamma[(i, t)]) <= mu[(i, t)] * Y[i, t],
+                name=f"setupLink_{i}_{t}",
+            )
+        else:
+            # no arcs -> force Y[i,t] = 0 to tighten
+            m.addConstr(Y[i, t] == 0, name=f"setupLink_zero_{i}_{t}")
 
     # (optional) Warehouse capacity: inventory carried from u to u+1
     if W is not None:
@@ -200,7 +226,7 @@ def solve_instance(
                 X[i, t, w]
                 for i in items_raw
                 for t in range(0, u + 1)
-                for w in Gamma[(i, t)]
+                for w in Gamma.get((i, t), [])
                 if w > u
             )
             m.addConstr(inv_u <= W, name=f"whcap_{u}")
@@ -209,62 +235,42 @@ def solve_instance(
     for i, it in items_raw.items():
         d = list(it["demand"])
         for u in Periods:
-            origins = [t for t in range(0, u + 1) if u in Gamma[(i, t)]]
+            origins = [t for t in range(0, u + 1) if u in Gamma.get((i, t), [])]
             m.addConstr(
                 gp.quicksum(X[i, t, u] for t in origins) == d[u],
                 name=f"demand_{i}_{u}",
             )
 
-    # Freshest-first (LEFO): gate + monotonicity + sufficiency
+    # Last-Expiry-First (group-based): gate + monotonicity + sufficiency
     EPS = 1e-6
-    for i, it in items_raw.items():
-        d = list(it["demand"])
-        for u in Periods:
-            Ciu = float(d[u])
-            ages = sorted(
-                {u - t for t in range(0, u + 1) if u in Gamma.get((i, t), [])}
-            )
-            if not ages:
-                continue
-
-            # Gate by permission
-            for a in ages:
-                T_a = [
-                    t
-                    for t in range(0, u + 1)
-                    if (u in Gamma.get((i, t), []) and (u - t) == a)
-                ]
-                if T_a:
+    for (i, u), groups in expiry_groups.items():
+        Ciu = float(items_raw[i]["demand"][u])
+        G = len(groups)
+        # (a) Gate by expiry group
+        for g in range(G):
+            T_g = groups[g]  # list of t in group g
+            if T_g:
+                m.addConstr(
+                    gp.quicksum(X[i, t, u] for t in T_g) <= Ciu * L[i, u, g],
+                    name=f"lefo_gate_{i}_{u}_{g}",
+                )
+        # (b) Monotonicity
+        for g in range(G - 1):
+            m.addConstr(L[i, u, g] >= L[i, u, g + 1], name=f"lefo_mono_{i}_{u}_{g}")
+        # (c) Sufficiency cut
+        if Ciu > 0.0:
+            cum_terms = []  # will build cumulative sum over groups
+            for g in range(G - 1):
+                T_g = groups[g]
+                if T_g:
+                    cum_terms.append(gp.quicksum(X[i, t, u] for t in T_g))
+                # RHS = sum_{h=0..g} sum_{t in G_h} X[i,t,u] - d_{iu} + EPS
+                if cum_terms:
                     m.addConstr(
-                        gp.quicksum(X[i, t, u] for t in T_a) <= Ciu * L[i, u, a],
-                        name=f"lefo_gate_{i}_{u}_{a}",
+                        Ciu * (1 - L[i, u, g + 1])
+                        >= gp.quicksum(cum_terms) - Ciu + EPS,
+                        name=f"lefo_suff_{i}_{u}_{g+1}",
                     )
-
-            # Monotone permissions
-            for k in range(len(ages) - 1):
-                a, ap1 = ages[k], ages[k + 1]
-                m.addConstr(L[i, u, a] >= L[i, u, ap1], name=f"lefo_mono_{i}_{u}_{a}")
-
-            # Sufficiency cut
-            if Ciu > 0.0:
-                for k in range(len(ages) - 1):
-                    a, ap1 = ages[k], ages[k + 1]
-                    newer_terms = []
-                    for j in ages:
-                        if j <= a:
-                            T_j = [
-                                t
-                                for t in range(0, u + 1)
-                                if (u in Gamma.get((i, t), []) and (u - t) == j)
-                            ]
-                            if T_j:
-                                newer_terms.append(gp.quicksum(X[i, t, u] for t in T_j))
-                    if newer_terms:
-                        m.addConstr(
-                            Ciu * (1 - L[i, u, ap1])
-                            >= gp.quicksum(newer_terms) - Ciu + EPS,
-                            name=f"lefo_suff_{i}_{u}_{ap1}",
-                        )
 
     # ----------------------------
     # Optimize and report
@@ -281,11 +287,15 @@ def solve_instance(
         "solver_version": "gurobi_12_0_3",
     }
 
-    for k in ("ObjBound", "MIPGap"):
-        try:
-            summary["best_bound" if k == "ObjBound" else "gap"] = float(getattr(m, k))
-        except Exception:
-            pass
+    # best bound, gap if available
+    try:
+        summary["best_bound"] = float(m.ObjBound)
+    except Exception:
+        pass
+    try:
+        summary["gap"] = float(m.MIPGap)
+    except Exception:
+        pass
 
     orders_txt: List[str] = []
     if m.SolCount and status not in (GRB.INFEASIBLE, GRB.INF_OR_UNBD, GRB.UNBOUNDED):
@@ -295,7 +305,7 @@ def solve_instance(
         for i in items_raw:
             orders_txt.append(f"Item {i} — orders (t → qty)")
             for t in Periods:
-                qty = sum(X[i, t, u].X for u in Gamma[(i, t)] if (i, t, u) in X)
+                qty = sum(X[i, t, u].X for u in Gamma.get((i, t), []) if (i, t, u) in X)
                 if qty > 1e-6:
                     orders_txt.append(f"  {t:2d} → {qty:8.3f}")
             orders_txt.append("")
@@ -319,6 +329,7 @@ def solve_instance(
         except Exception:
             pass
     else:
+        # Infeasible or no incumbent: try to write an IIS for debugging
         try:
             m.computeIIS()
             iis_path = f"iis_{int(time.time())}.ilp"

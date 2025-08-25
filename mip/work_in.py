@@ -9,6 +9,7 @@ from gurobipy import GRB
 
 
 def _cap_global_from_dem(items: Dict[int, dict], T: int) -> List[int]:
+    """Fallback κ_t: total demand that *could* be produced, with a small buffer."""
     cap_raw = [0] * T
     for it in items.values():
         dem = it["demand"]
@@ -16,6 +17,19 @@ def _cap_global_from_dem(items: Dict[int, dict], T: int) -> List[int]:
             cap_raw[t] += dem[t]
     buf = max(5, int(0.2 * max(cap_raw) if cap_raw else 0))
     return [c + buf for c in cap_raw]
+
+
+def _as_len_T_vector(val, T: int) -> List[float]:
+    """Accept scalar or list; return length-T list of floats."""
+    if val is None:
+        return []
+    if isinstance(val, (int, float)):
+        return [float(val)] * T
+    if isinstance(val, list):
+        if len(val) != T:
+            raise ValueError(f"Expected length-{T} list, got {len(val)}")
+        return [float(x) for x in val]
+    raise TypeError("Capacity must be a number or a list")
 
 
 def solve_instance(
@@ -29,11 +43,37 @@ def solve_instance(
     Periods = list(range(T))
     items_raw: Dict[int, dict] = {int(k): v for k, v in data["items"].items()}
 
-    cap_global = data.get("manual_capacity")
-    if not cap_global:
-        cap_global = _cap_global_from_dem(items_raw, T)
+    # κ_t : production capacity per period (NOT inventory capacity)
+    prod_cap = data.get("production_capacity")
+    if prod_cap is None:
+        # keep backwards-compat alias
+        prod_cap = data.get("manual_capacity")
+    prod_cap = (
+        _as_len_T_vector(prod_cap, T)
+        if prod_cap is not None
+        else _cap_global_from_dem(items_raw, T)
+    )
 
+    # Optional: per-item production capacity p_it
+    # Expect dict of {item_id: list|scalar} or a single list|scalar applied to all items
+    item_cap_raw = data.get("item_capacity")  # optional
+    per_item_cap: Dict[Tuple[int, int], float] = {}
+    if item_cap_raw is not None:
+        if isinstance(item_cap_raw, dict):
+            for i, cap in item_cap_raw.items():
+                vec = _as_len_T_vector(cap, T)
+                for t in Periods:
+                    per_item_cap[(int(i), t)] = vec[t]
+        else:
+            vec = _as_len_T_vector(item_cap_raw, T)
+            for i in items_raw:
+                for t in Periods:
+                    per_item_cap[(i, t)] = vec[t]
+
+    # Optional warehouse capacity W (inventory between u and u+1)
     W = data.get("warehouse_capacity", None)
+    if W is not None:
+        W = float(W)
 
     m = gp.Model("perishable_LS_compact_LEFO")
     m.Params.OutputFlag = 1
@@ -43,28 +83,25 @@ def solve_instance(
         m.Params.MIPGap = float(mip_gap)
 
     # ----------------------------
-    # Feasible arcs and triples (FIX: build from consumption windows)
+    # Feasible arcs and triples (build from consumption windows)
     # ----------------------------
-    # Gamma[(i,t)] = list of feasible consumption periods u for production at t
     Gamma: Dict[Tuple[int, int], List[int]] = {
         (i, t): [] for i in items_raw for t in Periods
     }
     Triples: List[Tuple[int, int, int]] = []
-
     for i, it in items_raw.items():
-        # Interpret shelf_seq[u] as max allowed age at consumption u (>=0).
+        # Interpret shelf_seq[u] as max allowed age at consumption u
         mseq = list(it["shelf_seq"])
         for u in Periods:
             L_u = int(mseq[u])
             if L_u <= 0:
-                continue  # nothing can be consumed at u
-            # contiguous origin window for consumption at u
+                continue
             t_min = max(0, u - (L_u - 1))
             for t in range(t_min, u + 1):
                 Gamma[(i, t)].append(u)
                 Triples.append((i, t, u))
 
-    # Tight μ_it for setup-link: sum of demands that (i,t) can serve
+    # Tight µ_it for setup linking: sum of demands that (i,t) can serve
     mu: Dict[Tuple[int, int], float] = {}
     for i, it in items_raw.items():
         d = list(it["demand"])
@@ -134,22 +171,29 @@ def solve_instance(
     # Constraints
     # ----------------------------
 
-    # (1) global capacity (per production period)
+    # (1a) Production capacity per period κ_t  (NOT inventory capacity)
     for t in Periods:
         m.addConstr(
-            gp.quicksum(X[i, t, u] for (i, tt, u) in Triples if tt == t)
-            <= cap_global[t],
-            name=f"cap_global_{t}",
+            gp.quicksum(X[i, t, u] for (i, tt, u) in Triples if tt == t) <= prod_cap[t],
+            name=f"prod_cap_{t}",
         )
 
-    # (2) setup-link
+    # (1b) Optional per–item production cap p_it
+    if per_item_cap:
+        for (i, t), pit in per_item_cap.items():
+            m.addConstr(
+                gp.quicksum(X[i, t, u] for u in Gamma[(i, t)]) <= float(pit),
+                name=f"item_cap_{i}_{t}",
+            )
+
+    # (1c) Setup linking
     for i, t in Y.keys():
         m.addConstr(
             gp.quicksum(X[i, t, u] for u in Gamma[(i, t)]) <= mu[(i, t)] * Y[i, t],
             name=f"setupLink_{i}_{t}",
         )
 
-    # (3) warehouse capacity (inventory between u and u+1)
+    # (optional) Warehouse capacity: inventory carried from u to u+1
     if W is not None:
         for u in Periods[:-1]:
             inv_u = gp.quicksum(
@@ -159,30 +203,31 @@ def solve_instance(
                 for w in Gamma[(i, t)]
                 if w > u
             )
-            m.addConstr(inv_u <= float(W), name=f"whcap_{u}")
+            m.addConstr(inv_u <= W, name=f"whcap_{u}")
 
-    # (4) demand balance (now contiguous origin windows by construction)
+    # (1d) Demand satisfaction
     for i, it in items_raw.items():
         d = list(it["demand"])
         for u in Periods:
             origins = [t for t in range(0, u + 1) if u in Gamma[(i, t)]]
             m.addConstr(
-                gp.quicksum(X[i, t, u] for t in origins) == d[u], name=f"demand_{i}_{u}"
+                gp.quicksum(X[i, t, u] for t in origins) == d[u],
+                name=f"demand_{i}_{u}",
             )
 
-    # (5) LEFO (permission-based): Gate + Monotonicity + Sufficiency
+    # Freshest-first (LEFO): gate + monotonicity + sufficiency
     EPS = 1e-6
     for i, it in items_raw.items():
         d = list(it["demand"])
         for u in Periods:
-            Ciu = float(d[u])  # tight gating bound; no-backorder case
+            Ciu = float(d[u])
             ages = sorted(
                 {u - t for t in range(0, u + 1) if u in Gamma.get((i, t), [])}
             )
             if not ages:
                 continue
 
-            # (5a) Gate: sum over arcs of age a <= Ciu * L_{i,u,a}
+            # Gate by permission
             for a in ages:
                 T_a = [
                     t
@@ -195,17 +240,15 @@ def solve_instance(
                         name=f"lefo_gate_{i}_{u}_{a}",
                     )
 
-            # (5b) Monotonicity: L_{i,u,a} >= L_{i,u,a+1}
+            # Monotone permissions
             for k in range(len(ages) - 1):
-                a = ages[k]
-                ap1 = ages[k + 1]
+                a, ap1 = ages[k], ages[k + 1]
                 m.addConstr(L[i, u, a] >= L[i, u, ap1], name=f"lefo_mono_{i}_{u}_{a}")
 
-            # (5c) Sufficiency cut
+            # Sufficiency cut
             if Ciu > 0.0:
                 for k in range(len(ages) - 1):
-                    a = ages[k]
-                    ap1 = ages[k + 1]
+                    a, ap1 = ages[k], ages[k + 1]
                     newer_terms = []
                     for j in ages:
                         if j <= a:
@@ -238,21 +281,17 @@ def solve_instance(
         "solver_version": "gurobi_12_0_3",
     }
 
-    try:
-        summary["best_bound"] = float(m.ObjBound)
-    except Exception:
-        pass
-    try:
-        summary["gap"] = float(m.MIPGap)
-    except Exception:
-        pass
+    for k in ("ObjBound", "MIPGap"):
+        try:
+            summary["best_bound" if k == "ObjBound" else "gap"] = float(getattr(m, k))
+        except Exception:
+            pass
 
     orders_txt: List[str] = []
-
     if m.SolCount and status not in (GRB.INFEASIBLE, GRB.INF_OR_UNBD, GRB.UNBOUNDED):
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        orders_txt = []
+
         for i in items_raw:
             orders_txt.append(f"Item {i} — orders (t → qty)")
             for t in Periods:
@@ -262,15 +301,16 @@ def solve_instance(
             orders_txt.append("")
         (out_dir / "orders.txt").write_text("\n".join(orders_txt), encoding="utf-8")
 
-        summary = {
-            "status": int(m.Status),
-            "objective": getattr(m, "ObjVal", None),
-            "best_bound": getattr(m, "ObjBound", None),
-            "gap": getattr(m, "MIPGap", None),
-            "runtime_sec": getattr(m, "Runtime", None),
-            "n_items": len(items_raw),
-            "T": T,
-        }
+        summary.update(
+            {
+                "objective": getattr(m, "ObjVal", None),
+                "best_bound": getattr(m, "ObjBound", None),
+                "gap": getattr(m, "MIPGap", None),
+                "runtime_sec": getattr(m, "Runtime", None),
+                "n_items": len(items_raw),
+                "T": T,
+            }
+        )
         (out_dir / "summary.json").write_text(
             json.dumps(summary, indent=2), encoding="utf-8"
         )
