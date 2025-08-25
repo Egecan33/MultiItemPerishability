@@ -46,7 +46,13 @@ st.set_page_config(page_title="Perishable Lot-Sizing (LEFO MIP)", layout="wide")
 st.title("Perishable Lot-Sizing — Generator • Classes • Batches • Visualizer")
 
 # ----------------------------------------------------------------------------
-CAP_TIGHT_BETAS = {"Loose": 0.70, "Medium": 0.60, "Tight": 0.50}  # demand-based cap
+CAP_TIGHT_BETAS = {
+    "Loose": 1.10,
+    "Medium": 1.02,
+    "Tight": 0.96,
+    "Tighter": 0.90,
+    "Ultra": 0.80,
+}  # demand-based cap
 DEFAULT_TBO_CHOICES = [1, 2, 4]  # target TBO set
 SETUP_TBO_JITTER_DEFAULT = 10.0  # +/- percent
 
@@ -273,6 +279,7 @@ st.session_state["db_classes"] = {r["name"]: r for r in _rows}  # name -> row
 
 # 2) (Optional) keep a FEW local presets here for convenience.
 #    They are NOT auto-queued and NOT auto-saved; you'll pick them in the UI.
+
 LOCAL_PRESETS = [
     # ---------- T=20 • Demand-based (β from Loose/Medium/Tight) ----------
     {
@@ -292,7 +299,7 @@ LOCAL_PRESETS = [
         "h_params": {"value": 0.4},
         "s_mode": "tbo",
         "s_params": {"L": 1.0, "jitter_pct": 10.0},
-        "zero_head": 0,
+        "zero_head": 1,
         "batch_size": 30,
         "seed_base": 20000,
     },
@@ -313,7 +320,7 @@ LOCAL_PRESETS = [
         "h_params": {"value": 0.4},
         "s_mode": "tbo",
         "s_params": {"L": 2.0, "jitter_pct": 10.0},
-        "zero_head": 0,
+        "zero_head": 1,
         "batch_size": 30,
         "seed_base": 20050,
     },
@@ -334,7 +341,7 @@ LOCAL_PRESETS = [
         "h_params": {"value": 0.4},
         "s_mode": "tbo",
         "s_params": {"L": 4.0, "jitter_pct": 10.0},
-        "zero_head": 0,
+        "zero_head": 1,
         "batch_size": 30,
         "seed_base": 20100,
     },
@@ -355,7 +362,7 @@ LOCAL_PRESETS = [
         "h_params": {"value": 0.4},
         "s_mode": "tbo",
         "s_params": {"L": 1.0, "jitter_pct": 10.0},
-        "zero_head": 1,
+        "zero_head": 2,
         "batch_size": 30,
         "seed_base": 20200,
     },
@@ -423,6 +430,48 @@ LOCAL_PRESETS = [
         "seed_base": 20400,
     },
     {
+        "name": "prof_T20_N10_DBTighter_TBO1_CVlow",
+        "period": 20,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Tighter",
+        "n_items": 10,
+        "dem_lo": 50,
+        "dem_hi": 110,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 1.0, "jitter_pct": 10.0},
+        "zero_head": 4,
+        "batch_size": 30,
+        "seed_base": 20400,
+    },
+    {
+        "name": "prof_T20_N10_DBUltra_TBO1_CVlow",
+        "period": 20,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Tight",
+        "n_items": 10,
+        "dem_lo": 50,
+        "dem_hi": 110,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 1.0, "jitter_pct": 10.0},
+        "zero_head": 5,
+        "batch_size": 30,
+        "seed_base": 20400,
+    },
+    {
         "name": "prof_T20_N20_DBTight_TBO2_CVmed",
         "period": 20,
         "cap_mode": "DemandBased",
@@ -460,7 +509,7 @@ LOCAL_PRESETS = [
         "h_params": {"value": 0.4},
         "s_mode": "tbo",
         "s_params": {"L": 4.0, "jitter_pct": 15.0},
-        "zero_head": 4,
+        "zero_head": 3,
         "batch_size": 30,
         "seed_base": 20500,
     },
@@ -482,7 +531,7 @@ LOCAL_PRESETS = [
         "h_params": {"value": 0.4},
         "s_mode": "tbo",
         "s_params": {"L": 2.0, "jitter_pct": 10.0},
-        "zero_head": 2,
+        "zero_head": 3,
         "batch_size": 30,
         "seed_base": 20600,
     },
@@ -503,7 +552,7 @@ LOCAL_PRESETS = [
         "h_params": {"value": 0.4},
         "s_mode": "tbo",
         "s_params": {"L": 2.0, "jitter_pct": 12.0},
-        "zero_head": 4,
+        "zero_head": 2,
         "batch_size": 30,
         "seed_base": 20650,
     },
@@ -524,7 +573,7 @@ LOCAL_PRESETS = [
         "h_params": {"value": 0.4},
         "s_mode": "tbo",
         "s_params": {"L": 4.0, "jitter_pct": 10.0},
-        "zero_head": 0,
+        "zero_head": 2,
         "batch_size": 30,
         "seed_base": 20700,
     },
@@ -546,7 +595,7 @@ LOCAL_PRESETS = [
         "h_params": {"value": 0.4},
         "s_mode": "tbo",
         "s_params": {"L": 2.0, "jitter_pct": 10.0},
-        "zero_head": 2,
+        "zero_head": 3,
         "batch_size": 30,
         "seed_base": 20800,
     },
@@ -567,12 +616,32 @@ LOCAL_PRESETS = [
         "h_params": {"value": 0.4},
         "s_mode": "tbo",
         "s_params": {"L": 4.0, "jitter_pct": 12.0},
-        "zero_head": 4,
+        "zero_head": 2,
+        "batch_size": 30,
+        "seed_base": 20850,
+    },
+    {
+        "name": "prof_T60_N40_DBTighter_TBO4_CVhigh",
+        "period": 60,
+        "cap_mode": "DemandBased",
+        "cap_params": {},
+        "cap_tight": "Tighter",
+        "n_items": 40,
+        "dem_lo": 0,
+        "dem_hi": 160,
+        "m_lo": 6,
+        "m_hi": 50,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 4.0, "jitter_pct": 12.0},
+        "zero_head": 5,
         "batch_size": 30,
         "seed_base": 20850,
     },
     # ---------- Non–demand-based capacity (for contrast) ----------
-    # Uniform capacity around ~0.6 * mean(total demand) for N=20, μ≈80 → ~960
     {
         "name": "prof_T20_N20_UniformCap_900to1100_TBO2_CVmed",
         "period": 20,
@@ -589,11 +658,10 @@ LOCAL_PRESETS = [
         "h_params": {"value": 0.4},
         "s_mode": "tbo",
         "s_params": {"L": 2.0, "jitter_pct": 10.0},
-        "zero_head": 2,
+        "zero_head": 3,
         "batch_size": 30,
         "seed_base": 20900,
     },
-    # Normal capacity with mild noise around the same target
     {
         "name": "prof_T20_N20_NormalCap_mu1000_sd80_TBO2_CVmed",
         "period": 20,
@@ -610,11 +678,12 @@ LOCAL_PRESETS = [
         "h_params": {"value": 0.4},
         "s_mode": "tbo",
         "s_params": {"L": 2.0, "jitter_pct": 10.0},
-        "zero_head": 2,
+        "zero_head": 3,
         "batch_size": 30,
         "seed_base": 20950,
     },
 ]
+
 st.session_state["local_presets"] = {p["name"]: p for p in LOCAL_PRESETS}
 # ===== END =====
 
@@ -2120,6 +2189,8 @@ with batch_tab:
                 if sb is not None:
                     try:
                         cid = class_id_cache.get(cls["name"])
+
+                        # use the in-memory dict 'inst', not 'inst_json'
                         inst_payload = {
                             "period": int(inst["period"]),
                             "manual_capacity": inst.get("manual_capacity"),
@@ -2128,27 +2199,31 @@ with batch_tab:
                         }
                         if cid:
                             inst_payload["class_id"] = cid
-                            inst["meta"][
-                                "class_id"
-                            ] = cid  # optional, keeps your meta in sync
+                            inst["meta"]["class_id"] = cid  # optional
 
+                        inst_payload = sanitize_json(inst_payload)
                         inst_res = sb.table("instances").insert(inst_payload).execute()
                         instance_id = inst_res.data[0]["id"]
 
                         run_payload = {
                             "instance_id": instance_id,
                             "time_limit_sec": int(time_limit),
-                            "mip_gap": float(mip_gap),
-                            "status": int(summary.get("status")),
-                            "objective": summary.get("objective"),
-                            "best_bound": summary.get("best_bound"),
-                            "gap": summary.get("gap"),
-                            "runtime_sec": summary.get("runtime_sec"),
+                            "mip_gap": _safe_float(mip_gap),
+                            "status": (
+                                int(summary.get("status"))
+                                if summary.get("status") is not None
+                                else None
+                            ),
+                            "objective": _safe_float(summary.get("objective")),
+                            "best_bound": _safe_float(summary.get("best_bound")),
+                            "gap": _safe_float(summary.get("gap")),
+                            "runtime_sec": _safe_float(summary.get("runtime_sec")),
                             "solver_version": "lefo_mip_v2",
                         }
                         if cid:
                             run_payload["class_id"] = cid
 
+                        run_payload = sanitize_json(run_payload)
                         run_res = sb.table("runs").insert(run_payload).execute()
                         run_id = run_res.data[0]["id"]
 
@@ -2167,7 +2242,7 @@ with batch_tab:
                                         "run_id": run_id,
                                         "item_id": cur_item,
                                         "t": t,
-                                        "qty": qty,
+                                        "qty": _safe_float(qty),
                                     }
                                 )
                         if rows:
