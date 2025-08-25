@@ -684,6 +684,11 @@ LOCAL_PRESETS = [
     },
 ]
 
+# Add a light capacity jitter (3%) to all DemandBased presets
+for _p in LOCAL_PRESETS:
+    if _p.get("cap_mode") == "DemandBased":
+        _p.setdefault("cap_params", {})
+        _p["cap_params"].setdefault("jitter_pct", 3.0)
 st.session_state["local_presets"] = {p["name"]: p for p in LOCAL_PRESETS}
 # ===== END =====
 
@@ -1470,9 +1475,15 @@ with classes_tab:
         cap_tight = st.selectbox(
             "Tightness", ["Loose", "Medium", "Tight"], index=1, key="cls_cap_tight"
         )
-        st.caption(
-            "Capacity per period = β × mean(total demand). β: Loose=0.70, Medium=0.60, Tight=0.50"
+        cap_jitter_pct = st.number_input(
+            "Jitter κ_t (±%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=10.0,
+            step=1.0,
+            key="cls_cap_jitter",
         )
+        st.caption("Capacity per period = β × mean(total demand).")
     # -----------------------------------------------------------------------------
     st.markdown("**Item count**")
     use_custom_n = st.checkbox("Use custom item count", value=False, key="use_custom_n")
@@ -2127,8 +2138,18 @@ with batch_tab:
         if cap_mode == "DemandBased":
             beta = CAP_TIGHT_BETAS.get(cls.get("cap_tight") or "Medium", 0.60)
             mean_total = float(np.mean(total_by_t)) if period > 0 else 0.0
-            cap_value = int(round(beta * mean_total))
-            cap = [max(0, cap_value)] * period
+            base_cap = max(0, int(round(beta * mean_total)))
+
+            # NEW: small per-period jitter (defaults to 3% if not specified)
+            jit_pct = float((cls.get("cap_params") or {}).get("jitter_pct", 3.0))
+            if jit_pct > 0:
+                g = np.random.default_rng(int(cls["seed_base"] + 31 * j + 7))
+                noise = g.uniform(-jit_pct / 100.0, jit_pct / 100.0, size=period)
+                cap = np.maximum(
+                    0, np.round(base_cap * (1.0 + noise)).astype(int)
+                ).tolist()
+            else:
+                cap = [base_cap] * period
         else:
             cap = generate_cap_series(
                 period, cap_mode, cls.get("cap_params") or {}, cls["seed_base"] + 31 * j
