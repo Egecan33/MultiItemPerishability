@@ -2303,7 +2303,6 @@ with viz_tab:
                 key="vis_limit",
             )
         with c2:
-            # New: toggle to include non-optimal runs
             only_optimal = st.checkbox("Show only OPTIMAL runs", value=False)
         with c3:
             if st.button("🔄 Refresh data", key="vis_refresh"):
@@ -2356,6 +2355,7 @@ with viz_tab:
         try:
             runs = fetch_runs_keyset(sb, int(limit))
 
+            # Pull related instances
             inst_ids = list({r["instance_id"] for r in runs if r.get("instance_id")})
             inst = []
             if inst_ids:
@@ -2371,11 +2371,10 @@ with viz_tab:
                     )
             inst_map = {row["id"]: row for row in inst}
 
-            # Build dataframe (include ALL runs we fetched)
+            # Build unified dataframe of runs (+ instance metadata)
             recs = []
             for r in runs:
                 I = inst_map.get(r["instance_id"])
-                # Keep row even if instance is missing (rare / RLS), but label it
                 period = None
                 cap = None
                 class_key = "adhoc"
@@ -2413,53 +2412,60 @@ with viz_tab:
                 )
 
             df = pd.DataFrame(recs)
-
             if df.empty:
                 st.info("No runs found.")
                 st.stop()
 
+            # Ensure numeric columns are numeric (for plots/aggregations)
+            for col in [
+                "runtime_sec",
+                "cap_mean",
+                "n_items",
+                "objective",
+                "best_bound",
+                "gap",
+            ]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            # Create the numeric gap column ON df (this was the bug)
+            df["gap_num"] = df["gap"]  # alias for clarity in aggregations
+
             # Optional filter by status
-            if only_optimal:
-                df = df[df["status"] == 2]
+            df_filtered = df[df["status"] == 2].copy() if only_optimal else df.copy()
 
             # --- Summary tables ---
-            st.subheader("Summary")
-            st.dataframe(df, use_container_width=True)
+            st.subheader("Summary (runs table)")
+            st.dataframe(df_filtered, use_container_width=True)
 
             st.markdown("**Status breakdown (counts)**")
             cnt = (
-                df.groupby(["class_key", "status_label"], dropna=False)
+                df_filtered.groupby(["class_key", "status_label"], dropna=False)
                 .size()
                 .reset_index(name="runs")
             )
             st.dataframe(cnt, use_container_width=True)
 
-            # --- Plots (robust to missing objective/best_bound) ---
-            # Ensure numeric columns are numeric
-            df["runtime_sec"] = pd.to_numeric(df["runtime_sec"], errors="coerce")
-            df["cap_mean"] = pd.to_numeric(df["cap_mean"], errors="coerce")
-            df["n_items"] = pd.to_numeric(df["n_items"], errors="coerce")
-
+            # --- Plots ---
             c1, c2 = st.columns(2)
             with c1:
                 fig = px.scatter(
-                    df.dropna(subset=["n_items", "runtime_sec"]),
+                    df_filtered.dropna(subset=["n_items", "runtime_sec"]),
                     x="n_items",
                     y="runtime_sec",
                     color="class_key",
                     symbol="status_label",
-                    hover_data=["gap", "objective", "status_label"],
+                    hover_data=["gap", "objective", "best_bound"],
                 )
                 fig.update_layout(height=380, title="Runtime vs #Items")
                 st.plotly_chart(fig, use_container_width=True)
             with c2:
                 fig = px.scatter(
-                    df.dropna(subset=["cap_mean", "runtime_sec"]),
+                    df_filtered.dropna(subset=["cap_mean", "runtime_sec"]),
                     x="cap_mean",
                     y="runtime_sec",
                     color="class_key",
                     symbol="status_label",
-                    hover_data=["gap", "objective", "status_label"],
+                    hover_data=["gap", "objective", "best_bound"],
                 )
                 fig.update_layout(height=380, title="Runtime vs Mean Capacity")
                 st.plotly_chart(fig, use_container_width=True)
@@ -2474,7 +2480,7 @@ with viz_tab:
             )
             color_by = st.selectbox("Color", ["class_key", "status_label"], key="c3d")
             fig3d = px.scatter_3d(
-                df.dropna(subset=[x_axis, y_axis, z_axis]),
+                df_filtered.dropna(subset=[x_axis, y_axis, z_axis]),
                 x=x_axis,
                 y=y_axis,
                 z=z_axis,
@@ -2488,27 +2494,25 @@ with viz_tab:
             )
             st.plotly_chart(fig3d, use_container_width=True)
 
-            st.subheader("Class aggregates (including non-optimal)")
-            df_numgap = df.copy()
-            df_numgap["gap_num"] = pd.to_numeric(df_numgap["gap"], errors="coerce")
+            st.subheader("Class aggregates (including current filter)")
+
+            # P50/P90 runtime, P95 gap; plus status counts
+            def _p90(x):
+                x = pd.to_numeric(x, errors="coerce").dropna()
+                return float(np.percentile(x, 90)) if len(x) else None
+
+            def _p95(x):
+                x = pd.to_numeric(x, errors="coerce").dropna()
+                return float(np.percentile(x, 95)) if len(x) else None
+
             agg = (
-                df.groupby("class_key")
+                df_filtered.groupby("class_key")
                 .agg(
                     runs=("run_id", "count"),
                     n_items_mean=("n_items", "mean"),
                     runtime_p50=("runtime_sec", "median"),
-                    runtime_p90=(
-                        "runtime_sec",
-                        lambda x: (
-                            np.percentile(x.dropna(), 90) if len(x.dropna()) else None
-                        ),
-                    ),
-                    gap_p95=(
-                        "gap_num",
-                        lambda x: (
-                            np.percentile(x.dropna(), 95) if len(x.dropna()) else None
-                        ),
-                    ),
+                    runtime_p90=("runtime_sec", _p90),
+                    gap_p95=("gap_num", _p95),
                     infeasible=("status", lambda s: int(np.sum(s == 3))),
                     time_limit=("status", lambda s: int(np.sum(s == 9))),
                     suboptimal=("status", lambda s: int(np.sum(s == 13))),
@@ -2519,34 +2523,42 @@ with viz_tab:
             st.dataframe(agg, use_container_width=True)
 
             st.subheader("Status counts per class")
-            fig_bar = px.bar(
-                cnt,
-                x="class_key",
-                y="runs",
-                color="status_label",
-                barmode="stack",
-                text_auto=True,
-            )
-            fig_bar.update_layout(height=420, xaxis_title="", yaxis_title="# runs")
-            st.plotly_chart(fig_bar, use_container_width=True)
+            if not cnt.empty:
+                fig_bar = px.bar(
+                    cnt,
+                    x="class_key",
+                    y="runs",
+                    color="status_label",
+                    barmode="stack",
+                    text_auto=True,
+                )
+                fig_bar.update_layout(height=420, xaxis_title="", yaxis_title="# runs")
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.caption("No data for the selected filter.")
 
-            st.subheader("Runtime distribution per class (all statuses)")
-            fig_box = px.box(
-                df.dropna(subset=["runtime_sec"]),
-                x="class_key",
-                y="runtime_sec",
-                color="status_label",
-                points="all",
-                hover_data=["n_items", "period", "gap", "objective"],
-            )
-            fig_box.update_layout(height=420, title="Runtime distribution per class")
-            st.plotly_chart(fig_box, use_container_width=True)
+            st.subheader("Runtime distribution per class (all statuses in filter)")
+            df_rt = df_filtered.dropna(subset=["runtime_sec"])
+            if not df_rt.empty:
+                fig_box = px.box(
+                    df_rt,
+                    x="class_key",
+                    y="runtime_sec",
+                    color="status_label",
+                    points="all",
+                    hover_data=["n_items", "period", "gap", "objective"],
+                )
+                fig_box.update_layout(
+                    height=420, title="Runtime distribution per class"
+                )
+                st.plotly_chart(fig_box, use_container_width=True)
+            else:
+                st.caption("No runtimes available for box plot.")
 
-            # Heatmap remains on OPTIMAL or ALL depending on the toggle
             st.subheader("Median runtime heatmap (class × #items bin)")
+            df_hm = df_filtered.copy()
             bins = [0, 5, 10, 20, 50, 100, np.inf]
-            labels = ["≤5", "6-10", "11-20", "21-50", "51-100", "100+"]
-            df_hm = df.copy()
+            labels = ["≤5", "6–10", "11–20", "21–50", "51–100", "100+"]
             df_hm["items_bin"] = pd.cut(df_hm["n_items"], bins=bins, labels=labels)
             pt = (
                 df_hm.dropna(subset=["runtime_sec"])
@@ -2555,20 +2567,23 @@ with viz_tab:
                 .unstack("items_bin")
                 .reindex(columns=labels)
             )
-            fig_hm = px.imshow(
-                pt,
-                labels=dict(x="items_bin", y="class_key", color="median runtime (sec)"),
-                aspect="auto",
-            )
-            fig_hm.update_layout(height=420)
-            fig_hm.update_traces(hoverongaps=False)
-            st.plotly_chart(fig_hm, use_container_width=True)
+            if pt.size > 0:
+                fig_hm = px.imshow(
+                    pt,
+                    labels=dict(
+                        x="items_bin", y="class_key", color="median runtime (sec)"
+                    ),
+                    aspect="auto",
+                )
+                fig_hm.update_layout(height=420)
+                fig_hm.update_traces(hoverongaps=False)
+                st.plotly_chart(fig_hm, use_container_width=True)
+            else:
+                st.caption("No data for heatmap.")
 
             st.subheader("Runs over time (daily)")
-            df_time = df.copy()
-            dt_parsed = pd.to_datetime(
-                df_time["created_at"], format="ISO8601", utc=True, errors="coerce"
-            )
+            df_time = df_filtered.copy()
+            dt_parsed = pd.to_datetime(df_time["created_at"], utc=True, errors="coerce")
             df_time["date"] = dt_parsed.dt.date
             ts = (
                 df_time.groupby(["date", "class_key", "status_label"], as_index=False)[
@@ -2577,32 +2592,40 @@ with viz_tab:
                 .count()
                 .rename(columns={"run_id": "runs"})
             )
-            fig_ts = px.line(
-                ts,
-                x="date",
-                y="runs",
-                color="class_key",
-                line_dash="status_label",
-                markers=True,
-            )
-            fig_ts.update_layout(height=380, title="Runs per day by class and status")
-            st.plotly_chart(fig_ts, use_container_width=True)
+            if not ts.empty:
+                fig_ts = px.line(
+                    ts,
+                    x="date",
+                    y="runs",
+                    color="class_key",
+                    line_dash="status_label",
+                    markers=True,
+                )
+                fig_ts.update_layout(
+                    height=380, title="Runs per day by class and status"
+                )
+                st.plotly_chart(fig_ts, use_container_width=True)
+            else:
+                st.caption("No time series data.")
 
             st.subheader("Objective vs Runtime")
-            fig_bub = px.scatter(
-                df.dropna(subset=["objective", "runtime_sec"]),
-                x="runtime_sec",
-                y="objective",
-                size="n_items",
-                color="class_key",
-                symbol="status_label",
-                hover_data=["gap", "cap_mean", "period"],
-                size_max=20,
-            )
-            fig_bub.update_layout(
-                height=420, title="Objective vs Runtime (bubble size = #items)"
-            )
-            st.plotly_chart(fig_bub, use_container_width=True)
-
+            df_bub = df_filtered.dropna(subset=["objective", "runtime_sec"])
+            if not df_bub.empty:
+                fig_bub = px.scatter(
+                    df_bub,
+                    x="runtime_sec",
+                    y="objective",
+                    size="n_items",
+                    color="class_key",
+                    symbol="status_label",
+                    hover_data=["gap", "cap_mean", "period"],
+                    size_max=20,
+                )
+                fig_bub.update_layout(
+                    height=420, title="Objective vs Runtime (bubble size = #items)"
+                )
+                st.plotly_chart(fig_bub, use_container_width=True)
+            else:
+                st.caption("No data for objective vs runtime.")
         except Exception as e:
             st.error(f"Supabase query failed: {e}")
