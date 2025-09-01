@@ -75,14 +75,6 @@ def solve_instance(
     if W is not None:
         W = float(W)
 
-    # --- Lost sales / unmet demand options ---
-    allow_lost_sales = bool(
-        data.get("allow_unmet_demand", False) or data.get("allow_lost_sales", False)
-    )
-    loss_penalty_global = data.get("lost_sales_penalty", None)  # scalar or None
-    # optional scalar to scale auto penalty
-    loss_penalty_factor = float(data.get("lost_sales_penalty_factor", 200.0))
-
     m = gp.Model("perishable_LS_compact_LEFO")
     m.Params.OutputFlag = 1
     if time_limit:
@@ -156,15 +148,6 @@ def solve_instance(
             L_keys.append((i, u, g))
     L = m.addVars(L_keys, vtype=GRB.BINARY, name="L")
 
-    # Lost sales variables
-    if allow_lost_sales:
-        LS = m.addVars(
-            [(i, u) for i in items_raw for u in Periods],
-            vtype=GRB.CONTINUOUS,
-            lb=0.0,
-            name="LS",
-        )
-
     # ----------------------------
     # Helpers for time-varying costs
     # ----------------------------
@@ -194,51 +177,6 @@ def solve_instance(
         s = items_raw[i]["setup"]
         return float(s[t]) if isinstance(s, list) else float(s)
 
-    # ---------- Auto-size lost-sales penalties (safe Big-M) ----------
-    if allow_lost_sales:
-        # Max variable unit cost (produce at t and ship to u)
-        max_unit_var_cost = 0.0
-        for i, t, u in Triples:
-            max_unit_var_cost = max(max_unit_var_cost, c_at(i, t) + hsum(i, t, u))
-        if max_unit_var_cost <= 0.0:
-            max_unit_var_cost = 1.0
-
-        # Max setup cost (worst-case "setup per unit" effect)
-        max_setup = 0.0
-        for i in items_raw:
-            s = items_raw[i]["setup"]
-            if isinstance(s, list):
-                try:
-                    max_setup = max(max_setup, max(float(x) for x in s))
-                except ValueError:
-                    pass
-            else:
-                max_setup = max(max_setup, float(s))
-
-        # Base default
-        default_loss_penalty = (
-            loss_penalty_global if loss_penalty_global is not None else None
-        )
-        if default_loss_penalty is None:
-            base = max_unit_var_cost + max_setup
-            # at least 10× var cost, scaled by factor, and capped for numerics
-            default_loss_penalty = max(
-                10.0 * max_unit_var_cost, loss_penalty_factor * base
-            )
-            default_loss_penalty = float(min(default_loss_penalty + 1.0, 1e9))
-
-        # allow per-item override via items_raw[i]["lost_sales_penalty"] (scalar|list)
-        loss_pen = {}
-        for i, it in items_raw.items():
-            lp = it.get("lost_sales_penalty", None)
-            if lp is not None:
-                vec = _as_len_T_vector(lp, T)
-                for u in Periods:
-                    loss_pen[(i, u)] = float(vec[u])
-            else:
-                for u in Periods:
-                    loss_pen[(i, u)] = float(default_loss_penalty)
-
     # ----------------------------
     # Objective
     # ----------------------------
@@ -248,10 +186,6 @@ def solve_instance(
         obj += g_itu * X[i, t, u]
     for i, t in Y.keys():
         obj += s_at(i, t) * Y[i, t]
-    if allow_lost_sales:
-        for i in items_raw:
-            for u in Periods:
-                obj += loss_pen[(i, u)] * LS[i, u]
     m.setObjective(obj, GRB.MINIMIZE)
 
     # ----------------------------
@@ -297,21 +231,15 @@ def solve_instance(
             )
             m.addConstr(inv_u <= W, name=f"whcap_{u}")
 
-    # (1d) Demand satisfaction (soft if lost sales)
+    # (1d) Demand satisfaction
     for i, it in items_raw.items():
         d = list(it["demand"])
         for u in Periods:
             origins = [t for t in range(0, u + 1) if u in Gamma.get((i, t), [])]
-            if allow_lost_sales:
-                m.addConstr(
-                    gp.quicksum(X[i, t, u] for t in origins) + LS[i, u] == d[u],
-                    name=f"demand_{i}_{u}",
-                )
-            else:
-                m.addConstr(
-                    gp.quicksum(X[i, t, u] for t in origins) == d[u],
-                    name=f"demand_{i}_{u}",
-                )
+            m.addConstr(
+                gp.quicksum(X[i, t, u] for t in origins) == d[u],
+                name=f"demand_{i}_{u}",
+            )
 
     # Last-Expiry-First (group-based): gate + monotonicity + sufficiency
     EPS = 1e-6
@@ -329,28 +257,20 @@ def solve_instance(
         # (b) Monotonicity
         for g in range(G - 1):
             m.addConstr(L[i, u, g] >= L[i, u, g + 1], name=f"lefo_mono_{i}_{u}_{g}")
-        # (c) Sufficiency (open next group only after earlier groups cover *served* demand)
-        if G >= 2:
-            cum_terms = []
+        # (c) Sufficiency cut
+        if Ciu > 0.0:
+            cum_terms = []  # will build cumulative sum over groups
             for g in range(G - 1):
                 T_g = groups[g]
                 if T_g:
                     cum_terms.append(gp.quicksum(X[i, t, u] for t in T_g))
+                # RHS = sum_{h=0..g} sum_{t in G_h} X[i,t,u] - d_{iu} + EPS
                 if cum_terms:
-                    cum_sum = gp.quicksum(cum_terms)
-                    if allow_lost_sales:
-                        # cum + LS >= demand * L[g+1] + EPS
-                        m.addConstr(
-                            cum_sum + LS[i, u] >= Ciu * L[i, u, g + 1] + EPS,
-                            name=f"lefo_suff_soft_{i}_{u}_{g+1}",
-                        )
-                    else:
-                        # Classic (without lost sales)
-                        # Ciu*(1 - L[g+1]) >= cum - Ciu + EPS
-                        m.addConstr(
-                            Ciu * (1 - L[i, u, g + 1]) >= cum_sum - Ciu + EPS,
-                            name=f"lefo_suff_{i}_{u}_{g+1}",
-                        )
+                    m.addConstr(
+                        Ciu * (1 - L[i, u, g + 1])
+                        >= gp.quicksum(cum_terms) - Ciu + EPS,
+                        name=f"lefo_suff_{i}_{u}_{g+1}",
+                    )
 
     # ----------------------------
     # Optimize and report
@@ -388,12 +308,6 @@ def solve_instance(
                 qty = sum(X[i, t, u].X for u in Gamma.get((i, t), []) if (i, t, u) in X)
                 if qty > 1e-6:
                     orders_txt.append(f"  {t:2d} → {qty:8.3f}")
-            if allow_lost_sales:
-                # print lost sales per period (if any)
-                for u in Periods:
-                    val = LS[i, u].X
-                    if val > 1e-6:
-                        orders_txt.append(f"  u={u:2d} → LOST {val:8.3f}")
             orders_txt.append("")
         (out_dir / "orders.txt").write_text("\n".join(orders_txt), encoding="utf-8")
 
@@ -407,14 +321,6 @@ def solve_instance(
                 "T": T,
             }
         )
-        if allow_lost_sales:
-            try:
-                summary["lost_sales_total"] = float(
-                    sum(LS[i, u].X for i in items_raw for u in Periods)
-                )
-            except Exception:
-                pass
-
         (out_dir / "summary.json").write_text(
             json.dumps(summary, indent=2), encoding="utf-8"
         )

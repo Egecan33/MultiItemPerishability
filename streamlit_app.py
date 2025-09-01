@@ -9,8 +9,44 @@ from supabase import create_client, Client
 import plotly.express as px
 import plotly.graph_objects as go
 
-from mip.solver_mip_lefo import solve_instance
+# from mip.solver_mip_lefo import solve_instance
 import math
+
+# register alternative solver backends that share the same I/O
+from mip.solver_mip_lefo import solve_instance as _solve_lefo_v2
+
+try:
+    from mip.solver_mip_no_cross import solve_instance as _solve_nocross_v1
+except Exception:
+    _solve_nocross_v1 = None  # optional backend
+
+SOLVER_REGISTRY = {
+    # label shown in UI  -> {callable, tag used in DB, description}
+    "LEFO v2 (permission-based)": {
+        "fn": _solve_lefo_v2,
+        "tag": "lefo_mip_v2",
+        "desc": "LEFO permission-based model (v2).",
+    },
+    "No-Crossing v1": {
+        "fn": _solve_nocross_v1,
+        "tag": "lefo_mip_v1",
+        "desc": "No-crossing model (v1).",
+    },
+    # you can add more backends later here
+}
+
+
+def get_solver_backend():
+    """Return (fn, tag). Falls back to LEFO v2 if a backend is missing."""
+    label = st.session_state.get("solver_backend_label") or "LEFO v2 (permission-based)"
+    entry = SOLVER_REGISTRY.get(label) or SOLVER_REGISTRY["LEFO v2 (permission-based)"]
+    fn = entry["fn"] or SOLVER_REGISTRY["LEFO v2 (permission-based)"]["fn"]
+    tag = (
+        entry["tag"]
+        if entry["fn"]
+        else SOLVER_REGISTRY["LEFO v2 (permission-based)"]["tag"]
+    )
+    return fn, tag
 
 
 def _safe_float(x):
@@ -254,9 +290,41 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("Solver")
+
+    # global time/gap stay the same
     time_limit = st.number_input("Time limit (sec)", min_value=0, value=0, step=10)
     mip_gap = st.number_input(
         "MIPGap (0.0 = default)", min_value=0.0, value=0.0, step=0.01, format="%.4f"
+    )
+
+    # new: backend picker
+    solver_labels = list(SOLVER_REGISTRY.keys())
+    default_idx = (
+        solver_labels.index("LEFO v2 (permission-based)")
+        if "LEFO v2 (permission-based)" in solver_labels
+        else 0
+    )
+    solver_label = st.selectbox(
+        "Solver backend",
+        solver_labels,
+        index=default_idx,
+        help="Which solver .py to use for all runs.",
+    )
+    st.session_state["solver_backend_label"] = solver_label
+
+    # small heads-up if a backend couldn't be imported
+    if SOLVER_REGISTRY[solver_label]["fn"] is None:
+        st.warning(
+            f"Backend '{solver_label}' is not available (module not importable). Falling back to LEFO v2."
+        )
+
+    allow_unmet_default = st.checkbox("Allow unmet demand (lost sales)", value=False)
+    ls_penalty_factor_default = st.number_input(
+        "Lost-sales penalty factor (× mean demand)",
+        min_value=10.0,
+        value=200.0,
+        step=10.0,
+        format="%.1f",
     )
 
     st.markdown("---")
@@ -280,289 +348,15 @@ st.session_state["db_classes"] = {r["name"]: r for r in _rows}  # name -> row
 # 2) (Optional) keep a FEW local presets here for convenience.
 #    They are NOT auto-queued and NOT auto-saved; you'll pick them in the UI.
 
+
 LOCAL_PRESETS = [
-    # ---------- T=20 • Demand-based (β from Loose/Medium/Tight) ----------
     {
-        "name": "prof_T20_N10_DBLoose_TBO1_CVlow",
-        "period": 20,
+        "name": "class_T60_N40_DBMedium_TBO4_CVhigh_Z3",
+        "period": 60,
         "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Loose",
-        "n_items": 10,
-        "dem_lo": 50,
-        "dem_hi": 110,  # low CV
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 1.0, "jitter_pct": 10.0},
-        "zero_head": 1,
-        "batch_size": 30,
-        "seed_base": 20000,
-    },
-    {
-        "name": "prof_T20_N20_DBLoose_TBO2_CVmed",
-        "period": 20,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Loose",
-        "n_items": 20,
-        "dem_lo": 30,
-        "dem_hi": 130,  # medium CV
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 2.0, "jitter_pct": 10.0},
-        "zero_head": 1,
-        "batch_size": 30,
-        "seed_base": 20050,
-    },
-    {
-        "name": "prof_T20_N30_DBLoose_TBO4_CVhigh",
-        "period": 20,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Loose",
-        "n_items": 30,
-        "dem_lo": 0,
-        "dem_hi": 160,  # high CV
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 4.0, "jitter_pct": 10.0},
-        "zero_head": 1,
-        "batch_size": 30,
-        "seed_base": 20100,
-    },
-    {
-        "name": "prof_T20_N10_DBMedium_TBO1_CVlow",
-        "period": 20,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
+        "cap_params": {"jitter_pct": 3.0},
         "cap_tight": "Medium",
-        "n_items": 10,
-        "dem_lo": 50,
-        "dem_hi": 110,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 1.0, "jitter_pct": 10.0},
-        "zero_head": 2,
-        "batch_size": 30,
-        "seed_base": 20200,
-    },
-    {
-        "name": "prof_T20_N20_DBMedium_TBO2_CVmed",
-        "period": 20,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Medium",
-        "n_items": 20,
-        "dem_lo": 30,
-        "dem_hi": 130,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 2.0, "jitter_pct": 10.0},
-        "zero_head": 2,
-        "batch_size": 30,
-        "seed_base": 20250,
-    },
-    {
-        "name": "prof_T20_N30_DBMedium_TBO4_CVhigh",
-        "period": 20,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Medium",
-        "n_items": 30,
-        "dem_lo": 0,
-        "dem_hi": 160,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 4.0, "jitter_pct": 12.0},
-        "zero_head": 2,
-        "batch_size": 30,
-        "seed_base": 20300,
-    },
-    {
-        "name": "prof_T20_N10_DBTight_TBO1_CVlow",
-        "period": 20,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Tight",
-        "n_items": 10,
-        "dem_lo": 50,
-        "dem_hi": 110,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 1.0, "jitter_pct": 10.0},
-        "zero_head": 3,
-        "batch_size": 30,
-        "seed_base": 20400,
-    },
-    {
-        "name": "prof_T20_N10_DBTighter_TBO1_CVlow",
-        "period": 20,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Tighter",
-        "n_items": 10,
-        "dem_lo": 50,
-        "dem_hi": 110,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 1.0, "jitter_pct": 10.0},
-        "zero_head": 4,
-        "batch_size": 30,
-        "seed_base": 20400,
-    },
-    {
-        "name": "prof_T20_N10_DBUltra_TBO1_CVlow",
-        "period": 20,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Tight",
-        "n_items": 10,
-        "dem_lo": 50,
-        "dem_hi": 110,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 1.0, "jitter_pct": 10.0},
-        "zero_head": 5,
-        "batch_size": 30,
-        "seed_base": 20400,
-    },
-    {
-        "name": "prof_T20_N20_DBTight_TBO2_CVmed",
-        "period": 20,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Tight",
-        "n_items": 20,
-        "dem_lo": 30,
-        "dem_hi": 130,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 2.0, "jitter_pct": 12.0},
-        "zero_head": 3,
-        "batch_size": 30,
-        "seed_base": 20450,
-    },
-    {
-        "name": "prof_T20_N30_DBTight_TBO4_CVhigh",
-        "period": 20,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Tight",
-        "n_items": 30,
-        "dem_lo": 0,
-        "dem_hi": 160,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 4.0, "jitter_pct": 15.0},
-        "zero_head": 3,
-        "batch_size": 30,
-        "seed_base": 20500,
-    },
-    # ---------- T=40 • Demand-based ----------
-    {
-        "name": "prof_T40_N20_DBMedium_TBO2_CVmed",
-        "period": 40,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Medium",
-        "n_items": 20,
-        "dem_lo": 30,
-        "dem_hi": 130,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 2.0, "jitter_pct": 10.0},
-        "zero_head": 3,
-        "batch_size": 30,
-        "seed_base": 20600,
-    },
-    {
-        "name": "prof_T40_N30_DBTight_TBO2_CVmed",
-        "period": 40,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Tight",
-        "n_items": 30,
-        "dem_lo": 30,
-        "dem_hi": 130,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 2.0, "jitter_pct": 12.0},
-        "zero_head": 2,
-        "batch_size": 30,
-        "seed_base": 20650,
-    },
-    {
-        "name": "prof_T40_N30_DBLoose_TBO4_CVhigh",
-        "period": 40,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Loose",
-        "n_items": 30,
+        "n_items": 40,
         "dem_lo": 0,
         "dem_hi": 160,
         "m_lo": 6,
@@ -573,114 +367,11 @@ LOCAL_PRESETS = [
         "h_params": {"value": 0.4},
         "s_mode": "tbo",
         "s_params": {"L": 4.0, "jitter_pct": 10.0},
-        "zero_head": 2,
-        "batch_size": 30,
-        "seed_base": 20700,
-    },
-    # ---------- T=60 • Demand-based ----------
-    {
-        "name": "prof_T60_N40_DBMedium_TBO2_CVmed",
-        "period": 60,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Medium",
-        "n_items": 40,
-        "dem_lo": 30,
-        "dem_hi": 130,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 2.0, "jitter_pct": 10.0},
         "zero_head": 3,
-        "batch_size": 30,
-        "seed_base": 20800,
-    },
-    {
-        "name": "prof_T60_N40_DBTight_TBO4_CVhigh",
-        "period": 60,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Tight",
-        "n_items": 40,
-        "dem_lo": 0,
-        "dem_hi": 160,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 4.0, "jitter_pct": 12.0},
-        "zero_head": 2,
-        "batch_size": 30,
-        "seed_base": 20850,
-    },
-    {
-        "name": "prof_T60_N40_DBTighter_TBO4_CVhigh",
-        "period": 60,
-        "cap_mode": "DemandBased",
-        "cap_params": {},
-        "cap_tight": "Tighter",
-        "n_items": 40,
-        "dem_lo": 0,
-        "dem_hi": 160,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 4.0, "jitter_pct": 12.0},
-        "zero_head": 5,
-        "batch_size": 30,
-        "seed_base": 20850,
-    },
-    # ---------- Non–demand-based capacity (for contrast) ----------
-    {
-        "name": "prof_T20_N20_UniformCap_900to1100_TBO2_CVmed",
-        "period": 20,
-        "cap_mode": "Uniform",
-        "cap_params": {"lo": 900, "hi": 1100},
-        "n_items": 20,
-        "dem_lo": 30,
-        "dem_hi": 130,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 2.0, "jitter_pct": 10.0},
-        "zero_head": 3,
-        "batch_size": 30,
-        "seed_base": 20900,
-    },
-    {
-        "name": "prof_T20_N20_NormalCap_mu1000_sd80_TBO2_CVmed",
-        "period": 20,
-        "cap_mode": "Normal",
-        "cap_params": {"mean": 1000, "std": 80, "clip_lo": 700, "clip_hi": 1300},
-        "n_items": 20,
-        "dem_lo": 30,
-        "dem_hi": 130,
-        "m_lo": 6,
-        "m_hi": 50,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 2.0, "jitter_pct": 10.0},
-        "zero_head": 3,
-        "batch_size": 30,
-        "seed_base": 20950,
+        "batch_size": 2,
+        "seed_base": 31580,
+        "allow_unmet_demand": False,
+        "lost_sales_penalty_factor": 200.0,
     },
 ]
 
@@ -693,8 +384,18 @@ st.session_state["local_presets"] = {p["name"]: p for p in LOCAL_PRESETS}
 # ===== END =====
 
 # ======================= Tabs ======================
-cap_tab, items_tab, classes_tab, batch_tab, viz_tab = st.tabs(
-    ["Capacity", "Items", "Classes", "Batch Runner", "Explore & Visualize"]
+cap_tab, items_tab, classes_tab, batch_tab, inspect_tab, saved_run_tab, viz_tab = (
+    st.tabs(
+        [
+            "Capacity",
+            "Items",
+            "Classes",
+            "Batch Runner",
+            "Run Inspector",
+            "Saved Instances Runner",
+            "Explore & Visualize",
+        ]
+    )
 )
 
 # ----------------- Capacity tab -----------------
@@ -1234,6 +935,8 @@ with items_tab:
             "items": items,
             "manual_capacity": [int(x) for x in cap_series],
             "warehouse_capacity": (float(W_txt) if W_txt.strip() != "" else None),
+            "allow_unmet_demand": bool(allow_unmet_default),
+            "lost_sales_penalty_factor": float(ls_penalty_factor_default),
             "meta": {"origin": "adhoc"},
         }
         Path("last_instance.json").write_text(
@@ -1247,7 +950,8 @@ with items_tab:
             st.error("Generate an instance first.")
         else:
             with st.spinner("Solving..."):
-                summary, orders_txt = solve_instance(
+                _solve_fn, _solver_tag = get_solver_backend()
+                summary, orders_txt = _solve_fn(
                     "last_instance.json", time_limit=time_limit, mip_gap=mip_gap
                 )
             st.subheader("Summary")
@@ -1285,7 +989,7 @@ with items_tab:
                                 "best_bound": summary.get("best_bound"),
                                 "gap": summary.get("gap"),
                                 "runtime_sec": summary.get("runtime_sec"),
-                                "solver_version": "lefo_mip_v2",
+                                "solver_version": _solver_tag,
                             }
                         )
                         .execute()
@@ -1473,7 +1177,10 @@ with classes_tab:
         )
     else:  # Demand-based
         cap_tight = st.selectbox(
-            "Tightness", ["Loose", "Medium", "Tight"], index=1, key="cls_cap_tight"
+            "Tightness",
+            ["Loose", "Medium", "Tight", "Tighter", "Ultra"],
+            index=1,
+            key="cls_cap_tight",
         )
         cap_jitter_pct = st.number_input(
             "Jitter κ_t (±%)",
@@ -1483,6 +1190,7 @@ with classes_tab:
             step=1.0,
             key="cls_cap_jitter",
         )
+        cap_params["jitter_pct"] = float(cap_jitter_pct)
         st.caption("Capacity per period = β × mean(total demand).")
     # -----------------------------------------------------------------------------
     st.markdown("**Item count**")
@@ -1519,6 +1227,18 @@ with classes_tab:
         value=0,
         step=1,
         key="cls_zero_head",
+    )
+
+    cls_allow_unmet = st.checkbox(
+        "Allow unmet demand (lost sales)", value=False, key="cls_allow_unmet"
+    )
+    cls_ls_factor = st.number_input(
+        "Lost-sales penalty factor (× mean demand)",
+        min_value=10.0,
+        value=200.0,
+        step=10.0,
+        format="%.1f",
+        key="cls_ls_factor",
     )
     # -----------------------------------------------------------------------------
 
@@ -1704,6 +1424,8 @@ with classes_tab:
                 "s_params": s_params,
                 "batch_size": int(batch_size),
                 "seed_base": int(seed_base),
+                "allow_unmet_demand": bool(cls_allow_unmet),
+                "lost_sales_penalty_factor": float(cls_ls_factor),
             }
         )
 
@@ -2160,6 +1882,10 @@ with batch_tab:
             "items": items,
             "manual_capacity": [int(x) for x in cap],
             "warehouse_capacity": (float(W_txt) if W_txt.strip() != "" else None),
+            "allow_unmet_demand": bool(cls.get("allow_unmet_demand", False)),
+            "lost_sales_penalty_factor": float(
+                cls.get("lost_sales_penalty_factor", 200.0)
+            ),
             "meta": {
                 "origin": "class",
                 "class_key": cls["name"],
@@ -2201,7 +1927,8 @@ with batch_tab:
                 )
 
                 # solve
-                summary, orders_txt = solve_instance(
+                _solve_fn, _solver_tag = get_solver_backend()
+                summary, orders_txt = _solve_fn(
                     "last_instance.json", time_limit=time_limit, mip_gap=mip_gap
                 )
 
@@ -2239,7 +1966,7 @@ with batch_tab:
                             "best_bound": _safe_float(summary.get("best_bound")),
                             "gap": _safe_float(summary.get("gap")),
                             "runtime_sec": _safe_float(summary.get("runtime_sec")),
-                            "solver_version": "lefo_mip_v2",
+                            "solver_version": _solver_tag,
                         }
                         if cid:
                             run_payload["class_id"] = cid
@@ -2283,49 +2010,292 @@ with batch_tab:
 
         st.success("Batch run complete.")
 
-# new tab
-# ----------------- Explore & Visualize tab -----------------
-# ----------------- Explore & Visualize tab -----------------
-with viz_tab:
-    st.header("Explore & Visualize (Supabase)")
-    sb = supabase_client()
-    if sb is None:
-        st.info("Configure Supabase in sidebar.")
-    else:
-        # ---- Controls: limit + refresh ----
+    # ----------------- Run Inspector tab -----------------
+    with inspect_tab:
+        st.header("Run Inspector (single run viewer)")
+        sb = supabase_client()
+        if sb is None:
+            st.info("Configure Supabase in sidebar to inspect DB runs.")
+        else:
+            # ---- Class filter (NULL -> adhoc) ----
+            db_map = st.session_state.get("db_classes", {})  # {name: row}
+            class_opts = [
+                ("All classes", "__ALL__"),
+                ("adhoc (NULL class)", "__ADHOC__"),
+            ]
+            for nm in sorted(db_map.keys()):
+                class_opts.append((nm, db_map[nm]["id"]))  # label -> class_id
+
+            chosen_label = st.selectbox(
+                "Filter by class", [x[0] for x in class_opts], index=0
+            )
+            label_to_val = {lbl: val for lbl, val in class_opts}
+            chosen_val = label_to_val[chosen_label]
+
+            limit_runs = st.number_input(
+                "Fetch last N runs", min_value=10, value=300, step=50
+            )
+
+            # Fetch runs (filtered)
+            select_cols = "id,created_at,instance_id,class_id,status,objective,best_bound,gap,runtime_sec"
+            q = (
+                sb.table("runs")
+                .select(select_cols)
+                .order("created_at", desc=True)
+                .limit(int(limit_runs))
+            )
+            if chosen_val == "__ADHOC__":
+                q = q.is_("class_id", "null")
+            elif chosen_val != "__ALL__":
+                q = q.eq("class_id", chosen_val)
+            runs_rows = q.execute().data or []
+
+            # Status mapping (Gurobi-style)
+            STATUS_MAP = {
+                1: "LOADED",
+                2: "OPTIMAL",
+                3: "INFEASIBLE",
+                4: "INF_OR_UNBD",
+                5: "UNBOUNDED",
+                6: "CUTOFF",
+                7: "ITERATION_LIMIT",
+                8: "NODE_LIMIT",
+                9: "TIME_LIMIT",
+                10: "SOLUTION_LIMIT",
+                11: "INTERRUPTED",
+                12: "NUMERIC",
+                13: "SUBOPTIMAL",
+                14: "INPROGRESS",
+                15: "USER_OBJ_LIMIT",
+            }
+
+            def class_name_of(row):
+                cid = row.get("class_id")
+                if not cid:
+                    return "adhoc"
+                for nm, r in db_map.items():
+                    if r.get("id") == cid:
+                        return nm
+                return f"{cid[:8]}…"
+
+            recs = []
+            for r in runs_rows:
+                recs.append(
+                    {
+                        "run_id": r.get("id"),
+                        "created_at": r.get("created_at"),
+                        "class_name": class_name_of(r),
+                        "instance_id": r.get("instance_id"),
+                        "status": r.get("status"),
+                        "status_label": STATUS_MAP.get(
+                            r.get("status"), str(r.get("status"))
+                        ),
+                        "objective": r.get("objective"),
+                        "best_bound": r.get("best_bound"),
+                        "gap": r.get("gap"),
+                        "runtime_sec": r.get("runtime_sec"),
+                    }
+                )
+            df_runs = pd.DataFrame(recs)
+            if df_runs.empty:
+                st.info("No runs found for the selected filter.")
+                st.stop()
+
+            st.subheader("Filtered runs")
+            st.dataframe(df_runs, use_container_width=True)
+
+            # ---- Pick a specific run ----
+            pretty_opts = [
+                f"{row['run_id']} • {row['created_at']} • {row['status_label']} • obj={row['objective']}"
+                for _, row in df_runs.iterrows()
+            ]
+            sel = st.selectbox("Select a run to inspect", pretty_opts, index=0)
+            sel_idx = pretty_opts.index(sel)
+            selected_run_id = df_runs.iloc[sel_idx]["run_id"]
+
+            # ---- Fetch the selected run, instance, and orders ----
+            run_row = (
+                sb.table("runs")
+                .select("*")
+                .eq("id", selected_run_id)
+                .limit(1)
+                .execute()
+                .data
+            )
+            run_row = run_row[0] if run_row else None
+
+            inst_row = None
+            if run_row and run_row.get("instance_id"):
+                inst_row = (
+                    sb.table("instances")
+                    .select("id,period,manual_capacity,data")
+                    .eq("id", run_row["instance_id"])
+                    .limit(1)
+                    .execute()
+                    .data
+                )
+                inst_row = inst_row[0] if inst_row else None
+
+            orders_rows = (
+                sb.table("orders")
+                .select("item_id,t,qty")
+                .eq("run_id", selected_run_id)
+                .order("item_id")
+                .order("t")
+                .execute()
+                .data
+                or []
+            )
+            df_orders = pd.DataFrame(orders_rows)
+            if not df_orders.empty:
+                # Ensure numeric types
+                df_orders["item_id"] = pd.to_numeric(
+                    df_orders["item_id"], errors="coerce"
+                )
+                df_orders["t"] = pd.to_numeric(df_orders["t"], errors="coerce")
+                df_orders["qty"] = pd.to_numeric(df_orders["qty"], errors="coerce")
+
+            # ---- Show run / instance details ----
+            st.subheader("Run details")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("Run ID", selected_run_id)
+                st.metric(
+                    "Status",
+                    STATUS_MAP.get(run_row.get("status"), run_row.get("status")),
+                )
+                st.metric("Runtime (sec)", f"{run_row.get('runtime_sec')}")
+            with c2:
+                st.metric("Objective", f"{run_row.get('objective')}")
+                st.metric("Best bound", f"{run_row.get('best_bound')}")
+                st.metric("MIP gap", f"{run_row.get('gap')}")
+            with c3:
+                if inst_row:
+                    T_ = inst_row.get("period")
+                    cap = inst_row.get("manual_capacity") or (
+                        inst_row.get("data") or {}
+                    ).get("manual_capacity")
+                    cap_mean = float(np.mean(cap)) if cap else None
+                    items_dict = (inst_row.get("data") or {}).get("items") or {}
+                    st.metric("Period (T)", f"{T_}")
+                    st.metric("Items", f"{len(items_dict)}")
+                    st.metric(
+                        "Mean cap (κ̄)", f"{cap_mean if cap_mean is not None else '—'}"
+                    )
+                else:
+                    st.caption("No instance row found.")
+
+            # ---- Orders: table & quick plots ----
+            st.subheader("Order plan (per item)")
+            if df_orders.empty:
+                st.info("This run has no orders recorded.")
+            else:
+                # Wide pivot for eye-check (t rows, item columns)
+                pivot = df_orders.pivot_table(
+                    index="t", columns="item_id", values="qty", fill_value=0
+                ).sort_index()
+                st.dataframe(pivot, use_container_width=True)
+
+                # Quick per-item plot selector (default to up to 8 most active items)
+                totals = (
+                    df_orders.groupby("item_id")["qty"]
+                    .sum()
+                    .sort_values(ascending=False)
+                )
+                default_items = list(totals.head(8).index.astype(int))
+                items_to_plot = st.multiselect(
+                    "Plot selected item(s)",
+                    options=list(totals.index.astype(int)),
+                    default=default_items,
+                )
+
+                if items_to_plot:
+                    # Combine selected items into one figure (lines)
+                    fig = go.Figure()
+                    for iid in items_to_plot:
+                        ser = pivot.get(iid)
+                        if ser is None:
+                            continue
+                        fig.add_trace(
+                            go.Scatter(
+                                x=ser.index,
+                                y=ser.values,
+                                mode="lines+markers",
+                                name=f"Item {iid}",
+                            )
+                        )
+                    fig.update_layout(
+                        height=420,
+                        title="Order quantities by period (selected items)",
+                        xaxis_title="t",
+                        yaxis_title="qty",
+                        legend_title="Item",
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                # Also show nonzero long-form table for quick scanning
+                st.markdown("**Nonzero orders (long form)**")
+                st.dataframe(
+                    df_orders[df_orders["qty"] > 0].sort_values(["item_id", "t"]),
+                    use_container_width=True,
+                )
+    # ----------------- Saved Instances Runner tab -----------------
+    with saved_run_tab:
+        st.header("Saved Instances Runner (Supabase)")
+
+        sb = supabase_client()
+        if sb is None:
+            st.info("Configure Supabase in sidebar.")
+            st.stop()
+
+        # --- class filter (including NULL/adhoc) ---
+        # fetch classes once (you already cached db_classes at boot)
+        db_map = st.session_state.get("db_classes", {})
+        class_choices = ["<ALL>", "<ADHOC (NULL)>"] + sorted(db_map.keys())
+        pick_cls = st.selectbox("Filter by class", class_choices, index=0)
+
+        # limit + refresh
         c1, c2, c3 = st.columns([1, 1, 1])
         with c1:
-            limit = st.number_input(
-                "Fetch last N runs",
+            inst_limit = st.number_input(
+                "Fetch last N instances",
                 min_value=10,
-                value=3000,
-                step=100,
-                key="vis_limit",
+                value=500,
+                step=50,
+                key="saved_run_limit",
             )
         with c2:
-            only_optimal = st.checkbox("Show only OPTIMAL runs", value=False)
-        with c3:
-            if st.button("🔄 Refresh data", key="vis_refresh"):
+            if st.button("🔄 Refresh instances"):
                 try:
                     st.rerun()
                 except Exception:
                     st.experimental_rerun()
+        with c3:
+            pass
 
-        # ---- Helper: paginate Supabase fetch to bypass 1000-row caps ----
-        def fetch_runs_keyset(sb_client: Client, total: int, page_size: int = 1000):
+        # query instances with optional class filter (keyset-like paging)
+        def fetch_instances_keyset(
+            sb_client: Client, total: int, class_name: str | None
+        ):
             out, last_seen = [], None
-            select_cols = (
-                "id,created_at,instance_id,status,objective,best_bound,gap,runtime_sec"
-            )
+            page_size = 1000
+            # map class name -> id
+            cls_id = None
+            if class_name and class_name in db_map:
+                cls_id = db_map[class_name]["id"]
             while len(out) < total:
                 need = min(page_size, total - len(out))
                 q = (
-                    sb_client.table("runs")
-                    .select(select_cols)
+                    sb_client.table("instances")
+                    .select("id,created_at,period,class_id,manual_capacity,data")
                     .order("created_at", desc=True)
                 )
                 if last_seen is not None:
-                    q = q.lt("created_at", last_seen)  # keyset pagination
+                    q = q.lt("created_at", last_seen)
+                if class_name == "<ADHOC (NULL)>":
+                    q = q.is_("class_id", None)
+                elif cls_id:
+                    q = q.eq("class_id", cls_id)
                 batch = q.limit(need).execute().data
                 if not batch:
                     break
@@ -2333,299 +2303,519 @@ with viz_tab:
                 last_seen = batch[-1]["created_at"]
             return out
 
-        # ---- Status mapping (Gurobi) ----
-        STATUS_MAP = {
-            1: "LOADED",
-            2: "OPTIMAL",
-            3: "INFEASIBLE",
-            4: "INF_OR_UNBD",
-            5: "UNBOUNDED",
-            6: "CUTOFF",
-            7: "ITERATION_LIMIT",
-            8: "NODE_LIMIT",
-            9: "TIME_LIMIT",
-            10: "SOLUTION_LIMIT",
-            11: "INTERRUPTED",
-            12: "NUMERIC",
-            13: "SUBOPTIMAL",
-            14: "INPROGRESS",
-            15: "USER_OBJ_LIMIT",
-        }
+        class_name_filter = None if pick_cls in ("<ALL>",) else pick_cls
+        instances = fetch_instances_keyset(sb, int(inst_limit), class_name_filter)
 
-        try:
-            runs = fetch_runs_keyset(sb, int(limit))
+        if not instances:
+            st.info("No instances match the filter.")
+            st.stop()
 
-            # Pull related instances
-            inst_ids = list({r["instance_id"] for r in runs if r.get("instance_id")})
-            inst = []
-            if inst_ids:
-                CH = 500
-                for k in range(0, len(inst_ids), CH):
-                    chunk = inst_ids[k : k + CH]
-                    inst += (
-                        sb.table("instances")
-                        .select("id,period,manual_capacity,data")
-                        .in_("id", chunk)
-                        .execute()
-                        .data
-                    )
-            inst_map = {row["id"]: row for row in inst}
+        # small table
+        def _safe_len_items(row):
+            try:
+                return len((row.get("data") or {}).get("items") or {})
+            except Exception:
+                return None
 
-            # Build unified dataframe of runs (+ instance metadata)
-            recs = []
-            for r in runs:
-                I = inst_map.get(r["instance_id"])
-                period = None
-                cap = None
-                class_key = "adhoc"
-                n_items = None
-                if I:
-                    data = I.get("data", {}) or {}
-                    meta = data.get("meta") or {}
-                    items = data.get("items") or {}
-                    n_items = len(items)
-                    cap = I.get("manual_capacity") or data.get("manual_capacity") or []
-                    class_key = meta.get("class_key", "adhoc")
-                    period = I.get("period") or data.get("period")
-
-                cap_mean = float(np.mean(cap)) if cap else None
-                status_code = r.get("status")
-                status_label = STATUS_MAP.get(status_code, str(status_code))
-
-                recs.append(
-                    {
-                        "run_id": r.get("id"),
-                        "created_at": r.get("created_at"),
-                        "instance_id": r.get("instance_id"),
-                        "class_key": class_key,
-                        "period": period,
-                        "n_items": n_items,
-                        "cap_mean": cap_mean,
-                        "status": status_code,
-                        "status_label": status_label,
-                        "objective": r.get("objective"),
-                        "best_bound": r.get("best_bound"),
-                        "gap": r.get("gap"),
-                        "runtime_sec": r.get("runtime_sec"),
-                        "has_instance": bool(I),
-                    }
-                )
-
-            df = pd.DataFrame(recs)
-            if df.empty:
-                st.info("No runs found.")
-                st.stop()
-
-            # Ensure numeric columns are numeric (for plots/aggregations)
-            for col in [
-                "runtime_sec",
-                "cap_mean",
-                "n_items",
-                "objective",
-                "best_bound",
-                "gap",
-            ]:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-
-            # Create the numeric gap column ON df (this was the bug)
-            df["gap_num"] = df["gap"]  # alias for clarity in aggregations
-
-            # Optional filter by status
-            df_filtered = df[df["status"] == 2].copy() if only_optimal else df.copy()
-
-            # --- Summary tables ---
-            st.subheader("Summary (runs table)")
-            st.dataframe(df_filtered, use_container_width=True)
-
-            st.markdown("**Status breakdown (counts)**")
-            cnt = (
-                df_filtered.groupby(["class_key", "status_label"], dropna=False)
-                .size()
-                .reset_index(name="runs")
-            )
-            st.dataframe(cnt, use_container_width=True)
-
-            # --- Plots ---
-            c1, c2 = st.columns(2)
-            with c1:
-                fig = px.scatter(
-                    df_filtered.dropna(subset=["n_items", "runtime_sec"]),
-                    x="n_items",
-                    y="runtime_sec",
-                    color="class_key",
-                    symbol="status_label",
-                    hover_data=["gap", "objective", "best_bound"],
-                )
-                fig.update_layout(height=380, title="Runtime vs #Items")
-                st.plotly_chart(fig, use_container_width=True)
-            with c2:
-                fig = px.scatter(
-                    df_filtered.dropna(subset=["cap_mean", "runtime_sec"]),
-                    x="cap_mean",
-                    y="runtime_sec",
-                    color="class_key",
-                    symbol="status_label",
-                    hover_data=["gap", "objective", "best_bound"],
-                )
-                fig.update_layout(height=380, title="Runtime vs Mean Capacity")
-                st.plotly_chart(fig, use_container_width=True)
-
-            st.subheader("3D scatter")
-            x_axis = st.selectbox("X", ["n_items", "period", "cap_mean"], key="x3d")
-            y_axis = st.selectbox(
-                "Y", ["runtime_sec", "gap", "objective", "best_bound"], key="y3d"
-            )
-            z_axis = st.selectbox(
-                "Z", ["runtime_sec", "gap", "objective", "best_bound"], key="z3d"
-            )
-            color_by = st.selectbox("Color", ["class_key", "status_label"], key="c3d")
-            fig3d = px.scatter_3d(
-                df_filtered.dropna(subset=[x_axis, y_axis, z_axis]),
-                x=x_axis,
-                y=y_axis,
-                z=z_axis,
-                color=color_by,
-                symbol="class_key",
-                hover_data=["run_id", "instance_id", "status_label"],
-            )
-            fig3d.update_layout(
-                height=520,
-                scene=dict(xaxis_title=x_axis, yaxis_title=y_axis, zaxis_title=z_axis),
-            )
-            st.plotly_chart(fig3d, use_container_width=True)
-
-            st.subheader("Class aggregates (including current filter)")
-
-            # P50/P90 runtime, P95 gap; plus status counts
-            def _p90(x):
-                x = pd.to_numeric(x, errors="coerce").dropna()
-                return float(np.percentile(x, 90)) if len(x) else None
-
-            def _p95(x):
-                x = pd.to_numeric(x, errors="coerce").dropna()
-                return float(np.percentile(x, 95)) if len(x) else None
-
-            agg = (
-                df_filtered.groupby("class_key")
-                .agg(
-                    runs=("run_id", "count"),
-                    n_items_mean=("n_items", "mean"),
-                    runtime_p50=("runtime_sec", "median"),
-                    runtime_p90=("runtime_sec", _p90),
-                    gap_p95=("gap_num", _p95),
-                    infeasible=("status", lambda s: int(np.sum(s == 3))),
-                    time_limit=("status", lambda s: int(np.sum(s == 9))),
-                    suboptimal=("status", lambda s: int(np.sum(s == 13))),
-                    optimal=("status", lambda s: int(np.sum(s == 2))),
-                )
-                .reset_index()
-            )
-            st.dataframe(agg, use_container_width=True)
-
-            st.subheader("Status counts per class")
-            if not cnt.empty:
-                fig_bar = px.bar(
-                    cnt,
-                    x="class_key",
-                    y="runs",
-                    color="status_label",
-                    barmode="stack",
-                    text_auto=True,
-                )
-                fig_bar.update_layout(height=420, xaxis_title="", yaxis_title="# runs")
-                st.plotly_chart(fig_bar, use_container_width=True)
-            else:
-                st.caption("No data for the selected filter.")
-
-            st.subheader("Runtime distribution per class (all statuses in filter)")
-            df_rt = df_filtered.dropna(subset=["runtime_sec"])
-            if not df_rt.empty:
-                fig_box = px.box(
-                    df_rt,
-                    x="class_key",
-                    y="runtime_sec",
-                    color="status_label",
-                    points="all",
-                    hover_data=["n_items", "period", "gap", "objective"],
-                )
-                fig_box.update_layout(
-                    height=420, title="Runtime distribution per class"
-                )
-                st.plotly_chart(fig_box, use_container_width=True)
-            else:
-                st.caption("No runtimes available for box plot.")
-
-            st.subheader("Median runtime heatmap (class × #items bin)")
-            df_hm = df_filtered.copy()
-            bins = [0, 5, 10, 20, 50, 100, np.inf]
-            labels = ["≤5", "6–10", "11–20", "21–50", "51–100", "100+"]
-            df_hm["items_bin"] = pd.cut(df_hm["n_items"], bins=bins, labels=labels)
-            pt = (
-                df_hm.dropna(subset=["runtime_sec"])
-                .groupby(["class_key", "items_bin"])["runtime_sec"]
-                .median()
-                .unstack("items_bin")
-                .reindex(columns=labels)
-            )
-            if pt.size > 0:
-                fig_hm = px.imshow(
-                    pt,
-                    labels=dict(
-                        x="items_bin", y="class_key", color="median runtime (sec)"
+        dfI = pd.DataFrame(
+            [
+                {
+                    "instance_id": r["id"],
+                    "created_at": r["created_at"],
+                    "class": (
+                        next(
+                            (
+                                n
+                                for n, v in db_map.items()
+                                if v["id"] == r.get("class_id")
+                            ),
+                            "adhoc",
+                        )
+                        if r.get("class_id")
+                        else "adhoc"
                     ),
-                    aspect="auto",
-                )
-                fig_hm.update_layout(height=420)
-                fig_hm.update_traces(hoverongaps=False)
-                st.plotly_chart(fig_hm, use_container_width=True)
-            else:
-                st.caption("No data for heatmap.")
+                    "period": r.get("period"),
+                    "n_items": _safe_len_items(r),
+                }
+                for r in instances
+            ]
+        )
 
-            st.subheader("Runs over time (daily)")
-            df_time = df_filtered.copy()
-            dt_parsed = pd.to_datetime(df_time["created_at"], utc=True, errors="coerce")
-            df_time["date"] = dt_parsed.dt.date
-            ts = (
-                df_time.groupby(["date", "class_key", "status_label"], as_index=False)[
-                    "run_id"
-                ]
-                .count()
-                .rename(columns={"run_id": "runs"})
-            )
-            if not ts.empty:
-                fig_ts = px.line(
-                    ts,
-                    x="date",
-                    y="runs",
-                    color="class_key",
-                    line_dash="status_label",
-                    markers=True,
-                )
-                fig_ts.update_layout(
-                    height=380, title="Runs per day by class and status"
-                )
-                st.plotly_chart(fig_ts, use_container_width=True)
-            else:
-                st.caption("No time series data.")
+        st.dataframe(dfI, use_container_width=True, height=300)
 
-            st.subheader("Objective vs Runtime")
-            df_bub = df_filtered.dropna(subset=["objective", "runtime_sec"])
-            if not df_bub.empty:
-                fig_bub = px.scatter(
-                    df_bub,
-                    x="runtime_sec",
-                    y="objective",
-                    size="n_items",
-                    color="class_key",
-                    symbol="status_label",
-                    hover_data=["gap", "cap_mean", "period"],
-                    size_max=20,
+        # choose which instances to run
+        all_ids = dfI["instance_id"].tolist()
+        pick_ids = st.multiselect(
+            "Pick specific instance IDs (leave empty to use ALL loaded above)",
+            options=all_ids,
+        )
+
+        # choose one or more solvers to run
+        multi_solver_labels = st.multiselect(
+            "Solvers to run",
+            options=list(SOLVER_REGISTRY.keys()),
+            default=[
+                st.session_state.get("solver_backend_label")
+                or "LEFO v2 (permission-based)"
+            ],
+        )
+        if not multi_solver_labels:
+            st.warning("Pick at least one solver.")
+            st.stop()
+
+        run_btn = st.button("🚀 Run selected instances")
+
+        if run_btn:
+            ids_to_run = pick_ids if pick_ids else all_ids
+            id_set = set(ids_to_run)
+            rows = [r for r in instances if r["id"] in id_set]
+            total = len(rows) * len(multi_solver_labels)
+            prog = st.progress(0.0, text="Running saved instances...")
+            done = 0
+
+            for r in rows:
+                inst_json = r.get("data") or {}
+                # write temp json for solver I/O
+                tmp_path = Path("tmp_instance_saved.json")
+                tmp_path.write_text(
+                    json.dumps(to_py(inst_json), indent=2), encoding="utf-8"
                 )
-                fig_bub.update_layout(
-                    height=420, title="Objective vs Runtime (bubble size = #items)"
+
+                for label in multi_solver_labels:
+                    entry = (
+                        SOLVER_REGISTRY.get(label)
+                        or SOLVER_REGISTRY["LEFO v2 (permission-based)"]
+                    )
+                    solve_fn = (
+                        entry["fn"]
+                        or SOLVER_REGISTRY["LEFO v2 (permission-based)"]["fn"]
+                    )
+                    solver_tag = (
+                        entry["tag"]
+                        if entry["fn"]
+                        else SOLVER_REGISTRY["LEFO v2 (permission-based)"]["tag"]
+                    )
+
+                    # run
+                    summary, orders_txt = solve_fn(
+                        str(tmp_path), time_limit=time_limit, mip_gap=mip_gap
+                    )
+
+                    # log run + orders
+                    try:
+                        run_payload = {
+                            "instance_id": r["id"],
+                            "class_id": r.get("class_id"),
+                            "time_limit_sec": int(time_limit),
+                            "mip_gap": _safe_float(mip_gap),
+                            "status": (
+                                int(summary.get("status"))
+                                if summary.get("status") is not None
+                                else None
+                            ),
+                            "objective": _safe_float(summary.get("objective")),
+                            "best_bound": _safe_float(summary.get("best_bound")),
+                            "gap": _safe_float(summary.get("gap")),
+                            "runtime_sec": _safe_float(summary.get("runtime_sec")),
+                            "solver_version": solver_tag,
+                        }
+                        run_payload = sanitize_json(run_payload)
+                        run_res = sb.table("runs").insert(run_payload).execute()
+                        run_id = run_res.data[0]["id"]
+
+                        # parse orders
+                        lines = [ln.strip() for ln in orders_txt if ln.strip()]
+                        rows_ord, cur_item = [], None
+                        for ln in lines:
+                            if ln.startswith("Item"):
+                                cur_item = int(ln.split()[1])
+                            elif "→" in ln:
+                                t_str, qty_str = ln.split("→")
+                                t = int(t_str.strip())
+                                qty = float(qty_str.strip())
+                                rows_ord.append(
+                                    {
+                                        "run_id": run_id,
+                                        "item_id": cur_item,
+                                        "t": t,
+                                        "qty": _safe_float(qty),
+                                    }
+                                )
+
+                        if rows_ord:
+                            CH = 500
+                            for k in range(0, len(rows_ord), CH):
+                                sb.table("orders").insert(
+                                    rows_ord[k : k + CH]
+                                ).execute()
+
+                    except Exception as e:
+                        st.warning(
+                            f"Supabase logging failed (instance {r['id']} / {label}): {e}"
+                        )
+
+                    done += 1
+                    prog.progress(
+                        done / total, text=f"Running saved instances... {done}/{total}"
+                    )
+
+            st.success("Saved instances run complete.")
+
+    # ----------------- Explore & Visualize tab -----------------
+    with viz_tab:
+        st.header("Explore & Visualize (Supabase)")
+        sb = supabase_client()
+        if sb is None:
+            st.info("Configure Supabase in sidebar.")
+        else:
+            # ---- Controls: limit + refresh ----
+            c1, c2, c3 = st.columns([1, 1, 1])
+            with c1:
+                limit = st.number_input(
+                    "Fetch last N runs",
+                    min_value=10,
+                    value=3000,
+                    step=100,
+                    key="vis_limit",
                 )
-                st.plotly_chart(fig_bub, use_container_width=True)
-            else:
-                st.caption("No data for objective vs runtime.")
-        except Exception as e:
-            st.error(f"Supabase query failed: {e}")
+            with c2:
+                only_optimal = st.checkbox("Show only OPTIMAL runs", value=False)
+            with c3:
+                if st.button("🔄 Refresh data", key="vis_refresh"):
+                    try:
+                        st.rerun()
+                    except Exception:
+                        st.experimental_rerun()
+
+            # ---- Helper: paginate Supabase fetch to bypass 1000-row caps ----
+            def fetch_runs_keyset(sb_client: Client, total: int, page_size: int = 1000):
+                out, last_seen = [], None
+                select_cols = "id,created_at,instance_id,status,objective,best_bound,gap,runtime_sec"
+                while len(out) < total:
+                    need = min(page_size, total - len(out))
+                    q = (
+                        sb_client.table("runs")
+                        .select(select_cols)
+                        .order("created_at", desc=True)
+                    )
+                    if last_seen is not None:
+                        q = q.lt("created_at", last_seen)  # keyset pagination
+                    batch = q.limit(need).execute().data
+                    if not batch:
+                        break
+                    out.extend(batch)
+                    last_seen = batch[-1]["created_at"]
+                return out
+
+            # ---- Status mapping (Gurobi) ----
+            STATUS_MAP = {
+                1: "LOADED",
+                2: "OPTIMAL",
+                3: "INFEASIBLE",
+                4: "INF_OR_UNBD",
+                5: "UNBOUNDED",
+                6: "CUTOFF",
+                7: "ITERATION_LIMIT",
+                8: "NODE_LIMIT",
+                9: "TIME_LIMIT",
+                10: "SOLUTION_LIMIT",
+                11: "INTERRUPTED",
+                12: "NUMERIC",
+                13: "SUBOPTIMAL",
+                14: "INPROGRESS",
+                15: "USER_OBJ_LIMIT",
+            }
+
+            try:
+                runs = fetch_runs_keyset(sb, int(limit))
+
+                # Pull related instances
+                inst_ids = list(
+                    {r["instance_id"] for r in runs if r.get("instance_id")}
+                )
+                inst = []
+                if inst_ids:
+                    CH = 500
+                    for k in range(0, len(inst_ids), CH):
+                        chunk = inst_ids[k : k + CH]
+                        inst += (
+                            sb.table("instances")
+                            .select("id,period,manual_capacity,data")
+                            .in_("id", chunk)
+                            .execute()
+                            .data
+                        )
+                inst_map = {row["id"]: row for row in inst}
+
+                # Build unified dataframe of runs (+ instance metadata)
+                recs = []
+                for r in runs:
+                    I = inst_map.get(r["instance_id"])
+                    period = None
+                    cap = None
+                    class_key = "adhoc"
+                    n_items = None
+                    if I:
+                        data = I.get("data", {}) or {}
+                        meta = data.get("meta") or {}
+                        items = data.get("items") or {}
+                        n_items = len(items)
+                        cap = (
+                            I.get("manual_capacity")
+                            or data.get("manual_capacity")
+                            or []
+                        )
+                        class_key = meta.get("class_key", "adhoc")
+                        period = I.get("period") or data.get("period")
+
+                    cap_mean = float(np.mean(cap)) if cap else None
+                    status_code = r.get("status")
+                    status_label = STATUS_MAP.get(status_code, str(status_code))
+
+                    recs.append(
+                        {
+                            "run_id": r.get("id"),
+                            "created_at": r.get("created_at"),
+                            "instance_id": r.get("instance_id"),
+                            "class_key": class_key,
+                            "period": period,
+                            "n_items": n_items,
+                            "cap_mean": cap_mean,
+                            "status": status_code,
+                            "status_label": status_label,
+                            "objective": r.get("objective"),
+                            "best_bound": r.get("best_bound"),
+                            "gap": r.get("gap"),
+                            "runtime_sec": r.get("runtime_sec"),
+                            "has_instance": bool(I),
+                        }
+                    )
+
+                df = pd.DataFrame(recs)
+                if df.empty:
+                    st.info("No runs found.")
+                    st.stop()
+
+                # Ensure numeric columns are numeric (for plots/aggregations)
+                for col in [
+                    "runtime_sec",
+                    "cap_mean",
+                    "n_items",
+                    "objective",
+                    "best_bound",
+                    "gap",
+                ]:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+                # Create the numeric gap column ON df (this was the bug)
+                df["gap_num"] = df["gap"]  # alias for clarity in aggregations
+
+                # Optional filter by status
+                df_filtered = (
+                    df[df["status"] == 2].copy() if only_optimal else df.copy()
+                )
+
+                # --- Summary tables ---
+                st.subheader("Summary (runs table)")
+                st.dataframe(df_filtered, use_container_width=True)
+
+                st.markdown("**Status breakdown (counts)**")
+                cnt = (
+                    df_filtered.groupby(["class_key", "status_label"], dropna=False)
+                    .size()
+                    .reset_index(name="runs")
+                )
+                st.dataframe(cnt, use_container_width=True)
+
+                # --- Plots ---
+                c1, c2 = st.columns(2)
+                with c1:
+                    fig = px.scatter(
+                        df_filtered.dropna(subset=["n_items", "runtime_sec"]),
+                        x="n_items",
+                        y="runtime_sec",
+                        color="class_key",
+                        symbol="status_label",
+                        hover_data=["gap", "objective", "best_bound"],
+                    )
+                    fig.update_layout(height=380, title="Runtime vs #Items")
+                    st.plotly_chart(fig, use_container_width=True)
+                with c2:
+                    fig = px.scatter(
+                        df_filtered.dropna(subset=["cap_mean", "runtime_sec"]),
+                        x="cap_mean",
+                        y="runtime_sec",
+                        color="class_key",
+                        symbol="status_label",
+                        hover_data=["gap", "objective", "best_bound"],
+                    )
+                    fig.update_layout(height=380, title="Runtime vs Mean Capacity")
+                    st.plotly_chart(fig, use_container_width=True)
+
+                st.subheader("3D scatter")
+                x_axis = st.selectbox("X", ["n_items", "period", "cap_mean"], key="x3d")
+                y_axis = st.selectbox(
+                    "Y", ["runtime_sec", "gap", "objective", "best_bound"], key="y3d"
+                )
+                z_axis = st.selectbox(
+                    "Z", ["runtime_sec", "gap", "objective", "best_bound"], key="z3d"
+                )
+                color_by = st.selectbox(
+                    "Color", ["class_key", "status_label"], key="c3d"
+                )
+                fig3d = px.scatter_3d(
+                    df_filtered.dropna(subset=[x_axis, y_axis, z_axis]),
+                    x=x_axis,
+                    y=y_axis,
+                    z=z_axis,
+                    color=color_by,
+                    symbol="class_key",
+                    hover_data=["run_id", "instance_id", "status_label"],
+                )
+                fig3d.update_layout(
+                    height=520,
+                    scene=dict(
+                        xaxis_title=x_axis, yaxis_title=y_axis, zaxis_title=z_axis
+                    ),
+                )
+                st.plotly_chart(fig3d, use_container_width=True)
+
+                st.subheader("Class aggregates (including current filter)")
+
+                # P50/P90 runtime, P95 gap; plus status counts
+                def _p90(x):
+                    x = pd.to_numeric(x, errors="coerce").dropna()
+                    return float(np.percentile(x, 90)) if len(x) else None
+
+                def _p95(x):
+                    x = pd.to_numeric(x, errors="coerce").dropna()
+                    return float(np.percentile(x, 95)) if len(x) else None
+
+                agg = (
+                    df_filtered.groupby("class_key")
+                    .agg(
+                        runs=("run_id", "count"),
+                        n_items_mean=("n_items", "mean"),
+                        runtime_p50=("runtime_sec", "median"),
+                        runtime_p90=("runtime_sec", _p90),
+                        gap_p95=("gap_num", _p95),
+                        infeasible=("status", lambda s: int(np.sum(s == 3))),
+                        time_limit=("status", lambda s: int(np.sum(s == 9))),
+                        suboptimal=("status", lambda s: int(np.sum(s == 13))),
+                        optimal=("status", lambda s: int(np.sum(s == 2))),
+                    )
+                    .reset_index()
+                )
+                st.dataframe(agg, use_container_width=True)
+
+                st.subheader("Status counts per class")
+                if not cnt.empty:
+                    fig_bar = px.bar(
+                        cnt,
+                        x="class_key",
+                        y="runs",
+                        color="status_label",
+                        barmode="stack",
+                        text_auto=True,
+                    )
+                    fig_bar.update_layout(
+                        height=420, xaxis_title="", yaxis_title="# runs"
+                    )
+                    st.plotly_chart(fig_bar, use_container_width=True)
+                else:
+                    st.caption("No data for the selected filter.")
+
+                st.subheader("Runtime distribution per class (all statuses in filter)")
+                df_rt = df_filtered.dropna(subset=["runtime_sec"])
+                if not df_rt.empty:
+                    fig_box = px.box(
+                        df_rt,
+                        x="class_key",
+                        y="runtime_sec",
+                        color="status_label",
+                        points="all",
+                        hover_data=["n_items", "period", "gap", "objective"],
+                    )
+                    fig_box.update_layout(
+                        height=420, title="Runtime distribution per class"
+                    )
+                    st.plotly_chart(fig_box, use_container_width=True)
+                else:
+                    st.caption("No runtimes available for box plot.")
+
+                st.subheader("Median runtime heatmap (class × #items bin)")
+                df_hm = df_filtered.copy()
+                bins = [0, 5, 10, 20, 50, 100, np.inf]
+                labels = ["≤5", "6–10", "11–20", "21–50", "51–100", "100+"]
+                df_hm["items_bin"] = pd.cut(df_hm["n_items"], bins=bins, labels=labels)
+                pt = (
+                    df_hm.dropna(subset=["runtime_sec"])
+                    .groupby(["class_key", "items_bin"])["runtime_sec"]
+                    .median()
+                    .unstack("items_bin")
+                    .reindex(columns=labels)
+                )
+                if pt.size > 0:
+                    fig_hm = px.imshow(
+                        pt,
+                        labels=dict(
+                            x="items_bin", y="class_key", color="median runtime (sec)"
+                        ),
+                        aspect="auto",
+                    )
+                    fig_hm.update_layout(height=420)
+                    fig_hm.update_traces(hoverongaps=False)
+                    st.plotly_chart(fig_hm, use_container_width=True)
+                else:
+                    st.caption("No data for heatmap.")
+
+                st.subheader("Runs over time (daily)")
+                df_time = df_filtered.copy()
+                dt_parsed = pd.to_datetime(
+                    df_time["created_at"], utc=True, errors="coerce"
+                )
+                df_time["date"] = dt_parsed.dt.date
+                ts = (
+                    df_time.groupby(
+                        ["date", "class_key", "status_label"], as_index=False
+                    )["run_id"]
+                    .count()
+                    .rename(columns={"run_id": "runs"})
+                )
+                if not ts.empty:
+                    fig_ts = px.line(
+                        ts,
+                        x="date",
+                        y="runs",
+                        color="class_key",
+                        line_dash="status_label",
+                        markers=True,
+                    )
+                    fig_ts.update_layout(
+                        height=380, title="Runs per day by class and status"
+                    )
+                    st.plotly_chart(fig_ts, use_container_width=True)
+                else:
+                    st.caption("No time series data.")
+
+                st.subheader("Objective vs Runtime")
+                df_bub = df_filtered.dropna(subset=["objective", "runtime_sec"])
+                if not df_bub.empty:
+                    fig_bub = px.scatter(
+                        df_bub,
+                        x="runtime_sec",
+                        y="objective",
+                        size="n_items",
+                        color="class_key",
+                        symbol="status_label",
+                        hover_data=["gap", "cap_mean", "period"],
+                        size_max=20,
+                    )
+                    fig_bub.update_layout(
+                        height=420, title="Objective vs Runtime (bubble size = #items)"
+                    )
+                    st.plotly_chart(fig_bub, use_container_width=True)
+                else:
+                    st.caption("No data for objective vs runtime.")
+            except Exception as e:
+                st.error(f"Supabase query failed: {e}")
