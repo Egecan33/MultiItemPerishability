@@ -2348,6 +2348,205 @@ with inspect_tab:
             else:
                 st.caption("No instance row found.")
 
+        # ==== Instance snapshot ====
+    st.subheader("Instance snapshot")
+
+    if not inst_row:
+        st.info("No instance data tied to this run.")
+    else:
+        inst_data = inst_row.get("data") or {}
+        T_inst = inst_row.get("period") or inst_data.get("period")
+        items_dict = inst_data.get("items") or {}
+        cap = (
+            inst_row.get("manual_capacity")
+            or inst_data.get("manual_capacity")
+            or inst_data.get("production_capacity")
+            or []
+        )
+
+        # --- Top chips / quick facts ---
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("Items (|I|)", f"{len(items_dict)}")
+        with c2:
+            st.metric("Horizon (T)", f"{T_inst}")
+        with c3:
+            st.metric("Cap vector?", "Yes" if cap else "No")
+        with c4:
+            wh = inst_data.get("warehouse_capacity", None)
+            st.metric("Warehouse cap W", "—" if wh is None else f"{wh}")
+
+        # --- Build demand & shelf dataframes (items × t) ---
+        import numpy as np
+        import pandas as pd
+        import plotly.graph_objects as go
+        import plotly.express as px
+
+        if T_inst is None or not items_dict:
+            st.caption("Instance has no items or missing T.")
+        else:
+            # Demand matrix
+            dem_rows = {}
+            for i_str, it in items_dict.items():
+                i = int(i_str)
+                d = list(it.get("demand", [0] * int(T_inst)))
+                # pad/trim to T_inst defensively
+                d = (d + [0] * int(T_inst))[: int(T_inst)]
+                dem_rows[i] = d
+            df_dem = pd.DataFrame.from_dict(dem_rows, orient="index")
+            df_dem.index.name = "item_id"
+            df_dem.columns = list(range(int(T_inst)))
+
+            # Shelf-life (m_it) matrix (same shape)
+            shelf_rows = {}
+            for i_str, it in items_dict.items():
+                i = int(i_str)
+                mseq = list(it.get("shelf_seq", [0] * int(T_inst)))
+                mseq = (mseq + [0] * int(T_inst))[: int(T_inst)]
+                shelf_rows[i] = mseq
+            df_shelf = pd.DataFrame.from_dict(shelf_rows, orient="index")
+            df_shelf.index.name = "item_id"
+            df_shelf.columns = list(range(int(T_inst)))
+
+            # Total demand per period and capacity series
+            total_dem = df_dem.sum(axis=0)
+            cap_series = pd.Series(cap, index=list(range(len(cap)))) if cap else None
+
+            # ---- Demand vs Capacity (bar + line) ----
+            st.markdown("**Total demand vs capacity (per period)**")
+            fig_dc = go.Figure()
+            fig_dc.add_trace(
+                go.Bar(
+                    x=list(total_dem.index),
+                    y=list(total_dem.values),
+                    name="Total demand",
+                )
+            )
+            if cap_series is not None and len(cap_series) >= len(total_dem):
+                fig_dc.add_trace(
+                    go.Scatter(
+                        x=list(range(len(cap_series))),
+                        y=list(cap_series.values),
+                        mode="lines+markers",
+                        name="Capacity κₜ",
+                    )
+                )
+            fig_dc.update_layout(
+                height=380,
+                xaxis_title="t",
+                yaxis_title="qty",
+                legend_title="Series",
+                barmode="overlay",
+            )
+            st.plotly_chart(fig_dc, use_container_width=True)
+
+            # ---- Per-item demand heatmap ----
+            st.markdown("**Per-item demand heatmap**")
+            if not df_dem.empty:
+                fig_h1 = px.imshow(
+                    df_dem,
+                    labels=dict(x="t", y="item_id", color="demand"),
+                    aspect="auto",
+                )
+                fig_h1.update_layout(height=420)
+                st.plotly_chart(fig_h1, use_container_width=True)
+            else:
+                st.caption("No demand matrix to display.")
+
+            # ---- Per-item shelf-life heatmap (m_it) ----
+            st.markdown("**Per-item shelf-life (m_it) heatmap**")
+            if not df_shelf.empty:
+                fig_h2 = px.imshow(
+                    df_shelf,
+                    labels=dict(x="t", y="item_id", color="m_it"),
+                    aspect="auto",
+                )
+                fig_h2.update_layout(height=420)
+                st.plotly_chart(fig_h2, use_container_width=True)
+            else:
+                st.caption("No shelf-life matrix to display.")
+
+            # ---- Items overview table (quick stats per item) ----
+            st.markdown("**Items overview (quick stats)**")
+
+            def _avg(x):
+                x = np.asarray(x, dtype=float)
+                return float(np.mean(x)) if x.size else np.nan
+
+            rows = []
+            for i_str, it in items_dict.items():
+                i = int(i_str)
+                d = df_dem.loc[i].values if i in df_dem.index else np.zeros(int(T_inst))
+                m = (
+                    df_shelf.loc[i].values
+                    if i in df_shelf.index
+                    else np.zeros(int(T_inst))
+                )
+                setup = it.get("setup", 0)
+                cvar = it.get("c_var", 0)
+                h = it.get("h", 0)
+
+                def _mean_or_scalar(v):
+                    if isinstance(v, list):
+                        return _avg(v)
+                    try:
+                        return float(v)
+                    except Exception:
+                        return np.nan
+
+                rows.append(
+                    dict(
+                        item_id=i,
+                        dem_sum=float(np.sum(d)),
+                        dem_max=float(np.max(d)) if d.size else 0.0,
+                        dem_mean=_avg(d),
+                        m_mean=_avg(m),
+                        m_min=float(np.min(m)) if m.size else 0.0,
+                        m_max=float(np.max(m)) if m.size else 0.0,
+                        setup_mean=_mean_or_scalar(setup),
+                        cvar_mean=_mean_or_scalar(cvar),
+                        h_mean=_mean_or_scalar(h),
+                    )
+                )
+            df_items = pd.DataFrame(rows).sort_values("dem_sum", ascending=False)
+            st.dataframe(df_items, use_container_width=True)
+
+            # ---- Raw JSON + downloads ----
+            colA, colB = st.columns([1, 1])
+            with colA:
+                if inst_data:
+                    st.download_button(
+                        "⬇️ Download instance JSON",
+                        data=json.dumps(inst_data, indent=2),
+                        file_name=f"instance_{inst_row.get('id','unknown')}.json",
+                        mime="application/json",
+                    )
+            with colB:
+                # Export a compact Excel with the matrices and items overview
+                try:
+                    import io
+
+                    xbuf = io.BytesIO()
+                    with pd.ExcelWriter(xbuf, engine="xlsxwriter") as xlw:
+                        df_items.to_excel(xlw, sheet_name="items_overview", index=False)
+                        df_dem.to_excel(xlw, sheet_name="demand_matrix")
+                        df_shelf.to_excel(xlw, sheet_name="shelf_life_mit")
+                        if cap_series is not None:
+                            pd.DataFrame({"kappa_t": cap_series}).to_excel(
+                                xlw, sheet_name="capacity_kappa"
+                            )
+                    st.download_button(
+                        "⬇️ Download instance snapshot (Excel)",
+                        data=xbuf.getvalue(),
+                        file_name=f"instance_{inst_row.get('id','unknown')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                except Exception as _e:
+                    st.caption(f"Excel export not available: {_e}")
+
+            with st.expander("Raw `instances` row"):
+                st.json(inst_row)
+
         # ---- Orders: table & quick plots ----
         st.subheader("Order plan (per item)")
         if df_orders.empty:
