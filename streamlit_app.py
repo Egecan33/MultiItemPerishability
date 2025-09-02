@@ -1132,23 +1132,9 @@ with items_tab:
                     )
                     run_id = run_res.data[0]["id"]
                     # parse orders
-                    lines = [ln.strip() for ln in orders_txt if ln.strip()]
-                    rows, cur_item = [], None
-                    for ln in lines:
-                        if ln.startswith("Item"):
-                            cur_item = int(ln.split()[1])
-                        elif "→" in ln:
-                            t_str, qty_str = ln.split("→")
-                            t = int(t_str.strip())
-                            qty = float(qty_str.strip())
-                            rows.append(
-                                {
-                                    "run_id": run_id,
-                                    "item_id": cur_item,
-                                    "t": t,
-                                    "qty": qty,
-                                }
-                            )
+                    rows = [
+                        {"run_id": run_id, **r} for r in parse_orders_lines(orders_txt)
+                    ]
                     if rows:
                         CHUNK = 500
                         for k in range(0, len(rows), CHUNK):
@@ -2165,23 +2151,10 @@ with batch_tab:
                         run_id = run_res.data[0]["id"]
 
                         # orders
-                        lines = [ln.strip() for ln in orders_txt if ln.strip()]
-                        rows, cur_item = [], None
-                        for ln in lines:
-                            if ln.startswith("Item"):
-                                cur_item = int(ln.split()[1])
-                            elif "→" in ln:
-                                t_str, qty_str = ln.split("→")
-                                t = int(t_str.strip())
-                                qty = float(qty_str.strip())
-                                rows.append(
-                                    {
-                                        "run_id": run_id,
-                                        "item_id": cur_item,
-                                        "t": t,
-                                        "qty": _safe_float(qty),
-                                    }
-                                )
+                        rows = [
+                            {"run_id": run_id, **r}
+                            for r in parse_orders_lines(orders_txt)
+                        ]
                         if rows:
                             CHUNK = 500
                             for k in range(0, len(rows), CHUNK):
@@ -2606,23 +2579,9 @@ with saved_run_tab:
                     run_id = run_res.data[0]["id"]
 
                     # parse orders
-                    lines = [ln.strip() for ln in orders_txt if ln.strip()]
-                    rows_ord, cur_item = [], None
-                    for ln in lines:
-                        if ln.startswith("Item"):
-                            cur_item = int(ln.split()[1])
-                        elif "→" in ln:
-                            t_str, qty_str = ln.split("→")
-                            t = int(t_str.strip())
-                            qty = float(qty_str.strip())
-                            rows_ord.append(
-                                {
-                                    "run_id": run_id,
-                                    "item_id": cur_item,
-                                    "t": t,
-                                    "qty": _safe_float(qty),
-                                }
-                            )
+                    rows_ord = [
+                        {"run_id": run_id, **r} for r in parse_orders_lines(orders_txt)
+                    ]
 
                     if rows_ord:
                         CH = 500
@@ -2664,6 +2623,9 @@ with viz_tab:
             )
             hide_infeasible = st.checkbox(
                 "Hide INFEASIBLE runs", value=False, key="vis_hide_inf"
+            )
+            hide_interrupted = st.checkbox(  # NEW
+                "Hide INTERRUPTED runs", value=False, key="vis_hide_int"
             )
         with c3:
             if st.button("🔄 Refresh data", key="vis_refresh"):
@@ -2794,13 +2756,13 @@ with viz_tab:
             # Numeric gap alias (for robust aggregations)
             df["gap_num"] = df["gap"]
 
-            # ---- Infer run batches from created_at (≥1 hour gap starts a new batch) ----
+            # ---- Infer run batches from created_at (≥2 hour gap starts a new batch) ----
             try:
                 df_sorted = df.sort_values("created_at").copy()
                 ts_sorted = pd.to_datetime(
                     df_sorted["created_at"], utc=True, errors="coerce"
                 )
-                boundaries = ts_sorted.diff() > pd.Timedelta(hours=1)
+                boundaries = ts_sorted.diff() > pd.Timedelta(hours=2)
                 df_sorted["run_batch"] = (boundaries.cumsum() + 1).astype(int)
                 batch_map = df_sorted.set_index("run_id")["run_batch"]
                 df["run_batch"] = df["run_id"].map(batch_map)
@@ -2842,6 +2804,8 @@ with viz_tab:
             df_filtered = df.copy()
             if hide_infeasible:
                 df_filtered = df_filtered[df_filtered["status"] != 3]
+            if hide_interrupted:  # NEW
+                df_filtered = df_filtered[df_filtered["status"] != 11]
             if only_optimal:
                 df_filtered = df_filtered[df_filtered["status"] == 2]
 
