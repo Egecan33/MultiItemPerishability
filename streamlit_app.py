@@ -2800,6 +2800,7 @@ with saved_run_tab:
         st.success("Saved instances run complete.")
 
 # ----------------- Explore & Visualize tab -----------------
+
 with viz_tab:
     st.header("Explore & Visualize (Supabase)")
     sb = supabase_client()
