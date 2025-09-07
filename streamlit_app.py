@@ -2155,6 +2155,10 @@ with batch_tab:
 
                         run_payload = sanitize_json(run_payload)
                         run_res = sb.table("runs").insert(run_payload).execute()
+                        if run_res.data and len(run_res.data):
+                            run_id = run_res.data[0]["id"]
+                        else:
+                            raise RuntimeError("Insert returned no data")
                         run_id = run_res.data[0]["id"]
 
                         # orders
@@ -2810,6 +2814,8 @@ with saved_run_tab:
         done = 0
         created_run_ids: list[str] = []  # ← collect run_ids we just created
 
+        from datetime import datetime, timezone, timedelta
+
         for r in rows:
             inst_json = r.get("data") or {}
             # write temp json for solver I/O
@@ -2862,15 +2868,56 @@ with saved_run_tab:
                         }
                     )
 
-                    # Force-return the id even when PostgREST is set to return=minimal
-                    run_res = (
-                        sb.table("runs").insert(run_payload).select("id").execute()
-                    )
-                    if not (run_res and run_res.data and len(run_res.data)):
-                        raise RuntimeError(
-                            "Insert returned no data; check RLS/policies or PostgREST 'prefer' header."
+                    # Record a lower bound on created_at (UTC) BEFORE hitting insert
+                    t0 = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+
+                    # Robust insert: request returning rows if supported; fallback otherwise
+                    run_res = None
+                    run_id = None
+                    try:
+                        # supabase-py >=2 supports returning="representation"
+                        run_res = (
+                            sb.table("runs")
+                            .insert(run_payload, returning="representation")
+                            .execute()
                         )
-                    run_id = run_res.data[0]["id"]
+                    except TypeError:
+                        # Older clients: no 'returning' kwarg
+                        run_res = sb.table("runs").insert(run_payload).execute()
+
+                    # Primary path: use returned data if available
+                    if run_res and getattr(run_res, "data", None):
+                        try:
+                            run_id = run_res.data[0]["id"]
+                        except Exception:
+                            run_id = None
+
+                    # Fallback: fetch the row we just inserted
+                    if not run_id:
+                        try:
+                            sel = (
+                                sb.table("runs")
+                                .select("id,created_at")
+                                .eq("instance_id", r["id"])
+                                .eq("solver_version", solver_tag)
+                                .eq("time_limit_sec", int(time_limit))
+                                .eq("mip_gap", _safe_float(mip_gap))
+                                .gte("created_at", t0)
+                                .order("created_at", desc=True)
+                                .limit(1)
+                                .execute()
+                            )
+                            if sel and sel.data:
+                                run_id = sel.data[0]["id"]
+                        except Exception:
+                            # swallow; handled below
+                            run_id = None
+
+                    if not run_id:
+                        raise RuntimeError(
+                            "Insert succeeded but no run_id returned; could not resolve via fallback select."
+                        )
+
                     created_run_ids.append(run_id)  # ← track it
 
                     # parse orders and chunk insert
