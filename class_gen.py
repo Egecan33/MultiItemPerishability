@@ -86,8 +86,8 @@ LOCAL_PRESETS = list(generate_all_presets())
 if __name__ == "__main__":
     # Dump to a JSON file, if you want a static artifact:
     with open("local_presets.json", "w", encoding="utf-8") as f:
-        json.dump(LOCAL_PRESETS, f, indent=2)
+        json.dump(LOCAL_PRESETS, f, indent=2, ensure_ascii=False)
 
-    # Quick eye-check example (X232237: P=2,N=3,C=2,V=2,M=3,L=7)
-    ex = next(cfg for cfg in LOCAL_PRESETS if cfg["name"] == "X232237")
-    print(json.dumps(ex, indent=2))
+    # Quick eye-check example (X232236: P=2,N=3,C=2,V=2,M=3,L=6)
+    ex = next(cfg for cfg in LOCAL_PRESETS if cfg["name"] == "X232236")
+    print(json.dumps(ex, indent=2, ensure_ascii=False))
