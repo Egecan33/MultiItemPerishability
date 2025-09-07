@@ -310,6 +310,13 @@ def dedupe_queue_by_name():
     st.session_state["classes"] = out
 
 
+def _ins_label(v):
+    try:
+        return f"ins#{int(v)}"
+    except Exception:
+        return "—"
+
+
 # ======================= Sidebar: global ======================
 with st.sidebar:
     st.header("Global Settings")
@@ -2265,17 +2272,79 @@ with inspect_tab:
             st.info("No runs found for the selected filter.")
             st.stop()
 
+        # fetch ins_id for the displayed runs → add pretty 'instance' label
+        inst_ids = [x for x in df_runs["instance_id"].dropna().unique().tolist() if x]
+        if inst_ids:
+            inst_rows = (
+                sb.table("instances_enriched")
+                .select("id,ins_id")
+                .in_("id", inst_ids)
+                .execute()
+                .data
+                or []
+            )
+            _imap = {r["id"]: r.get("ins_id") for r in inst_rows}
+            df_runs["ins_id"] = df_runs["instance_id"].map(_imap)
+        else:
+            df_runs["ins_id"] = None
+        df_runs["instance"] = df_runs["ins_id"].apply(_ins_label)
+
+        # -------- Add batch inference (≥ 2h gap → new batch) + batch filter --------
+        try:
+            df_sorted = df_runs.sort_values("created_at").copy()
+            ts_sorted = pd.to_datetime(
+                df_sorted["created_at"], utc=True, errors="coerce"
+            )
+            boundaries = ts_sorted.diff() > pd.Timedelta(hours=2)
+            df_sorted["run_batch"] = (boundaries.cumsum() + 1).astype(int)
+            batch_map = df_sorted.set_index("run_id")["run_batch"]
+            df_runs["run_batch"] = df_runs["run_id"].map(batch_map)
+        except Exception:
+            df_runs["run_batch"] = 1  # fallback: single batch
+
+        batch_values = sorted(df_runs["run_batch"].dropna().unique().tolist())
+        batch_labels = ["ALL"] + [f"batch {b}" for b in batch_values]
+        selected_batch_label = st.selectbox(
+            "Filter by run batch", options=batch_labels, index=0
+        )
+        if selected_batch_label != "ALL":
+            try:
+                selected_batch = int(selected_batch_label.split()[-1])
+                df_view = df_runs[df_runs["run_batch"] == selected_batch].copy()
+            except Exception:
+                df_view = df_runs.copy()
+        else:
+            df_view = df_runs.copy()
+
+        if df_view.empty:
+            st.info("No runs after applying the batch filter.")
+            st.stop()
+
+        # Single, clean table (no duplicate)
+        runs_cols = [
+            "run_id",
+            "created_at",
+            "instance",
+            "class_name",
+            "status_label",
+            "solver_version",
+            "objective",
+            "best_bound",
+            "gap",
+            "runtime_sec",
+            "run_batch",
+        ]
         st.subheader("Filtered runs")
-        st.dataframe(df_runs, use_container_width=True)
+        st.dataframe(df_view[runs_cols], use_container_width=True)
 
         # ---- Pick a specific run ----
         pretty_opts = [
-            f"{row['run_id']} • {row['created_at']} • {row['status_label']} • {row['solver_version']} • obj={row['objective']}"
-            for _, row in df_runs.iterrows()
+            f"{row['run_id']} • {row['created_at']} • {row['status_label']} • {row['solver_version']} • {row['instance']} • obj={row['objective']}"
+            for _, row in df_view.iterrows()
         ]
         sel = st.selectbox("Select a run to inspect", pretty_opts, index=0)
         sel_idx = pretty_opts.index(sel)
-        selected_run_id = df_runs.iloc[sel_idx]["run_id"]
+        selected_run_id = df_view.iloc[sel_idx]["run_id"]
 
         # ---- Fetch the selected run, instance, and orders ----
         run_row = (
@@ -2291,8 +2360,8 @@ with inspect_tab:
         inst_row = None
         if run_row and run_row.get("instance_id"):
             inst_row = (
-                sb.table("instances")
-                .select("id,period,manual_capacity,data")
+                sb.table("instances_enriched")
+                .select("id,ins_id,period,manual_capacity,data,class_id,created_at")
                 .eq("id", run_row["instance_id"])
                 .limit(1)
                 .execute()
@@ -2348,7 +2417,7 @@ with inspect_tab:
             else:
                 st.caption("No instance row found.")
 
-        # ==== Instance snapshot ====
+    # ==== Instance snapshot ====
     st.subheader("Instance snapshot")
 
     if not inst_row:
@@ -2390,14 +2459,13 @@ with inspect_tab:
             for i_str, it in items_dict.items():
                 i = int(i_str)
                 d = list(it.get("demand", [0] * int(T_inst)))
-                # pad/trim to T_inst defensively
                 d = (d + [0] * int(T_inst))[: int(T_inst)]
                 dem_rows[i] = d
             df_dem = pd.DataFrame.from_dict(dem_rows, orient="index")
             df_dem.index.name = "item_id"
             df_dem.columns = list(range(int(T_inst)))
 
-            # Shelf-life (m_it) matrix (same shape)
+            # Shelf-life matrix
             shelf_rows = {}
             for i_str, it in items_dict.items():
                 i = int(i_str)
@@ -2412,7 +2480,7 @@ with inspect_tab:
             total_dem = df_dem.sum(axis=0)
             cap_series = pd.Series(cap, index=list(range(len(cap)))) if cap else None
 
-            # ---- Demand vs Capacity (bar + line) ----
+            # Demand vs Capacity
             st.markdown("**Total demand vs capacity (per period)**")
             fig_dc = go.Figure()
             fig_dc.add_trace(
@@ -2440,7 +2508,7 @@ with inspect_tab:
             )
             st.plotly_chart(fig_dc, use_container_width=True)
 
-            # ---- Per-item demand heatmap ----
+            # Per-item demand heatmap
             st.markdown("**Per-item demand heatmap**")
             if not df_dem.empty:
                 fig_h1 = px.imshow(
@@ -2453,7 +2521,7 @@ with inspect_tab:
             else:
                 st.caption("No demand matrix to display.")
 
-            # ---- Per-item shelf-life heatmap (m_it) ----
+            # Per-item shelf-life heatmap
             st.markdown("**Per-item shelf-life (m_it) heatmap**")
             if not df_shelf.empty:
                 fig_h2 = px.imshow(
@@ -2466,7 +2534,7 @@ with inspect_tab:
             else:
                 st.caption("No shelf-life matrix to display.")
 
-            # ---- Items overview table (quick stats per item) ----
+            # Items overview
             st.markdown("**Items overview (quick stats)**")
 
             def _avg(x):
@@ -2511,7 +2579,7 @@ with inspect_tab:
             df_items = pd.DataFrame(rows).sort_values("dem_sum", ascending=False)
             st.dataframe(df_items, use_container_width=True)
 
-            # ---- Raw JSON + downloads ----
+            # Downloads
             colA, colB = st.columns([1, 1])
             with colA:
                 if inst_data:
@@ -2522,7 +2590,6 @@ with inspect_tab:
                         mime="application/json",
                     )
             with colB:
-                # Export a compact Excel with the matrices and items overview
                 try:
                     import io
 
@@ -2547,18 +2614,16 @@ with inspect_tab:
             with st.expander("Raw `instances` row"):
                 st.json(inst_row)
 
-        # ---- Orders: table & quick plots ----
+        # Orders: table & quick plots
         st.subheader("Order plan (per item)")
         if df_orders.empty:
             st.info("This run has no orders recorded.")
         else:
-            # Wide pivot for eye-check (t rows, item columns)
             pivot = df_orders.pivot_table(
                 index="t", columns="item_id", values="qty", fill_value=0
             ).sort_index()
             st.dataframe(pivot, use_container_width=True)
 
-            # Quick per-item plot selector (default to up to 8 most active items)
             totals = (
                 df_orders.groupby("item_id")["qty"].sum().sort_values(ascending=False)
             )
@@ -2570,7 +2635,6 @@ with inspect_tab:
             )
 
             if items_to_plot:
-                # Combine selected items into one figure (lines)
                 fig = go.Figure()
                 for iid in items_to_plot:
                     ser = pivot.get(iid)
@@ -2593,12 +2657,12 @@ with inspect_tab:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-            # Also show nonzero long-form table for quick scanning
             st.markdown("**Nonzero orders (long form)**")
             st.dataframe(
                 df_orders[df_orders["qty"] > 0].sort_values(["item_id", "t"]),
                 use_container_width=True,
             )
+
 
 # ----------------- Saved Instances Runner tab -----------------
 
@@ -2611,13 +2675,12 @@ with saved_run_tab:
         st.stop()
 
     # --- class filter (including NULL/adhoc) ---
-    # fetch classes once (you already cached db_classes at boot)
     db_map = st.session_state.get("db_classes", {})
     class_choices = ["<ALL>", "<ADHOC (NULL)>"] + sorted(db_map.keys())
     pick_cls = st.selectbox("Filter by class", class_choices, index=0)
 
     # limit + refresh
-    c1, c2, c3 = st.columns([1, 1, 1])
+    c1, c2, _ = st.columns([1, 1, 1])
     with c1:
         inst_limit = st.number_input(
             "Fetch last N instances",
@@ -2632,22 +2695,20 @@ with saved_run_tab:
                 st.rerun()
             except Exception:
                 st.experimental_rerun()
-    with c3:
-        pass
 
-    # query instances with optional class filter (keyset-like paging)
+    # keyset pagination helper
     def fetch_instances_keyset(sb_client: Client, total: int, class_name: str | None):
         out, last_seen = [], None
         page_size = 1000
-        # map class name -> id
+        # map class name -> id (if needed)
         cls_id = None
         if class_name and class_name in db_map:
             cls_id = db_map[class_name]["id"]
         while len(out) < total:
             need = min(page_size, total - len(out))
             q = (
-                sb_client.table("instances")
-                .select("id,created_at,period,class_id,manual_capacity,data")
+                sb_client.table("instances_enriched")
+                .select("id,ins_id,created_at,period,class_id,manual_capacity,data")
                 .order("created_at", desc=True)
             )
             if last_seen is not None:
@@ -2663,33 +2724,35 @@ with saved_run_tab:
             last_seen = batch[-1]["created_at"]
         return out
 
-    class_name_filter = None if pick_cls in ("<ALL>",) else pick_cls
+    class_name_filter = None if pick_cls == "<ALL>" else pick_cls
     instances = fetch_instances_keyset(sb, int(inst_limit), class_name_filter)
 
     if not instances:
         st.info("No instances match the filter.")
         st.stop()
 
-    # small table
+    # -------- small table (+ pretty instance labels) --------
     def _safe_len_items(row):
         try:
             return len((row.get("data") or {}).get("items") or {})
         except Exception:
             return None
 
+    def _class_of(row):
+        if row.get("class_id"):
+            return next(
+                (n for n, v in db_map.items() if v["id"] == row["class_id"]), "adhoc"
+            )
+        return "adhoc"
+
     dfI = pd.DataFrame(
         [
             {
                 "instance_id": r["id"],
+                "ins_id": r.get("ins_id"),
+                "instance": _ins_label(r.get("ins_id")),  # ← ins#N
                 "created_at": r["created_at"],
-                "class": (
-                    next(
-                        (n for n, v in db_map.items() if v["id"] == r.get("class_id")),
-                        "adhoc",
-                    )
-                    if r.get("class_id")
-                    else "adhoc"
-                ),
+                "class": _class_of(r),
                 "period": r.get("period"),
                 "n_items": _safe_len_items(r),
             }
@@ -2697,14 +2760,28 @@ with saved_run_tab:
         ]
     )
 
-    st.dataframe(dfI, use_container_width=True, height=300)
-
-    # choose which instances to run
-    all_ids = dfI["instance_id"].tolist()
-    pick_ids = st.multiselect(
-        "Pick specific instance IDs (leave empty to use ALL loaded above)",
-        options=all_ids,
+    # Show nice columns (hide the UUID by default)
+    st.dataframe(
+        dfI[["instance", "created_at", "class", "period", "n_items"]],
+        use_container_width=True,
+        height=300,
     )
+
+    # -------- choose which instances to run (pretty labels) --------
+    # Build "ins#N × class" labels mapped to real UUIDs
+    opt_pairs = [
+        (f"{_ins_label(r.get('ins_id'))} × {_class_of(r)}", r["id"]) for r in instances
+    ]
+    label_to_id = {lbl: iid for lbl, iid in opt_pairs}
+
+    pick_labels = st.multiselect(
+        "Pick specific instances (leave empty to use ALL loaded above)",
+        options=[lbl for lbl, _ in opt_pairs],
+    )
+
+    # If empty → run all; else map labels → ids
+    all_ids = dfI["instance_id"].tolist()
+    pick_ids = [label_to_id[lbl] for lbl in pick_labels] if pick_labels else []
 
     # choose one or more solvers to run
     multi_solver_labels = st.multiselect(
@@ -2725,8 +2802,13 @@ with saved_run_tab:
         id_set = set(ids_to_run)
         rows = [r for r in instances if r["id"] in id_set]
         total = len(rows) * len(multi_solver_labels)
+        if total <= 0:
+            st.info("Nothing to run with current selections.")
+            st.stop()
+
         prog = st.progress(0.0, text="Running saved instances...")
         done = 0
+        created_run_ids: list[str] = []  # ← collect run_ids we just created
 
         for r in rows:
             inst_json = r.get("data") or {}
@@ -2737,51 +2819,65 @@ with saved_run_tab:
             )
 
             for label in multi_solver_labels:
-                entry = (
-                    SOLVER_REGISTRY.get(label)
-                    or SOLVER_REGISTRY["LEFO v2 (permission-based)"]
+                # Resolve backend with safe fallback, skip if none importable
+                entry = SOLVER_REGISTRY.get(label) or SOLVER_REGISTRY.get(
+                    "LEFO v2 (permission-based)", {}
                 )
-                solve_fn = (
-                    entry["fn"] or SOLVER_REGISTRY["LEFO v2 (permission-based)"]["fn"]
-                )
-                solver_tag = (
-                    entry["tag"]
-                    if entry["fn"]
-                    else SOLVER_REGISTRY["LEFO v2 (permission-based)"]["tag"]
-                )
+                solve_fn = (entry or {}).get("fn")
+                solver_tag = (entry or {}).get("tag", "unknown")
+                if solve_fn is None:
+                    st.warning(
+                        f"Skipping '{label}': backend not importable. "
+                        "Install/enable the solver module or pick another backend."
+                    )
+                    done += 1
+                    prog.progress(
+                        done / total, text=f"Running saved instances... {done}/{total}"
+                    )
+                    continue
 
-                # run
+                # run solver
                 summary, orders_txt = solve_fn(
                     str(tmp_path), time_limit=time_limit, mip_gap=mip_gap
                 )
 
                 # log run + orders
                 try:
-                    run_payload = {
-                        "instance_id": r["id"],
-                        "class_id": r.get("class_id"),
-                        "time_limit_sec": int(time_limit),
-                        "mip_gap": _safe_float(mip_gap),
-                        "status": (
-                            int(summary.get("status"))
-                            if summary.get("status") is not None
-                            else None
-                        ),
-                        "objective": _safe_float(summary.get("objective")),
-                        "best_bound": _safe_float(summary.get("best_bound")),
-                        "gap": _safe_float(summary.get("gap")),
-                        "runtime_sec": _safe_float(summary.get("runtime_sec")),
-                        "solver_version": solver_tag,
-                    }
-                    run_payload = sanitize_json(run_payload)
-                    run_res = sb.table("runs").insert(run_payload).execute()
+                    run_payload = sanitize_json(
+                        {
+                            "instance_id": r["id"],
+                            "class_id": r.get("class_id"),
+                            "time_limit_sec": int(time_limit),
+                            "mip_gap": _safe_float(mip_gap),
+                            "status": (
+                                int(summary.get("status"))
+                                if summary.get("status") is not None
+                                else None
+                            ),
+                            "objective": _safe_float(summary.get("objective")),
+                            "best_bound": _safe_float(summary.get("best_bound")),
+                            "gap": _safe_float(summary.get("gap")),
+                            "runtime_sec": _safe_float(summary.get("runtime_sec")),
+                            "solver_version": solver_tag,
+                        }
+                    )
+
+                    # Force-return the id even when PostgREST is set to return=minimal
+                    run_res = (
+                        sb.table("runs").insert(run_payload).select("id").execute()
+                    )
+                    if not (run_res and run_res.data and len(run_res.data)):
+                        raise RuntimeError(
+                            "Insert returned no data; check RLS/policies or PostgREST 'prefer' header."
+                        )
                     run_id = run_res.data[0]["id"]
+                    created_run_ids.append(run_id)  # ← track it
 
-                    # parse orders
+                    # parse orders and chunk insert
                     rows_ord = [
-                        {"run_id": run_id, **r} for r in parse_orders_lines(orders_txt)
+                        {"run_id": run_id, **row}
+                        for row in parse_orders_lines(orders_txt)
                     ]
-
                     if rows_ord:
                         CH = 500
                         for k in range(0, len(rows_ord), CH):
@@ -2798,6 +2894,143 @@ with saved_run_tab:
                 )
 
         st.success("Saved instances run complete.")
+
+        # ============ NEW: “batch” logic copied from Explore (≥ 2h gaps) ============
+        try:
+            if created_run_ids:
+                # 1) Pull just-created runs
+                select_cols = (
+                    "id,created_at,instance_id,status,objective,best_bound,gap,"
+                    "runtime_sec,solver_version"
+                )
+                runs_rows = []
+                CH = 500
+                for k in range(0, len(created_run_ids), CH):
+                    sub = created_run_ids[k : k + CH]
+                    part = (
+                        sb.table("runs")
+                        .select(select_cols)
+                        .in_("id", sub)
+                        .order("created_at", desc=False)
+                        .execute()
+                        .data
+                        or []
+                    )
+                    runs_rows.extend(part)
+
+                if runs_rows:
+                    # 2) Bring in instance metadata (for class_key, ins_id)
+                    inst_ids = list(
+                        {
+                            r.get("instance_id")
+                            for r in runs_rows
+                            if r.get("instance_id")
+                        }
+                    )
+                    inst_map = {}
+                    if inst_ids:
+                        for k in range(0, len(inst_ids), CH):
+                            part = inst_ids[k : k + CH]
+                            inst_rows = (
+                                sb.table("instances_enriched")
+                                .select(
+                                    "id,ins_id,period,manual_capacity,data,class_id"
+                                )
+                                .in_("id", part)
+                                .execute()
+                                .data
+                                or []
+                            )
+                            for row in inst_rows:
+                                inst_map[row["id"]] = row
+
+                    # 3) Build df like Explore
+                    STATUS_MAP = {
+                        1: "LOADED",
+                        2: "OPTIMAL",
+                        3: "INFEASIBLE",
+                        4: "INF_OR_UNBD",
+                        5: "UNBOUNDED",
+                        6: "CUTOFF",
+                        7: "ITERATION_LIMIT",
+                        8: "NODE_LIMIT",
+                        9: "TIME_LIMIT",
+                        10: "SOLUTION_LIMIT",
+                        11: "INTERRUPTED",
+                        12: "NUMERIC",
+                        13: "SUBOPTIMAL",
+                        14: "INPROGRESS",
+                        15: "USER_OBJ_LIMIT",
+                    }
+
+                    recs = []
+                    for rrow in runs_rows:
+                        I = inst_map.get(rrow.get("instance_id"))
+                        data = (I or {}).get("data") or {}
+                        meta = data.get("meta") or {}
+                        class_key = meta.get("class_key", "adhoc")
+                        ins_id = (I or {}).get("ins_id")
+                        recs.append(
+                            {
+                                "run_id": rrow.get("id"),
+                                "created_at": rrow.get("created_at"),
+                                "instance_id": rrow.get("instance_id"),
+                                "instance": _ins_label(ins_id),
+                                "class_key": class_key,
+                                "status": rrow.get("status"),
+                                "status_label": STATUS_MAP.get(
+                                    rrow.get("status"), str(rrow.get("status"))
+                                ),
+                                "solver_version": rrow.get("solver_version")
+                                or "unknown",
+                                "objective": rrow.get("objective"),
+                                "best_bound": rrow.get("best_bound"),
+                                "gap": rrow.get("gap"),
+                                "runtime_sec": rrow.get("runtime_sec"),
+                            }
+                        )
+                    df_new = pd.DataFrame(recs)
+
+                    # 4) Infer run_batch EXACTLY like Explore (≥2h gap → new batch)
+                    df_sorted = df_new.sort_values("created_at").copy()
+                    ts_sorted = pd.to_datetime(
+                        df_sorted["created_at"], utc=True, errors="coerce"
+                    )
+                    boundaries = ts_sorted.diff() > pd.Timedelta(hours=2)
+                    df_sorted["run_batch"] = (boundaries.cumsum() + 1).astype(int)
+                    batch_map = df_sorted.set_index("run_id")["run_batch"]
+                    df_new["run_batch"] = df_new["run_id"].map(batch_map)
+
+                    # 5) Show quick batch summary for just-created runs
+                    st.subheader("Batch summary (this run)")
+                    cols_show = [
+                        "run_id",
+                        "created_at",
+                        "instance",
+                        "class_key",
+                        "status_label",
+                        "solver_version",
+                        "runtime_sec",
+                        "run_batch",
+                    ]
+                    st.dataframe(
+                        df_new[cols_show].sort_values(["run_batch", "created_at"]),
+                        use_container_width=True,
+                    )
+
+                    st.markdown("**Status counts by solver & batch**")
+                    cnt = (
+                        df_new.groupby(
+                            ["solver_version", "status_label", "run_batch"],
+                            dropna=False,
+                        )
+                        .size()
+                        .reset_index(name="runs")
+                        .sort_values(["run_batch", "solver_version", "status_label"])
+                    )
+                    st.dataframe(cnt, use_container_width=True)
+        except Exception as e:
+            st.caption(f"Batch summary unavailable: {e}")
 
 # ----------------- Explore & Visualize tab -----------------
 
@@ -2824,7 +3057,7 @@ with viz_tab:
             hide_infeasible = st.checkbox(
                 "Hide INFEASIBLE runs", value=False, key="vis_hide_inf"
             )
-            hide_interrupted = st.checkbox(  # NEW
+            hide_interrupted = st.checkbox(
                 "Hide INTERRUPTED runs", value=False, key="vis_hide_int"
             )
         with c3:
@@ -2869,7 +3102,7 @@ with viz_tab:
             8: "NODE_LIMIT",
             9: "TIME_LIMIT",
             10: "SOLUTION_LIMIT",
-            11: "INTERrupted",
+            11: "INTERRUPTED",
             12: "NUMERIC",
             13: "SUBOPTIMAL",
             14: "INPROGRESS",
@@ -2887,8 +3120,8 @@ with viz_tab:
                 for k in range(0, len(inst_ids), CH):
                     chunk = inst_ids[k : k + CH]
                     inst += (
-                        sb.table("instances")
-                        .select("id,period,manual_capacity,data")
+                        sb.table("instances_enriched")
+                        .select("id,ins_id,period,manual_capacity,data,class_id")
                         .in_("id", chunk)
                         .execute()
                         .data
@@ -2934,15 +3167,26 @@ with viz_tab:
                         "runtime_sec": r.get("runtime_sec"),
                         "has_instance": bool(I),
                         "solver_version": solver_version,
+                        "ins_id": (I or {}).get("ins_id"),
                     }
                 )
 
             df = pd.DataFrame(recs)
+
             if df.empty:
                 st.info("No runs found.")
                 st.stop()
 
-            # Ensure numeric columns are numeric (for plots/aggregations)
+            # Pretty instance label
+            def _ins_label(v):
+                try:
+                    return f"ins#{int(v)}"
+                except Exception:
+                    return "—"
+
+            df["instance"] = df["ins_id"].apply(_ins_label)
+
+            # Ensure numeric columns are numeric
             for col in [
                 "runtime_sec",
                 "cap_mean",
@@ -2950,6 +3194,7 @@ with viz_tab:
                 "objective",
                 "best_bound",
                 "gap",
+                "period",
             ]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -2967,18 +3212,16 @@ with viz_tab:
                 batch_map = df_sorted.set_index("run_id")["run_batch"]
                 df["run_batch"] = df["run_id"].map(batch_map)
             except Exception:
-                # Fallback if timestamps are missing/bad: treat everything as one batch
                 df["run_batch"] = 1
 
             # ---- Solver filter & coloring options ----
             solver_values = sorted(
                 [s for s in df["solver_version"].fillna("unknown").unique()]
             )
-            default_solvers = solver_values[:]  # select all by default
             chosen_solvers = st.multiselect(
                 "Filter by solver_version",
                 options=solver_values,
-                default=default_solvers,
+                default=solver_values,  # select all by default
                 key="vis_solver_filter",
             )
             if chosen_solvers:
@@ -2998,28 +3241,39 @@ with viz_tab:
                     selected_batch = int(selected_batch_label.split()[-1])
                     df = df[df["run_batch"] == selected_batch]
                 except Exception:
-                    pass  # ignore parsing issues and show all
+                    pass
 
             # ---- Status filters ----
             df_filtered = df.copy()
             if hide_infeasible:
                 df_filtered = df_filtered[df_filtered["status"] != 3]
-            if hide_interrupted:  # NEW
+            if hide_interrupted:
                 df_filtered = df_filtered[df_filtered["status"] != 11]
             if only_optimal:
                 df_filtered = df_filtered[df_filtered["status"] == 2]
 
-            # How to color points/lines across plots
-            color_by_main = st.selectbox(
-                "Color series by",
-                options=["solver_version", "class_key", "status_label"],
-                index=0,
-                key="vis_color_by",
-            )
-
+            # ---- Main table (clean column order) ----
+            cols_order = [
+                "run_id",
+                "created_at",
+                "instance",
+                "class_key",
+                "period",
+                "n_items",
+                "cap_mean",
+                "status_label",
+                "solver_version",
+                "objective",
+                "best_bound",
+                "gap",
+                "runtime_sec",
+                "run_batch",
+            ]
+            show_cols = [c for c in cols_order if c in df_filtered.columns]
             st.subheader("Summary (runs table)")
-            st.dataframe(df_filtered, use_container_width=True)
+            st.dataframe(df_filtered[show_cols], use_container_width=True)
 
+            # ---- Status breakdown (counts) ----
             st.markdown("**Status breakdown (counts)**")
             cnt = (
                 df_filtered.groupby(
@@ -3030,45 +3284,67 @@ with viz_tab:
             )
             st.dataframe(cnt, use_container_width=True)
 
+            # ---- Color choice for plots ----
+            color_by_main = st.selectbox(
+                "Color series by",
+                options=["solver_version", "class_key", "status_label"],
+                index=0,
+                key="vis_color_by",
+            )
+
             # --- Plots ---
             c1, c2 = st.columns(2)
             with c1:
-                fig = px.scatter(
-                    df_filtered.dropna(subset=["n_items", "runtime_sec"]),
-                    x="n_items",
-                    y="runtime_sec",
-                    color=color_by_main,
-                    symbol="status_label",
-                    hover_data=[
-                        "gap",
-                        "objective",
-                        "best_bound",
-                        "solver_version",
-                        "class_key",
-                        "run_batch",
-                    ],
-                )
-                fig.update_layout(height=380, title="Runtime vs #Items")
-                st.plotly_chart(fig, use_container_width=True)
-            with c2:
-                fig = px.scatter(
-                    df_filtered.dropna(subset=["cap_mean", "runtime_sec"]),
-                    x="cap_mean",
-                    y="runtime_sec",
-                    color=color_by_main,
-                    symbol="status_label",
-                    hover_data=[
-                        "gap",
-                        "objective",
-                        "best_bound",
-                        "solver_version",
-                        "class_key",
-                        "run_batch",
-                    ],
-                )
-                fig.update_layout(height=380, title="Runtime vs Mean Capacity")
-                st.plotly_chart(fig, use_container_width=True)
+                df_sc1 = df_filtered.dropna(subset=["n_items", "runtime_sec"])
+                if not df_sc1.empty:
+                    fig = px.scatter(
+                        df_sc1,
+                        x="n_items",
+                        y="runtime_sec",
+                        color=color_by_main,
+                        symbol="status_label",
+                        hover_data=[
+                            "instance",
+                            "run_id",
+                            "instance_id",
+                            "status_label",
+                            "solver_version",
+                            "class_key",
+                            "run_batch",
+                        ],
+                        title="Runtime vs #Items",
+                    )
+                    fig.update_layout(height=380)
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.caption("Not enough data for Runtime vs #Items.")
 
+            with c2:
+                df_sc2 = df_filtered.dropna(subset=["cap_mean", "runtime_sec"])
+                if not df_sc2.empty:
+                    fig = px.scatter(
+                        df_sc2,
+                        x="cap_mean",
+                        y="runtime_sec",
+                        color=color_by_main,
+                        symbol="status_label",
+                        hover_data=[
+                            "instance",
+                            "run_id",
+                            "instance_id",
+                            "status_label",
+                            "solver_version",
+                            "class_key",
+                            "run_batch",
+                        ],
+                        title="Runtime vs Mean Capacity",
+                    )
+                    fig.update_layout(height=380)
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.caption("Not enough data for Runtime vs Mean Capacity.")
+
+            # ---- 3D scatter ----
             st.subheader("3D scatter")
 
             x_axis = st.selectbox("X", ["n_items", "period", "cap_mean"], key="x3d")
@@ -3079,20 +3355,14 @@ with viz_tab:
                 "Z", ["runtime_sec", "gap", "objective", "best_bound"], key="z3d"
             )
 
-            # Let user pick color + symbol independently (with a 'none' option for symbols)
             color_choice = st.selectbox(
-                "Color",
-                ["solver_version", "class_key", "status_label"],
-                key="c3d",
+                "Color", ["solver_version", "class_key", "status_label"], key="c3d"
             )
             symbol_choice = st.selectbox(
-                "Symbol",
-                ["(none)", "class_key", "status_label"],
-                index=1,  # default to class_key like before
-                key="s3d",
+                "Symbol", ["(none)", "class_key", "status_label"], index=1, key="s3d"
             )
 
-            # If the chosen color dimension has only a single level, fall back so colors still vary.
+            # Fallback coloring if only one level in chosen color
             color_col = color_choice
             try:
                 nunique = df_filtered[color_col].nunique(dropna=False)
@@ -3109,36 +3379,42 @@ with viz_tab:
             symbol_col = None if symbol_choice == "(none)" else symbol_choice
 
             plot_df = df_filtered.dropna(subset=[x_axis, y_axis, z_axis])
+            if not plot_df.empty:
+                fig3d = px.scatter_3d(
+                    plot_df,
+                    x=x_axis,
+                    y=y_axis,
+                    z=z_axis,
+                    color=color_col,
+                    symbol=symbol_col,
+                    hover_data=[
+                        "instance",
+                        "run_id",
+                        "instance_id",
+                        "status_label",
+                        "solver_version",
+                        "class_key",
+                        "run_batch",
+                    ],
+                )
+                fig3d.update_layout(
+                    height=520,
+                    legend_title_text=(
+                        f"{color_col}"
+                        if not symbol_col
+                        else f"{color_col}, {symbol_col}"
+                    ),
+                    scene=dict(
+                        xaxis_title=x_axis, yaxis_title=y_axis, zaxis_title=z_axis
+                    ),
+                )
+                st.plotly_chart(fig3d, use_container_width=True)
+            else:
+                st.caption("Not enough data for 3D scatter.")
 
-            fig3d = px.scatter_3d(
-                plot_df,
-                x=x_axis,
-                y=y_axis,
-                z=z_axis,
-                color=color_col,  # <- may be the fallback
-                symbol=symbol_col,  # <- can be None
-                hover_data=[
-                    "run_id",
-                    "instance_id",
-                    "status_label",
-                    "solver_version",
-                    "class_key",
-                    "run_batch",
-                ],
-            )
-
-            fig3d.update_layout(
-                height=520,
-                legend_title_text=(
-                    f"{color_col}" if not symbol_col else f"{color_col}, {symbol_col}"
-                ),
-                scene=dict(xaxis_title=x_axis, yaxis_title=y_axis, zaxis_title=z_axis),
-            )
-            st.plotly_chart(fig3d, use_container_width=True)
-
+            # ---- Class aggregates (including current filter) ----
             st.subheader("Class aggregates (including current filter)")
 
-            # P50/P90 runtime, P95 gap; plus status counts
             def _p90(x):
                 x = pd.to_numeric(x, errors="coerce").dropna()
                 return float(np.percentile(x, 90)) if len(x) else None
@@ -3164,6 +3440,7 @@ with viz_tab:
             )
             st.dataframe(agg, use_container_width=True)
 
+            # ---- Status counts per class (faceted by solver) ----
             st.subheader("Status counts per class (faceted by solver)")
             if not cnt.empty:
                 fig_bar = px.bar(
@@ -3180,6 +3457,7 @@ with viz_tab:
             else:
                 st.caption("No data for the selected filter.")
 
+            # ---- Runtime distribution per class ----
             st.subheader("Runtime distribution per class (all statuses in filter)")
             df_rt = df_filtered.dropna(subset=["runtime_sec"])
             if not df_rt.empty:
@@ -3190,29 +3468,31 @@ with viz_tab:
                     color="status_label",
                     points="all",
                     hover_data=[
-                        "n_items",
-                        "period",
-                        "gap",
-                        "objective",
+                        "instance",
+                        "run_id",
+                        "instance_id",
+                        "status_label",
                         "solver_version",
+                        "class_key",
+                        "run_batch",
                     ],
                     facet_col="solver_version",
+                    title="Runtime distribution per class",
                 )
-                fig_box.update_layout(
-                    height=420, title="Runtime distribution per class"
-                )
+                fig_box.update_layout(height=420)
                 st.plotly_chart(fig_box, use_container_width=True)
             else:
                 st.caption("No runtimes available for box plot.")
 
+            # ---- Median runtime heatmap (class × #items bin) ----
             st.subheader("Median runtime heatmap (class × #items bin)")
             df_hm = df_filtered.copy()
             bins = [0, 5, 10, 20, 50, 100, np.inf]
             labels = ["≤5", "6–10", "11–20", "21–50", "51–100", "100+"]
             df_hm["items_bin"] = pd.cut(df_hm["n_items"], bins=bins, labels=labels)
 
-            # one heatmap per solver_version (imshow has no facet_col)
-            for sv in chosen_solvers if chosen_solvers else ["(all solvers)"]:
+            solvers_for_hm = chosen_solvers if chosen_solvers else ["(all solvers)"]
+            for sv in solvers_for_hm:
                 sub = (
                     df_hm
                     if sv == "(all solvers)"
@@ -3240,36 +3520,7 @@ with viz_tab:
                 else:
                     st.caption("No data for heatmap.")
 
-            st.subheader("Runs over time (daily)")
-            df_time = df_filtered.copy()
-            dt_parsed = pd.to_datetime(df_time["created_at"], utc=True, errors="coerce")
-            df_time["date"] = dt_parsed.dt.date
-            color_by_time = st.selectbox(
-                "Time series color by",
-                ["solver_version", "class_key", "status_label"],
-                key="vis_ts_color",
-            )
-            ts = (
-                df_time.groupby(
-                    ["date", color_by_time, "status_label"], as_index=False
-                )["run_id"]
-                .count()
-                .rename(columns={"run_id": "runs"})
-            )
-            if not ts.empty:
-                fig_ts = px.line(
-                    ts,
-                    x="date",
-                    y="runs",
-                    color=color_by_time,
-                    line_dash="status_label",
-                    markers=True,
-                )
-                fig_ts.update_layout(height=380, title="Runs per day")
-                st.plotly_chart(fig_ts, use_container_width=True)
-            else:
-                st.caption("No time series data.")
-
+            # ---- Objective vs Runtime ----
             st.subheader("Objective vs Runtime")
             df_bub = df_filtered.dropna(subset=["objective", "runtime_sec"])
             if not df_bub.empty:
@@ -3281,18 +3532,18 @@ with viz_tab:
                     color=color_by_main,
                     symbol="status_label",
                     hover_data=[
-                        "gap",
-                        "cap_mean",
-                        "period",
+                        "instance",
+                        "run_id",
+                        "instance_id",
+                        "status_label",
                         "solver_version",
                         "class_key",
                         "run_batch",
                     ],
                     size_max=20,
+                    title="Objective vs Runtime (bubble size = #items)",
                 )
-                fig_bub.update_layout(
-                    height=420, title="Objective vs Runtime (bubble size = #items)"
-                )
+                fig_bub.update_layout(height=420)
                 st.plotly_chart(fig_bub, use_container_width=True)
             else:
                 st.caption("No data for objective vs runtime.")

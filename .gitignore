@@ -6,3 +6,8 @@ iis_1756732519.ilp
 *.ilp
 *.json
 *.json
+tmp_instance_saved.json
+/mip_results_lefo
+/mip_results_lefo
+/mip/__pycache__
+iis_1756732519.ilp
