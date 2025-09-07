@@ -1,6 +1,6 @@
-# mip/solver_mip_no_crossing.py
 from __future__ import annotations
-import time, json
+import time
+import json
 from typing import Dict, List, Tuple
 from pathlib import Path
 import gurobipy as gp
@@ -30,23 +30,19 @@ def _as_len_T_vector(val, T: int) -> List[float]:
     raise TypeError("Capacity must be a number or a list")
 
 
-# ========================================================================
-#                           NO-CROSSING SOLVER
-# ========================================================================
 def solve_instance(
     instance_path: str | Path = "last_instance.json",
     time_limit: int = 0,
     mip_gap: float = 0.0,
-    out_dir: (
-        str | Path
-    ) = "mip_results_no_crossing",  # different folder to avoid clashes
+    out_dir: str | Path = "mip_results_no_crossing",
 ):
+    """Solve a perishable lot-sizing instance enforcing no-crossing (LEFO)."""
     data = json.loads(Path(instance_path).read_text())
     T = int(data["period"])
     Periods = list(range(T))
     items_raw: Dict[int, dict] = {int(k): v for k, v in data["items"].items()}
 
-    # Production capacity κ_t (accepts "production_capacity" or legacy "manual_capacity")
+    # Production capacity κ_t
     prod_cap = data.get("production_capacity")
     if prod_cap is None:
         prod_cap = data.get("manual_capacity")
@@ -71,12 +67,12 @@ def solve_instance(
                 for t in Periods:
                     per_item_cap[(i, t)] = vec[t]
 
-    # Optional warehouse capacity (inventory between u and u+1)
+    # Optional warehouse capacity
     W = data.get("warehouse_capacity", None)
     if W is not None:
         W = float(W)
 
-    # Lost-sales option (kept for I/O parity with your current solver)
+    # Lost-sales option
     allow_lost_sales = bool(
         data.get("allow_unmet_demand", False) or data.get("allow_lost_sales", False)
     )
@@ -91,10 +87,10 @@ def solve_instance(
         m.Params.MIPGap = float(mip_gap)
 
     # ----------------- Feasible arcs & expiry markers -----------------
-    # Gamma[(i,t)] = list of u such that (t,u) feasible; vit = t + m_it
     Gamma: Dict[Tuple[int, int], List[int]] = {}
-    Expiry: Dict[Tuple[int, int], int] = {}  # (i,t) -> v_it
-    Triples: List[Tuple[int, int, int]] = []  # (i,t,u)
+    Expiry: Dict[Tuple[int, int], int] = {}
+    Triples: List[Tuple[int, int, int]] = []
+
     for i, it in items_raw.items():
         mseq = list(it["shelf_seq"])
         if len(mseq) != T:
@@ -112,7 +108,7 @@ def solve_instance(
             for u in us:
                 Triples.append((i, t, u))
 
-    # Tight µ_it for setup-linking
+    # Tight μ_it for setup-linking
     mu: Dict[Tuple[int, int], float] = {}
     for i, it in items_raw.items():
         d = list(it["demand"])
@@ -120,15 +116,14 @@ def solve_instance(
             mu[(i, t)] = float(sum(d[u] for u in Gamma.get((i, t), [])))
 
     # ---------------------------- Variables ----------------------------
-    # Flow on arcs
     X = m.addVars(Triples, vtype=GRB.CONTINUOUS, lb=0.0, name="X")
-    # Setups
     Y = m.addVars(
         [(i, t) for i in items_raw for t in Periods], vtype=GRB.BINARY, name="Y"
     )
-    # Arc activations (turn on iff arc carries positive flow)
+
+    # Only create Z variables for arcs that might actually be used
     Z = m.addVars(Triples, vtype=GRB.BINARY, name="Z")
-    # Lost sales
+
     if allow_lost_sales:
         LS = m.addVars(
             [(i, u) for i in items_raw for u in Periods],
@@ -137,7 +132,7 @@ def solve_instance(
             name="LS",
         )
 
-    # --------------------- Cost helpers (time-varying) ---------------------
+    # --------------------- Cost helpers ---------------------
     def c_at(i: int, t: int) -> float:
         c = items_raw[i]["c_var"]
         return float(c[t]) if isinstance(c, list) else float(c)
@@ -163,7 +158,7 @@ def solve_instance(
         s = items_raw[i]["setup"]
         return float(s[t]) if isinstance(s, list) else float(s)
 
-    # ---------- Lost-sales penalties (safe, auto) ----------
+    # ---------- Lost-sales penalties ----------
     if allow_lost_sales:
         max_unit_var_cost = 0.0
         for i, t, u in Triples:
@@ -216,7 +211,6 @@ def solve_instance(
     m.setObjective(obj, GRB.MINIMIZE)
 
     # ---------------------------- Constraints ----------------------------
-
     # (1) Global production capacity κ_t
     for t in Periods:
         m.addConstr(
@@ -224,7 +218,7 @@ def solve_instance(
             name=f"prod_cap_{t}",
         )
 
-    # (2) Optional per–item capacity p_it
+    # (2) Optional per–item production cap p_it
     if per_item_cap:
         for (i, t), pit in per_item_cap.items():
             if Gamma.get((i, t)):
@@ -233,7 +227,7 @@ def solve_instance(
                     name=f"item_cap_{i}_{t}",
                 )
 
-    # (3) Setup linking  sum_u X_{i,t,u} ≤ μ_{i,t} Y_{i,t}
+    # (3) Setup linking sum_u X_{i,t,u} ≤ μ_{i,t} Y_{i,t}
     for i, t in Y.keys():
         if Gamma.get((i, t)):
             m.addConstr(
@@ -243,7 +237,7 @@ def solve_instance(
         else:
             m.addConstr(Y[i, t] == 0, name=f"setupLink_zero_{i}_{t}")
 
-    # (4) Warehouse capacity (inventory between u and u+1)
+    # (4) Warehouse capacity
     if W is not None:
         for u in Periods[:-1]:
             inv_u = gp.quicksum(
@@ -255,7 +249,7 @@ def solve_instance(
             )
             m.addConstr(inv_u <= W, name=f"whcap_{u}")
 
-    # (5) Demand satisfaction (equals demand; soft if lost sales is enabled)
+    # (5) Demand satisfaction
     for i, it in items_raw.items():
         d = list(it["demand"])
         for u in Periods:
@@ -271,43 +265,39 @@ def solve_instance(
                     name=f"demand_{i}_{u}",
                 )
 
-    # (6) Arc activation linking  0 ≤ X_{i,t,u} ≤ C_{i,u} Z_{i,t,u}
-    # Use C_{i,u} = demand of (i,u) as tight Big-M (valid even with lost sales)
+    # (6) Arc activation linking
     for i, t, u in Triples:
         Ciu = float(items_raw[i]["demand"][u])
         m.addConstr(X[i, t, u] <= Ciu * Z[i, t, u], name=f"arc_on_{i}_{t}_{u}")
 
-    # (7) No–Crossing: for s<u and v_it < v_i,t'  ⇒  Z_{i,t,s} + Z_{i,t',u} ≤ 1
-    # Generate only truly crossable pairs to keep the count modest.
-    for i, it in items_raw.items():
-        # Pre-collect for each consumption period the feasible origins with their expiry
-        arcs_to_u = {u: [] for u in Periods}
-        for t in Periods:
-            for u in Gamma.get((i, t), []):
-                arcs_to_u[u].append((t, Expiry[(i, t)]))  # (origin, expiry)
+    # (7) Corrected No-Crossing constraints for LEFO
+    for i in items_raw:
+        # Get all production periods with their expiry dates
+        production_periods = [t for t in Periods if Gamma.get((i, t))]
+        production_periods.sort(key=lambda t: Expiry[(i, t)])  # Sort by expiry date
 
-        for s in Periods:
-            if not arcs_to_u[s]:
-                continue
-            # For speed: sort once by expiry (ascending)
-            left = sorted(arcs_to_u[s], key=lambda x: x[1])  # (t, v_t)
-            for u in range(s + 1, T):
-                if not arcs_to_u[u]:
+        # For each pair of production periods where one expires before the other
+        for idx1 in range(len(production_periods)):
+            t1 = production_periods[idx1]
+            v1 = Expiry[(i, t1)]
+
+            for idx2 in range(idx1 + 1, len(production_periods)):
+                t2 = production_periods[idx2]
+                v2 = Expiry[(i, t2)]
+
+                # Only apply constraints if t1 expires before t2
+                if v1 >= v2:
                     continue
-                right = sorted(arcs_to_u[u], key=lambda x: x[1])  # (t', v_t')
-                # two-pointer: add only pairs where v_left < v_right
-                j = 0
-                for tL, vL in left:
-                    # advance j until vR > vL (since right sorted asc)
-                    while j < len(right) and right[j][1] <= vL:
-                        j += 1
-                    for k in range(j, len(right)):
-                        tR, vR = right[k]
-                        # vL < vR and s < u by construction
-                        m.addConstr(
-                            Z[i, tL, s] + Z[i, tR, u] <= 1,
-                            name=f"nocross_{i}_{tL}_{s}__{tR}_{u}",
-                        )
+
+                # Constraint: If the later-expiring batch (t2) is used for an earlier period,
+                # then the earlier-expiring batch (t1) cannot be used for a later period
+                for u1 in Gamma.get((i, t1), []):
+                    for u2 in Gamma.get((i, t2), []):
+                        if u1 > u2:
+                            m.addConstr(
+                                Z[i, t1, u1] + Z[i, t2, u2] <= 1,
+                                name=f"nocross_{i}_{t1}_{t2}_{u1}_{u2}",
+                            )
 
     # ---------------------------- Optimize ----------------------------
     m.optimize()
@@ -319,12 +309,14 @@ def solve_instance(
         "best_bound": None,
         "gap": None,
         "runtime_sec": float(getattr(m, "Runtime", 0.0)),
-        "solver_version": "no_crossing_v1",
+        "solver_version": "lefo_mip_v1",
     }
+
     try:
         summary["best_bound"] = float(m.ObjBound)
     except Exception:
         pass
+
     try:
         summary["gap"] = float(m.MIPGap)
     except Exception:
@@ -340,12 +332,13 @@ def solve_instance(
             for t in Periods:
                 qty = sum(X[i, t, u].X for u in Gamma.get((i, t), []) if (i, t, u) in X)
                 if qty > 1e-6:
-                    orders_txt.append(f"  {t:2d} → {qty:8.3f}")
+                    orders_txt.append(f" {t:2d} → {qty:8.3f}")
+
             if allow_lost_sales:
                 for u in Periods:
                     val = LS[i, u].X
                     if val > 1e-6:
-                        orders_txt.append(f"  u={u:2d} → LOST {val:8.3f}")
+                        orders_txt.append(f" u={u:2d} LOST {val:8.3f}")
             orders_txt.append("")
 
         (out_dir / "orders.txt").write_text("\n".join(orders_txt), encoding="utf-8")
@@ -360,6 +353,7 @@ def solve_instance(
                 "T": T,
             }
         )
+
         if allow_lost_sales:
             try:
                 summary["lost_sales_total"] = float(
@@ -371,10 +365,11 @@ def solve_instance(
         (out_dir / "summary.json").write_text(
             json.dumps(summary, indent=2), encoding="utf-8"
         )
-        try:
-            summary["objective"] = float(m.ObjVal)
-        except Exception:
-            pass
+
+    try:
+        summary["objective"] = float(m.ObjVal)
+    except Exception:
+        pass
     else:
         try:
             m.computeIIS()
