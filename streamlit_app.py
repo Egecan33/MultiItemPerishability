@@ -489,7 +489,7 @@ with cap_tab:
     else:
         df = pd.DataFrame({"t": list(range(T)), "cap_t": [10000] * T})
         edited = st.data_editor(
-            df, use_container_width=True, hide_index=True, num_rows="fixed"
+            df, width="stretch", hide_index=True, num_rows="fixed"
         )
         cap_series = [int(x) for x in edited["cap_t"].tolist()]
 
@@ -1137,7 +1137,7 @@ with classes_tab:
 
     edited = st.data_editor(
         df_db,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         num_rows="fixed",
         column_config={
@@ -1225,7 +1225,7 @@ with classes_tab:
                 for p in lp_map.values()
             ]
         )
-        st.dataframe(df_lp, use_container_width=True)
+        st.dataframe(df_lp, width="stretch")
 
         pick_local = st.multiselect(
             "Select local presets", options=sorted(lp_map.keys()), key="pick_local"
@@ -1657,7 +1657,7 @@ with classes_tab:
         # If override is ON, keep the editor read-only for batch to avoid confusion.
         edited_dfq = st.data_editor(
             dfq,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             num_rows="fixed",
             column_config={
@@ -2180,7 +2180,7 @@ with inspect_tab:
             "run_batch",
         ]
         st.subheader("Filtered runs")
-        st.dataframe(df_view[runs_cols], use_container_width=True)
+        st.dataframe(df_view[runs_cols], width="stretch")
 
         # ---- Pick a specific run ----
         pretty_opts = [
@@ -2351,7 +2351,7 @@ with inspect_tab:
                 legend_title="Series",
                 barmode="overlay",
             )
-            st.plotly_chart(fig_dc, use_container_width=True)
+            st.plotly_chart(fig_dc, width="stretch")
 
             # Per-item demand heatmap
             st.markdown("**Per-item demand heatmap**")
@@ -2362,7 +2362,7 @@ with inspect_tab:
                     aspect="auto",
                 )
                 fig_h1.update_layout(height=420)
-                st.plotly_chart(fig_h1, use_container_width=True)
+                st.plotly_chart(fig_h1, width="stretch")
             else:
                 st.caption("No demand matrix to display.")
 
@@ -2375,7 +2375,7 @@ with inspect_tab:
                     aspect="auto",
                 )
                 fig_h2.update_layout(height=420)
-                st.plotly_chart(fig_h2, use_container_width=True)
+                st.plotly_chart(fig_h2, width="stretch")
             else:
                 st.caption("No shelf-life matrix to display.")
 
@@ -2422,7 +2422,7 @@ with inspect_tab:
                     )
                 )
             df_items = pd.DataFrame(rows).sort_values("dem_sum", ascending=False)
-            st.dataframe(df_items, use_container_width=True)
+            st.dataframe(df_items, width="stretch")
 
             # Downloads
             colA, colB = st.columns([1, 1])
@@ -2467,7 +2467,7 @@ with inspect_tab:
             pivot = df_orders.pivot_table(
                 index="t", columns="item_id", values="qty", fill_value=0
             ).sort_index()
-            st.dataframe(pivot, use_container_width=True)
+            st.dataframe(pivot, width="stretch")
 
             totals = (
                 df_orders.groupby("item_id")["qty"].sum().sort_values(ascending=False)
@@ -2500,12 +2500,12 @@ with inspect_tab:
                     yaxis_title="qty",
                     legend_title="Item",
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
             st.markdown("**Nonzero orders (long form)**")
             st.dataframe(
                 df_orders[df_orders["qty"] > 0].sort_values(["item_id", "t"]),
-                use_container_width=True,
+                width="stretch",
             )
 
 
@@ -2608,7 +2608,7 @@ with saved_run_tab:
     # Show nice columns (hide the UUID by default)
     st.dataframe(
         dfI[["instance", "created_at", "class", "period", "n_items"]],
-        use_container_width=True,
+        width="stretch",
         height=300,
     )
 
@@ -2903,7 +2903,7 @@ with saved_run_tab:
                     ]
                     st.dataframe(
                         df_new[cols_show].sort_values(["run_batch", "created_at"]),
-                        use_container_width=True,
+                        width="stretch",
                     )
 
                     st.markdown("**Status counts by solver & batch**")
@@ -2916,7 +2916,7 @@ with saved_run_tab:
                         .reset_index(name="runs")
                         .sort_values(["run_batch", "solver_version", "status_label"])
                     )
-                    st.dataframe(cnt, use_container_width=True)
+                    st.dataframe(cnt, width="stretch")
         except Exception as e:
             st.caption(f"Batch summary unavailable: {e}")
 
@@ -3159,7 +3159,7 @@ with viz_tab:
             ]
             show_cols = [c for c in cols_order if c in df_filtered.columns]
             st.subheader("Summary (runs table)")
-            st.dataframe(df_filtered[show_cols], use_container_width=True)
+            st.dataframe(df_filtered[show_cols], width="stretch")
 
             # ---- Status breakdown (counts) ----
             st.markdown("**Status breakdown (counts)**")
@@ -3170,7 +3170,7 @@ with viz_tab:
                 .size()
                 .reset_index(name="runs")
             )
-            st.dataframe(cnt, use_container_width=True)
+            st.dataframe(cnt, width="stretch")
 
             # ---- Color choice for plots ----
             color_by_main = st.selectbox(
@@ -3203,7 +3203,7 @@ with viz_tab:
                         title="Runtime vs #Items",
                     )
                     fig.update_layout(height=380)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
                 else:
                     st.caption("Not enough data for Runtime vs #Items.")
 
@@ -3228,7 +3228,7 @@ with viz_tab:
                         title="Runtime vs Mean Capacity",
                     )
                     fig.update_layout(height=380)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
                 else:
                     st.caption("Not enough data for Runtime vs Mean Capacity.")
 
@@ -3296,7 +3296,7 @@ with viz_tab:
                         xaxis_title=x_axis, yaxis_title=y_axis, zaxis_title=z_axis
                     ),
                 )
-                st.plotly_chart(fig3d, use_container_width=True)
+                st.plotly_chart(fig3d, width="stretch")
             else:
                 st.caption("Not enough data for 3D scatter.")
 
@@ -3326,7 +3326,7 @@ with viz_tab:
                 )
                 .reset_index()
             )
-            st.dataframe(agg, use_container_width=True)
+            st.dataframe(agg, width="stretch")
 
             # ---- Status counts per class (faceted by solver) ----
             st.subheader("Status counts per class (faceted by solver)")
@@ -3341,7 +3341,7 @@ with viz_tab:
                     facet_col="solver_version",
                 )
                 fig_bar.update_layout(height=420, xaxis_title="", yaxis_title="# runs")
-                st.plotly_chart(fig_bar, use_container_width=True)
+                st.plotly_chart(fig_bar, width="stretch")
             else:
                 st.caption("No data for the selected filter.")
 
@@ -3368,7 +3368,7 @@ with viz_tab:
                     title="Runtime distribution per class",
                 )
                 fig_box.update_layout(height=420)
-                st.plotly_chart(fig_box, use_container_width=True)
+                st.plotly_chart(fig_box, width="stretch")
             else:
                 st.caption("No runtimes available for box plot.")
 
@@ -3404,7 +3404,7 @@ with viz_tab:
                     )
                     fig_hm.update_layout(height=420)
                     fig_hm.update_traces(hoverongaps=False)
-                    st.plotly_chart(fig_hm, use_container_width=True)
+                    st.plotly_chart(fig_hm, width="stretch")
                 else:
                     st.caption("No data for heatmap.")
 
@@ -3432,7 +3432,7 @@ with viz_tab:
                     title="Objective vs Runtime (bubble size = #items)",
                 )
                 fig_bub.update_layout(height=420)
-                st.plotly_chart(fig_bub, use_container_width=True)
+                st.plotly_chart(fig_bub, width="stretch")
             else:
                 st.caption("No data for objective vs runtime.")
         except Exception as e:
