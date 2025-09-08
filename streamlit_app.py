@@ -398,27 +398,120 @@ st.session_state["db_classes"] = {r["name"]: r for r in _rows}  # name -> row
 # 2) (Optional) keep a FEW local presets here for convenience.
 #    They are NOT auto-queued and NOT auto-saved; you'll pick them in the UI.
 
+
 LOCAL_PRESETS = [
     {
-        "name": "X111111",
+        "name": "2ndclass_T60_N35_DBMedium_TBO6_CVhigh_Z4_m8-20",
+        "period": 60,
+        "cap_mode": "DemandBased",
+        "cap_params": {"jitter_pct": 3.0},
+        "cap_tight": "Medium",
+        "n_items": 35,
+        "dem_lo": 0,
+        "dem_hi": 160,  # CV high
+        "m_lo": 8,
+        "m_hi": 20,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 6.0, "jitter_pct": 10.0},
+        "zero_head": 4,
+        "batch_size": 4,
+        "seed_base": 31700,
+        "allow_unmet_demand": False,
+        "lost_sales_penalty_factor": 200.0,
+    },
+    {
+        "name": "2ndclass_T60_N45_DBLoose_TBO8_CVhigh_Z4_m10-30",
+        "period": 60,
+        "cap_mode": "DemandBased",
+        "cap_params": {"jitter_pct": 3.0},
+        "cap_tight": "Loose",
+        "n_items": 45,
+        "dem_lo": 0,
+        "dem_hi": 160,  # CV high
+        "m_lo": 10,
+        "m_hi": 30,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 8.0, "jitter_pct": 10.0},
+        "zero_head": 4,
+        "batch_size": 4,
+        "seed_base": 31720,
+        "allow_unmet_demand": False,
+        "lost_sales_penalty_factor": 200.0,
+    },
+    {
+        "name": "2ndclass_T60_N30_DBMedium_TBO8_CVhigh_Z5_m10-30",
+        "period": 60,
+        "cap_mode": "DemandBased",
+        "cap_params": {"jitter_pct": 3.0},
+        "cap_tight": "Medium",
+        "n_items": 30,
+        "dem_lo": 0,
+        "dem_hi": 160,  # CV high
+        "m_lo": 10,
+        "m_hi": 30,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 8.0, "jitter_pct": 12.0},
+        "zero_head": 5,
+        "batch_size": 4,
+        "seed_base": 31740,
+        "allow_unmet_demand": False,
+        "lost_sales_penalty_factor": 200.0,
+    },
+    {
+        "name": "2ndclass_T60_N30_DBMedium_TBO6_CVhigh_Z4_m8-12",
+        "period": 60,
+        "cap_mode": "DemandBased",
+        "cap_params": {"jitter_pct": 3.0},
+        "cap_tight": "Medium",
+        "n_items": 30,
+        "dem_lo": 0,
+        "dem_hi": 170,  # slightly higher dem_hi to increase difficulty
+        "m_lo": 8,
+        "m_hi": 12,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
+        "s_mode": "tbo",
+        "s_params": {"L": 6.0, "jitter_pct": 10.0},
+        "zero_head": 4,
+        "batch_size": 4,
+        "seed_base": 31760,
+        "allow_unmet_demand": False,
+        "lost_sales_penalty_factor": 200.0,
+    },
+    {
+        "name": "2ndclass_T20_N10_DBMedium_TBO6_CVhigh_Z4_m7-12",
         "period": 20,
         "cap_mode": "DemandBased",
-        "cap_params": {"jitter_pct": 10.0},
-        "cap_tight": "Loose",
+        "cap_params": {"jitter_pct": 3.0},
+        "cap_tight": "Medium",
         "n_items": 10,
         "dem_lo": 0,
-        "dem_hi": 125,
-        "m_lo": 1,
-        "m_hi": 10,
-        "c_mode": "uniform",
-        "c_params": {"hi": 4.0, "lo": 2.0},
-        "h_mode": "uniform",
-        "h_params": {"hi": 1.0, "lo": 0.3},
+        "dem_hi": 170,  # slightly higher dem_hi to increase difficulty
+        "m_lo": 7,
+        "m_hi": 12,
+        "c_mode": "scalar",
+        "c_params": {"value": 2.0},
+        "h_mode": "scalar",
+        "h_params": {"value": 0.4},
         "s_mode": "tbo",
-        "s_params": {"L": 1.0, "jitter_pct": 10.0},
-        "zero_head": 2,
-        "batch_size": 1,
-        "seed_base": 12627,
+        "s_params": {"L": 6.0, "jitter_pct": 10.0},
+        "zero_head": 3,
+        "batch_size": 4,
+        "seed_base": 31760,
         "allow_unmet_demand": False,
         "lost_sales_penalty_factor": 200.0,
     },
@@ -489,7 +582,7 @@ with cap_tab:
     else:
         df = pd.DataFrame({"t": list(range(T)), "cap_t": [10000] * T})
         edited = st.data_editor(
-            df, width="stretch", hide_index=True, num_rows="fixed"
+            df, use_container_width=True, hide_index=True, num_rows="fixed"
         )
         cap_series = [int(x) for x in edited["cap_t"].tolist()]
 
@@ -1060,155 +1153,61 @@ with items_tab:
                     st.warning(f"Supabase logging failed: {e}")
 
 # ----------------- Classes tab -----------------
+st.session_state.setdefault("classes", [])
+st.session_state.setdefault("class_queue", [])
+
 with classes_tab:
     st.header("Solution Classes (define and queue)")
 
-    # ---------- Full-table fetch (keyset pagination) ----------
-    def fetch_all_classes_by_keyset(sb_client: Client, page_size: int = 1000):
-        """
-        Return ALL rows from public.classes using keyset pagination on 'name' ASC.
-        Assumes 'name' is unique/sortable (true in your setup).
-        """
-        out, cursor = [], None
-        select_cols = "id,name,spec,created_at"
-        while True:
-            q = sb_client.table("classes").select(select_cols).order("name", desc=False)
-            if cursor is not None:
-                q = q.gt("name", cursor)  # strictly after last seen name
-            batch = (q.limit(page_size).execute().data) or []
-            if not batch:
-                break
-            out.extend(batch)
-            cursor = batch[-1]["name"]
-            if len(batch) < page_size:
-                break
-        return out
-
-    # ---- Compat shim: if other code calls fetch_classes(...), make it full too ----
-    try:
-        # Only define if not already defined, or if existing is the old (1k) one.
-        fetch_classes  # noqa: F401
-    except NameError:
-
-        def fetch_classes(sb_client: Client):  # legacy name, full fetch now
-            return fetch_all_classes_by_keyset(sb_client)
-
-    # If a legacy fetch_classes exists elsewhere that limits to 1000,
-    # you can overwrite it by uncommenting the next line:
-    # fetch_classes = lambda sb_client: fetch_all_classes_by_keyset(sb_client)
-
-    # ---------- Always load full set on render (prevents shrink-on-rerun) ----------
-    sb = supabase_client()
-    if not sb:
-        st.info("Configure Supabase in the sidebar.")
-        st.stop()
-
-    rows = fetch_all_classes_by_keyset(sb)  # <- always full set
-    st.session_state["db_classes"] = {r["name"]: r for r in rows}
-    db_map = st.session_state["db_classes"]
-
+    # --- Classes in Supabase ---
+    db_map = st.session_state.get("db_classes", {})
     st.subheader("Classes in Supabase")
-    st.caption(f"Loaded **{len(db_map)}** classes from Supabase.")
 
-    # ---------- Table with checkboxes ----------
-    st.session_state.setdefault("db_table_checked", set())
+    # Reload DB
+    cdb0 = st.columns(1)[0]
+    if cdb0.button("🔄 Refresh from Supabase"):
+        rows = fetch_classes(supabase_client())
+        st.session_state["db_classes"] = {r["name"]: r for r in rows}
+        st.success("Reloaded classes from DB.")
 
-    def _safe_spec(row, key, default=None):
-        try:
-            return (row.get("spec") or {}).get(key, default)
-        except Exception:
-            return default
+    if db_map:
+        df_db = pd.DataFrame(
+            [
+                {
+                    "name": r["name"],
+                    "period": r["spec"].get("period"),
+                    "#items": r["spec"].get("n_items"),
+                    "cap_mode": r["spec"].get("cap_mode"),
+                    "created_at": r.get("created_at"),
+                }
+                for r in db_map.values()
+            ]
+        )
+        st.dataframe(df_db, use_container_width=True)
 
-    df_db = pd.DataFrame(
-        [
-            {
-                "name": r["name"],
-                "period": _safe_spec(r, "period"),
-                "#items": _safe_spec(r, "n_items"),
-                "cap_mode": _safe_spec(r, "cap_mode"),
-                "created_at": r.get("created_at"),
-            }
-            for r in db_map.values()
-        ]
-    ).sort_values("name")
+        pick_db = st.multiselect(
+            "Select DB classes", options=sorted(db_map.keys()), key="pick_db"
+        )
 
-    # keep existing checks
-    df_db["✓"] = df_db["name"].isin(st.session_state["db_table_checked"])
-
-    edited = st.data_editor(
-        df_db,
-        width="stretch",
-        hide_index=True,
-        num_rows="fixed",
-        column_config={
-            "name": st.column_config.TextColumn(disabled=True),
-            "period": st.column_config.NumberColumn(format="%d", disabled=True),
-            "#items": st.column_config.NumberColumn(format="%d", disabled=True),
-            "cap_mode": st.column_config.TextColumn(disabled=True),
-            "created_at": st.column_config.TextColumn(disabled=True),
-            "✓": st.column_config.CheckboxColumn(
-                "✓", help="Check to include in actions below.", default=False
-            ),
-        },
-        key="db_classes_editor",
-        height=500,
-    )
-
-    # sync back checks (and drop any stale names)
-    try:
-        checked_now = set(edited.loc[edited["✓"], "name"].astype(str).tolist())
-        st.session_state["db_table_checked"] = checked_now & set(db_map.keys())
-    except Exception:
-        pass
-
-    # ---------- Actions ----------
-    c1, c2, c3, c4 = st.columns(4)
-
-    with c1:
-        if st.button("➕ Queue checked (DB)"):
-            chosen = list(st.session_state["db_table_checked"])
-            if not chosen:
-                st.info("No rows are checked.")
-            else:
-                st.session_state.setdefault("classes", [])
+        cdb1, cdb2 = st.columns(2)
+        with cdb1:
+            if st.button("➕ Queue selected (DB)"):
+                # Add chosen specs to queue (no duplicates)
                 st.session_state["classes"] += [
-                    db_map[name]["spec"] for name in chosen if name in db_map
+                    db_map[name]["spec"] for name in pick_db
                 ]
-                try:
-                    dedupe_queue_by_name()
-                except Exception:
-                    pass
-                st.success(f"Queued {len(chosen)} DB class(es).")
-
-    with c2:
-        if st.button("📥 Replace queue with ALL DB"):
-            st.session_state["classes"] = [r["spec"] for r in db_map.values()]
-            try:
                 dedupe_queue_by_name()
-            except Exception:
-                pass
-            st.success(
-                f"Queue replaced with {len(st.session_state['classes'])} DB class(es)."
-            )
+                st.success("Queued selected DB class(es).")
 
-    with c3:
-        if st.button("✨ Check all X*"):
-            x_names = [name for name in db_map.keys() if str(name).startswith("X")]
-            if not x_names:
-                st.info("No DB classes starting with 'X'.")
-            else:
-                st.session_state["db_table_checked"].update(x_names)
-                st.rerun()
-
-    with c4:
-        if st.button("🧹 Clear checks"):
-            st.session_state["db_table_checked"].clear()
-            st.rerun()
-
-    # Optional explicit refresh (clears any editor filters too)
-    if st.button("🔄 Full refresh now"):
-        # just rerun; full fetch happens at top every render
-        st.rerun()
+        with cdb2:
+            if st.button("📥 Replace queue with ALL DB"):
+                st.session_state["classes"] = [r["spec"] for r in db_map.values()]
+                dedupe_queue_by_name()
+                st.success(
+                    f"Queue replaced with {len(st.session_state['classes'])} DB class(es)."
+                )
+    else:
+        st.info("No classes in Supabase yet. Save some or push local presets.")
 
     # --- Local presets (in code) ---
     lp_map = st.session_state.get("local_presets", {})
@@ -1225,7 +1224,7 @@ with classes_tab:
                 for p in lp_map.values()
             ]
         )
-        st.dataframe(df_lp, width="stretch")
+        st.dataframe(df_lp, use_container_width=True)
 
         pick_local = st.multiselect(
             "Select local presets", options=sorted(lp_map.keys()), key="pick_local"
@@ -1612,36 +1611,8 @@ with classes_tab:
             if k.startswith("class_sort_"):
                 st.session_state.pop(k, None)
 
-    # ---------- Batch override (this run only) ----------
-    st.session_state.setdefault("run_batch_override_enabled", False)
-    st.session_state.setdefault("run_batch_override_value", 1)
-
-    oc1, oc2 = st.columns([1, 1])
-    with oc1:
-        st.session_state["run_batch_override_enabled"] = st.checkbox(
-            "Use batch override (this run only)",
-            value=st.session_state["run_batch_override_enabled"],
-            help=(
-                "Apply one batch size to every queued class for the next run, "
-                "without changing class specs."
-            ),
-            key="override_enabled",
-        )
-    with oc2:
-        st.session_state["run_batch_override_value"] = st.number_input(
-            "Override batch size",
-            min_value=1,
-            step=1,
-            value=int(st.session_state["run_batch_override_value"]),
-            help="How many instances per class to run (temporary).",
-            key="override_value",
-        )
-
-    override_enabled = bool(st.session_state["run_batch_override_enabled"])
-    override_value = int(st.session_state["run_batch_override_value"])
-
-    # Quick table view  ✅ still editable when override is OFF
-    if st.session_state.get("classes"):
+    # Quick table view  ✅ now editable for batch sizes
+    if st.session_state["classes"]:
         dfq = pd.DataFrame(
             [
                 {
@@ -1654,10 +1625,9 @@ with classes_tab:
             ]
         )
 
-        # If override is ON, keep the editor read-only for batch to avoid confusion.
         edited_dfq = st.data_editor(
             dfq,
-            width="stretch",
+            use_container_width=True,
             hide_index=True,
             num_rows="fixed",
             column_config={
@@ -1666,68 +1636,40 @@ with classes_tab:
                 "items": st.column_config.NumberColumn(format="%d", disabled=True),
                 "batch": st.column_config.NumberColumn(
                     "batch",
-                    help=(
-                        "Instances per class (batch size). "
-                        "This column is temporarily ignored when the override is enabled."
-                    ),
+                    help="Instances per class (batch size)",
                     min_value=1,
                     step=1,
                     format="%d",
-                    disabled=override_enabled,
                 ),
             },
             key="queue_editor",
         )
 
-        # ---- Compute & store effective batch sizes for the runner ----
-        # We'll put a per-class mapping into session_state so downstream run code can use it.
-        try:
-            if override_enabled:
-                # Do NOT mutate underlying class specs; just set effective mapping uniformly
-                st.session_state["effective_batch_by_name"] = {
-                    row["name"]: override_value for _, row in dfq.iterrows()
-                }
-                st.info(
-                    f"Batch override is active: will run **{override_value}** instance(s) "
-                    "per class for the next run. Class specs remain unchanged."
-                )
-            else:
-                # Persist user edits back into class specs (original behavior)
-                batches_by_name = {
-                    row["name"]: int(row["batch"])
-                    for _, row in edited_dfq.iterrows()
-                    if pd.notnull(row["batch"])
-                }
-                for c in st.session_state["classes"]:
-                    if c["name"] in batches_by_name:
-                        c["batch_size"] = max(1, batches_by_name[c["name"]])
-
-                # Reflect the persisted batch_size as the effective mapping
-                st.session_state["effective_batch_by_name"] = {
-                    c["name"]: int(c.get("batch_size", 1))
-                    for c in st.session_state["classes"]
-                }
-        except Exception:
-            # Safe fallback: derive from current specs
-            st.session_state["effective_batch_by_name"] = {
-                c["name"]: int(c.get("batch_size", 1))
-                for c in st.session_state.get("classes", [])
-            }
+    # Write edited batch sizes back into the queued class specs
+    try:
+        batches_by_name = {
+            row["name"]: int(row["batch"])
+            for _, row in edited_dfq.iterrows()
+            if pd.notnull(row["batch"])
+        }
+        for c in st.session_state["classes"]:
+            if c["name"] in batches_by_name:
+                c["batch_size"] = max(1, batches_by_name[c["name"]])
+    except Exception:
+        pass
 
     # Remove/clear controls
     rm_names = st.multiselect(
         "Select queued classes to remove",
-        options=[c["name"] for c in st.session_state.get("classes", [])],
+        options=[c["name"] for c in st.session_state["classes"]],
         key="rm_from_queue",
     )
     c_rm, c_clr, c_save = st.columns(3)
     with c_rm:
         if st.button("🗑️ Remove selected from queue"):
-            before = len(st.session_state.get("classes", []))
+            before = len(st.session_state["classes"])
             st.session_state["classes"] = [
-                c
-                for c in st.session_state.get("classes", [])
-                if c["name"] not in rm_names
+                c for c in st.session_state["classes"] if c["name"] not in rm_names
             ]
             _reset_sortables_state()
             st.success(
@@ -1747,12 +1689,229 @@ with classes_tab:
         ):
             dedupe_queue_by_name()
             saved = 0
-            for cls in st.session_state.get("classes", []):
+            for cls in st.session_state["classes"]:
                 if ensure_class_row(sb_for_classes, cls):  # upsert by name
                     saved += 1
             _reset_sortables_state()
             st.success(f"Saved/updated {saved} unique class spec(s) to Supabase.")
 
+    # ---cascade delete portion in this tab ----
+
+    def _delete_in_chunks(
+        sb: Client, table: str, col: str, ids: list[str], chunk: int = 500
+    ) -> int:
+        total = 0
+        for k in range(0, len(ids), chunk):
+            part = ids[k : k + chunk]
+            if not part:
+                continue
+            try:
+                res = sb.table(table).delete().in_(col, part).execute()
+                total += len(part) if (res.data is None) else len(res.data)
+            except Exception:
+                # bazı kurulumlarda returning kapalı veya RLS uyarısı baskılanmış olabilir
+                total += len(part)
+        return total
+
+    def _select_ids_eq(
+        sb: Client, table: str, col: str, val: str, step: int = 1000
+    ) -> list[str]:
+        """eq ile sayfa sayfa id topla (RLS varsa erişilebilenleri döner)."""
+        out, start = [], 0
+        while True:
+            res = (
+                sb.table(table)
+                .select("id")
+                .eq(col, val)
+                .range(start, start + step - 1)
+                .order("id")
+                .execute()
+            )
+            rows = res.data or []
+            if not rows:
+                break
+            out.extend([r["id"] for r in rows])
+            if len(rows) < step:
+                break
+            start += len(rows)
+        return out
+
+    def _fetch_ids_or(
+        sb: Client, table: str, or_expr: str, step: int = 1000
+    ) -> list[str]:
+        """
+        or_expr: PostgREST or= ifadesi, ör: "class_id.eq.<uuid>,data->meta->>class_key.eq.<name>"
+        """
+        out, start = [], 0
+        while True:
+            q = (
+                sb.table(table)
+                .select("id")
+                .or_(or_expr)
+                .order("id", desc=False)
+                .range(start, start + step - 1)
+            )
+            res = q.execute()
+            rows = res.data or []
+            if not rows:
+                break
+            out.extend([r["id"] for r in rows])
+            if len(rows) < step:
+                break
+            start += len(rows)
+        return out
+
+    def delete_class_everywhere(sb: Client, class_name: str) -> Dict[str, int]:
+        # 0) class_id çek
+        cls_res = (
+            sb.table("classes").select("id").eq("name", class_name).limit(1).execute()
+        )
+        cls_rows = cls_res.data or []
+        if not cls_rows:
+            return {"classes": 0, "instances": 0, "runs": 0, "orders": 0}
+        cid = cls_rows[0]["id"]
+
+        deleted_orders = 0
+        deleted_runs = 0
+        deleted_insts = 0
+
+        # 1) Döngü: class_id=cid olan INSTANCES bitene kadar silme adımlarını tekrarla
+        while True:
+            inst_ids = _select_ids_eq(sb, "instances", "class_id", cid, step=1000)
+            if not inst_ids:
+                break
+
+            # Bu instance'lara bağlı RUN id'lerini topla
+            run_ids = []
+            for k in range(0, len(inst_ids), 500):
+                part = inst_ids[k : k + 500]
+                r = (
+                    sb.table("runs")
+                    .select("id")
+                    .in_("instance_id", part)
+                    .order("id")
+                    .execute()
+                )
+                run_ids.extend([x["id"] for x in (r.data or [])])
+
+            # Orders → Runs → Instances sırayla sil
+            if run_ids:
+                deleted_orders += _delete_in_chunks(
+                    sb, "orders", "run_id", run_ids, chunk=500
+                )
+                deleted_runs += _delete_in_chunks(sb, "runs", "id", run_ids, chunk=500)
+
+            deleted_insts += _delete_in_chunks(
+                sb, "instances", "id", inst_ids, chunk=500
+            )
+
+            # Döngü başına dönüp kalan var mı tekrar bakacağız
+
+        # 2) Emniyet: class_id=cid bağlı RUN varsa (nadiren) onları da temizle
+        # (ör. biri instance_id=NULL, class_id=cid kalmış olabilir)
+        extra_run_ids = _select_ids_eq(sb, "runs", "class_id", cid, step=1000)
+        if extra_run_ids:
+            deleted_orders += _delete_in_chunks(
+                sb, "orders", "run_id", extra_run_ids, chunk=500
+            )
+            deleted_runs += _delete_in_chunks(
+                sb, "runs", "id", extra_run_ids, chunk=500
+            )
+
+        # 3) Hâlâ class_id=cid'li instance var mı? Varsa NULL'la ve bir kez daha dene
+        try:
+            chk = (
+                sb.table("instances")
+                .select("id", count="exact")
+                .eq("class_id", cid)
+                .execute()
+            )
+            remain = getattr(chk, "count", 0) or 0
+        except Exception:
+            remain = 0
+
+        if remain > 0:
+            # class_id NULL'la
+            try:
+                sb.table("instances").update({"class_id": None}).eq(
+                    "class_id", cid
+                ).execute()
+            except Exception:
+                pass
+            # tekrar dene
+            inst_ids = _select_ids_eq(sb, "instances", "class_id", cid, step=1000)
+            if inst_ids:
+                deleted_insts += _delete_in_chunks(
+                    sb, "instances", "id", inst_ids, chunk=500
+                )
+
+        # 4) Son kontrol: sınıf bağlı instance kaldıysa, RLS/policy engelliyordur → hata göster
+        try:
+            chk2 = (
+                sb.table("instances")
+                .select("id", count="exact")
+                .eq("class_id", cid)
+                .execute()
+            )
+            remain2 = getattr(chk2, "count", 0) or 0
+        except Exception:
+            remain2 = 0
+
+        if remain2 > 0:
+            # Bu durumda sınıfı silmeye kalkarsan tekrar 23503 alırsın.
+            # UI'da kullanıcıya net hata gösterebilmen için Exception fırlatıyorum.
+            raise RuntimeError(
+                f"Cannot delete class '{class_name}': {remain2} instance(s) still reference it. "
+                "Check RLS/Policies or use a service key / ON DELETE CASCADE."
+            )
+
+        # 5) Artık class'ı sil
+        sb.table("classes").delete().eq("id", cid).execute()
+
+        # (İSTEĞE BAĞLI) meta.class_key eşleşen yetim 'instances' varsa onları da temizlemek istersen:
+        #   NOT: class silmek için şart değil; sadece temizlik amaçlı.
+        # try:
+        #     # JSON path ile: data->meta->>class_key = class_name
+        #     # Bu kısım RLS'e takılabilir; takılırsa görmezden gel.
+        #     orphans = sb.table("instances").select("id").or_(f"data->meta->>class_key.eq.{class_name}").execute().data or []
+        #     orphan_ids = [x["id"] for x in orphans]
+        #     if orphan_ids:
+        #         _delete_in_chunks(sb, "instances", "id", orphan_ids, chunk=500)
+        # except Exception:
+        #     pass
+
+        return {
+            "classes": 1,
+            "instances": deleted_insts,
+            "runs": deleted_runs,
+            "orders": deleted_orders,
+        }
+
+    # ### deletion
+    st.markdown("### Danger zone")
+    to_del = st.multiselect(
+        "Select DB classes to DELETE (cascade)",
+        options=sorted(db_map.keys()),
+        key="pick_db_del",
+    )
+
+    if st.button("🗑️ Delete selected classes (DB + instances + runs + orders)"):
+        sbx = supabase_client()
+        if not sbx:
+            st.error("Supabase not configured.")
+        else:
+            total = {"classes": 0, "instances": 0, "runs": 0, "orders": 0}
+            for nm in to_del:
+                cnt = delete_class_everywhere(sbx, nm)
+                for k in total:
+                    total[k] += cnt.get(k, 0)
+            st.success(
+                f"Deleted: classes={total['classes']} instances={total['instances']} runs={total['runs']} orders={total['orders']}"
+            )
+            # refresh DB list
+            rows = fetch_classes(sbx)
+            st.session_state["db_classes"] = {r["name"]: r for r in rows}
+    # -----------------------------------------------------------------------------
 
 # ----------------- Batch Runner tab -----------------
 
@@ -2180,7 +2339,7 @@ with inspect_tab:
             "run_batch",
         ]
         st.subheader("Filtered runs")
-        st.dataframe(df_view[runs_cols], width="stretch")
+        st.dataframe(df_view[runs_cols], use_container_width=True)
 
         # ---- Pick a specific run ----
         pretty_opts = [
@@ -2351,7 +2510,7 @@ with inspect_tab:
                 legend_title="Series",
                 barmode="overlay",
             )
-            st.plotly_chart(fig_dc, width="stretch")
+            st.plotly_chart(fig_dc, use_container_width=True)
 
             # Per-item demand heatmap
             st.markdown("**Per-item demand heatmap**")
@@ -2362,7 +2521,7 @@ with inspect_tab:
                     aspect="auto",
                 )
                 fig_h1.update_layout(height=420)
-                st.plotly_chart(fig_h1, width="stretch")
+                st.plotly_chart(fig_h1, use_container_width=True)
             else:
                 st.caption("No demand matrix to display.")
 
@@ -2375,7 +2534,7 @@ with inspect_tab:
                     aspect="auto",
                 )
                 fig_h2.update_layout(height=420)
-                st.plotly_chart(fig_h2, width="stretch")
+                st.plotly_chart(fig_h2, use_container_width=True)
             else:
                 st.caption("No shelf-life matrix to display.")
 
@@ -2422,7 +2581,7 @@ with inspect_tab:
                     )
                 )
             df_items = pd.DataFrame(rows).sort_values("dem_sum", ascending=False)
-            st.dataframe(df_items, width="stretch")
+            st.dataframe(df_items, use_container_width=True)
 
             # Downloads
             colA, colB = st.columns([1, 1])
@@ -2467,7 +2626,7 @@ with inspect_tab:
             pivot = df_orders.pivot_table(
                 index="t", columns="item_id", values="qty", fill_value=0
             ).sort_index()
-            st.dataframe(pivot, width="stretch")
+            st.dataframe(pivot, use_container_width=True)
 
             totals = (
                 df_orders.groupby("item_id")["qty"].sum().sort_values(ascending=False)
@@ -2500,12 +2659,12 @@ with inspect_tab:
                     yaxis_title="qty",
                     legend_title="Item",
                 )
-                st.plotly_chart(fig, width="stretch")
+                st.plotly_chart(fig, use_container_width=True)
 
             st.markdown("**Nonzero orders (long form)**")
             st.dataframe(
                 df_orders[df_orders["qty"] > 0].sort_values(["item_id", "t"]),
-                width="stretch",
+                use_container_width=True,
             )
 
 
@@ -2539,7 +2698,7 @@ with saved_run_tab:
             try:
                 st.rerun()
             except Exception:
-                st.rerun()
+                st.experimental_rerun()
 
     # keyset pagination helper
     def fetch_instances_keyset(sb_client: Client, total: int, class_name: str | None):
@@ -2608,7 +2767,7 @@ with saved_run_tab:
     # Show nice columns (hide the UUID by default)
     st.dataframe(
         dfI[["instance", "created_at", "class", "period", "n_items"]],
-        width="stretch",
+        use_container_width=True,
         height=300,
     )
 
@@ -2903,7 +3062,7 @@ with saved_run_tab:
                     ]
                     st.dataframe(
                         df_new[cols_show].sort_values(["run_batch", "created_at"]),
-                        width="stretch",
+                        use_container_width=True,
                     )
 
                     st.markdown("**Status counts by solver & batch**")
@@ -2916,7 +3075,7 @@ with saved_run_tab:
                         .reset_index(name="runs")
                         .sort_values(["run_batch", "solver_version", "status_label"])
                     )
-                    st.dataframe(cnt, width="stretch")
+                    st.dataframe(cnt, use_container_width=True)
         except Exception as e:
             st.caption(f"Batch summary unavailable: {e}")
 
@@ -2953,7 +3112,7 @@ with viz_tab:
                 try:
                     st.rerun()
                 except Exception:
-                    st.rerun()
+                    st.experimental_rerun()
 
         # ---- Helper: paginate Supabase fetch to bypass 1000-row caps ----
         def fetch_runs_keyset(sb_client: Client, total: int, page_size: int = 1000):
@@ -3159,7 +3318,7 @@ with viz_tab:
             ]
             show_cols = [c for c in cols_order if c in df_filtered.columns]
             st.subheader("Summary (runs table)")
-            st.dataframe(df_filtered[show_cols], width="stretch")
+            st.dataframe(df_filtered[show_cols], use_container_width=True)
 
             # ---- Status breakdown (counts) ----
             st.markdown("**Status breakdown (counts)**")
@@ -3170,7 +3329,7 @@ with viz_tab:
                 .size()
                 .reset_index(name="runs")
             )
-            st.dataframe(cnt, width="stretch")
+            st.dataframe(cnt, use_container_width=True)
 
             # ---- Color choice for plots ----
             color_by_main = st.selectbox(
@@ -3203,7 +3362,7 @@ with viz_tab:
                         title="Runtime vs #Items",
                     )
                     fig.update_layout(height=380)
-                    st.plotly_chart(fig, width="stretch")
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.caption("Not enough data for Runtime vs #Items.")
 
@@ -3228,7 +3387,7 @@ with viz_tab:
                         title="Runtime vs Mean Capacity",
                     )
                     fig.update_layout(height=380)
-                    st.plotly_chart(fig, width="stretch")
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.caption("Not enough data for Runtime vs Mean Capacity.")
 
@@ -3296,7 +3455,7 @@ with viz_tab:
                         xaxis_title=x_axis, yaxis_title=y_axis, zaxis_title=z_axis
                     ),
                 )
-                st.plotly_chart(fig3d, width="stretch")
+                st.plotly_chart(fig3d, use_container_width=True)
             else:
                 st.caption("Not enough data for 3D scatter.")
 
@@ -3326,7 +3485,7 @@ with viz_tab:
                 )
                 .reset_index()
             )
-            st.dataframe(agg, width="stretch")
+            st.dataframe(agg, use_container_width=True)
 
             # ---- Status counts per class (faceted by solver) ----
             st.subheader("Status counts per class (faceted by solver)")
@@ -3341,7 +3500,7 @@ with viz_tab:
                     facet_col="solver_version",
                 )
                 fig_bar.update_layout(height=420, xaxis_title="", yaxis_title="# runs")
-                st.plotly_chart(fig_bar, width="stretch")
+                st.plotly_chart(fig_bar, use_container_width=True)
             else:
                 st.caption("No data for the selected filter.")
 
@@ -3368,7 +3527,7 @@ with viz_tab:
                     title="Runtime distribution per class",
                 )
                 fig_box.update_layout(height=420)
-                st.plotly_chart(fig_box, width="stretch")
+                st.plotly_chart(fig_box, use_container_width=True)
             else:
                 st.caption("No runtimes available for box plot.")
 
@@ -3404,7 +3563,7 @@ with viz_tab:
                     )
                     fig_hm.update_layout(height=420)
                     fig_hm.update_traces(hoverongaps=False)
-                    st.plotly_chart(fig_hm, width="stretch")
+                    st.plotly_chart(fig_hm, use_container_width=True)
                 else:
                     st.caption("No data for heatmap.")
 
@@ -3432,7 +3591,7 @@ with viz_tab:
                     title="Objective vs Runtime (bubble size = #items)",
                 )
                 fig_bub.update_layout(height=420)
-                st.plotly_chart(fig_bub, width="stretch")
+                st.plotly_chart(fig_bub, use_container_width=True)
             else:
                 st.caption("No data for objective vs runtime.")
         except Exception as e:
