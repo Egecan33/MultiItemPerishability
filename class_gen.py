@@ -76,7 +76,7 @@ def generate_all_presets() -> Iterable[dict]:
             for C in (1, 2):
                 for V in (1, 2):
                     for M in (1, 2, 3, 4, 5):
-                        for L in [l for l in range(1, 11) if l not in (2, 5, 7, 9)]:
+                        for L in [l for l in range(1, 13) if l in (2, 5, 7, 9, 11, 12)]:
                             yield make_config(P, N, C, V, M, L)
 
 
@@ -89,5 +89,5 @@ if __name__ == "__main__":
         json.dump(LOCAL_PRESETS, f, indent=2, ensure_ascii=False)
 
     # Quick eye-check example (X232236: P=2,N=3,C=2,V=2,M=3,L=6)
-    ex = next(cfg for cfg in LOCAL_PRESETS if cfg["name"] == "X232236")
+    ex = next(cfg for cfg in LOCAL_PRESETS if cfg["name"] == "X2322311")
     print(json.dumps(ex, indent=2, ensure_ascii=False))

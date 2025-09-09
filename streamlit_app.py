@@ -37,6 +37,8 @@ SOLVER_REGISTRY = {
     },
 }
 
+HOUR_GAP_FOR_BATCH = 1  # hours gap in created_at to start a new batch
+
 
 def parse_orders_lines(orders_txt):
     """
@@ -398,120 +400,27 @@ st.session_state["db_classes"] = {r["name"]: r for r in _rows}  # name -> row
 # 2) (Optional) keep a FEW local presets here for convenience.
 #    They are NOT auto-queued and NOT auto-saved; you'll pick them in the UI.
 
-
 LOCAL_PRESETS = [
     {
-        "name": "2ndclass_T60_N35_DBMedium_TBO6_CVhigh_Z4_m8-20",
-        "period": 60,
-        "cap_mode": "DemandBased",
-        "cap_params": {"jitter_pct": 3.0},
-        "cap_tight": "Medium",
-        "n_items": 35,
-        "dem_lo": 0,
-        "dem_hi": 160,  # CV high
-        "m_lo": 8,
-        "m_hi": 20,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 6.0, "jitter_pct": 10.0},
-        "zero_head": 4,
-        "batch_size": 4,
-        "seed_base": 31700,
-        "allow_unmet_demand": False,
-        "lost_sales_penalty_factor": 200.0,
-    },
-    {
-        "name": "2ndclass_T60_N45_DBLoose_TBO8_CVhigh_Z4_m10-30",
-        "period": 60,
-        "cap_mode": "DemandBased",
-        "cap_params": {"jitter_pct": 3.0},
-        "cap_tight": "Loose",
-        "n_items": 45,
-        "dem_lo": 0,
-        "dem_hi": 160,  # CV high
-        "m_lo": 10,
-        "m_hi": 30,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 8.0, "jitter_pct": 10.0},
-        "zero_head": 4,
-        "batch_size": 4,
-        "seed_base": 31720,
-        "allow_unmet_demand": False,
-        "lost_sales_penalty_factor": 200.0,
-    },
-    {
-        "name": "2ndclass_T60_N30_DBMedium_TBO8_CVhigh_Z5_m10-30",
-        "period": 60,
-        "cap_mode": "DemandBased",
-        "cap_params": {"jitter_pct": 3.0},
-        "cap_tight": "Medium",
-        "n_items": 30,
-        "dem_lo": 0,
-        "dem_hi": 160,  # CV high
-        "m_lo": 10,
-        "m_hi": 30,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 8.0, "jitter_pct": 12.0},
-        "zero_head": 5,
-        "batch_size": 4,
-        "seed_base": 31740,
-        "allow_unmet_demand": False,
-        "lost_sales_penalty_factor": 200.0,
-    },
-    {
-        "name": "2ndclass_T60_N30_DBMedium_TBO6_CVhigh_Z4_m8-12",
-        "period": 60,
-        "cap_mode": "DemandBased",
-        "cap_params": {"jitter_pct": 3.0},
-        "cap_tight": "Medium",
-        "n_items": 30,
-        "dem_lo": 0,
-        "dem_hi": 170,  # slightly higher dem_hi to increase difficulty
-        "m_lo": 8,
-        "m_hi": 12,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
-        "s_mode": "tbo",
-        "s_params": {"L": 6.0, "jitter_pct": 10.0},
-        "zero_head": 4,
-        "batch_size": 4,
-        "seed_base": 31760,
-        "allow_unmet_demand": False,
-        "lost_sales_penalty_factor": 200.0,
-    },
-    {
-        "name": "2ndclass_T20_N10_DBMedium_TBO6_CVhigh_Z4_m7-12",
+        "name": "X111112",
         "period": 20,
         "cap_mode": "DemandBased",
-        "cap_params": {"jitter_pct": 3.0},
-        "cap_tight": "Medium",
+        "cap_params": {"jitter_pct": 10.0},
+        "cap_tight": "Loose",
         "n_items": 10,
         "dem_lo": 0,
-        "dem_hi": 170,  # slightly higher dem_hi to increase difficulty
-        "m_lo": 7,
-        "m_hi": 12,
-        "c_mode": "scalar",
-        "c_params": {"value": 2.0},
-        "h_mode": "scalar",
-        "h_params": {"value": 0.4},
+        "dem_hi": 125,
+        "m_lo": 1,
+        "m_hi": 10,
+        "c_mode": "uniform",
+        "c_params": {"hi": 4.0, "lo": 2.0},
+        "h_mode": "uniform",
+        "h_params": {"hi": 1.0, "lo": 0.3},
         "s_mode": "tbo",
-        "s_params": {"L": 6.0, "jitter_pct": 10.0},
-        "zero_head": 3,
-        "batch_size": 4,
-        "seed_base": 31760,
+        "s_params": {"L": 2.0, "jitter_pct": 10.0},
+        "zero_head": 2,
+        "batch_size": 1,
+        "seed_base": 36812,
         "allow_unmet_demand": False,
         "lost_sales_penalty_factor": 200.0,
     },
@@ -1153,63 +1062,291 @@ with items_tab:
                     st.warning(f"Supabase logging failed: {e}")
 
 # ----------------- Classes tab -----------------
-st.session_state.setdefault("classes", [])
-st.session_state.setdefault("class_queue", [])
-
 with classes_tab:
     st.header("Solution Classes (define and queue)")
 
-    # --- Classes in Supabase ---
-    db_map = st.session_state.get("db_classes", {})
-    st.subheader("Classes in Supabase")
+    # ---------- Full-table fetch (keyset pagination; no 1k cap) ----------
+    def fetch_all_classes_by_keyset(
+        sb_client: Client, page_size: int = 1000
+    ) -> list[dict]:
+        """
+        Return ALL rows from public.classes using keyset pagination on 'name' ASC.
+        Assumes 'name' is unique/sortable.
+        """
+        if sb_client is None:
+            return []
+        out: list[dict] = []
+        cursor: str | None = None
+        select_cols = "id,name,spec,created_at"
+        while True:
+            q = sb_client.table("classes").select(select_cols).order("name", desc=False)
+            if cursor is not None:
+                q = q.gt("name", cursor)  # strictly after last seen name
+            batch = (q.limit(page_size).execute().data) or []
+            if not batch:
+                break
+            out.extend(batch)
+            cursor = batch[-1]["name"]
+            if len(batch) < page_size:
+                break
+        return out
 
-    # Reload DB
-    cdb0 = st.columns(1)[0]
-    if cdb0.button("🔄 Refresh from Supabase"):
-        rows = fetch_classes(supabase_client())
-        st.session_state["db_classes"] = {r["name"]: r for r in rows}
-        st.success("Reloaded classes from DB.")
+    # ---- Compat shim: ensure fetch_classes() does full fetch without rendering banners
+    if "fetch_classes" not in globals():
 
-    if db_map:
-        df_db = pd.DataFrame(
-            [
-                {
-                    "name": r["name"],
-                    "period": r["spec"].get("period"),
-                    "#items": r["spec"].get("n_items"),
-                    "cap_mode": r["spec"].get("cap_mode"),
-                    "created_at": r.get("created_at"),
-                }
-                for r in db_map.values()
-            ]
-        )
-        st.dataframe(df_db, use_container_width=True)
+        def fetch_classes(sb_client: Client) -> list[dict]:
+            return fetch_all_classes_by_keyset(sb_client)
 
-        pick_db = st.multiselect(
-            "Select DB classes", options=sorted(db_map.keys()), key="pick_db"
-        )
-
-        cdb1, cdb2 = st.columns(2)
-        with cdb1:
-            if st.button("➕ Queue selected (DB)"):
-                # Add chosen specs to queue (no duplicates)
-                st.session_state["classes"] += [
-                    db_map[name]["spec"] for name in pick_db
-                ]
-                dedupe_queue_by_name()
-                st.success("Queued selected DB class(es).")
-
-        with cdb2:
-            if st.button("📥 Replace queue with ALL DB"):
-                st.session_state["classes"] = [r["spec"] for r in db_map.values()]
-                dedupe_queue_by_name()
-                st.success(
-                    f"Queue replaced with {len(st.session_state['classes'])} DB class(es)."
-                )
+        # mark so we don't overwrite elsewhere
+        fetch_classes._full_fetch = True  # type: ignore[attr-defined]
     else:
-        st.info("No classes in Supabase yet. Save some or push local presets.")
+        # if someone defined a 1k-limited fetch, override it
+        try:
+            if not getattr(fetch_classes, "_full_fetch", False):  # type: ignore[name-defined]
 
-    # --- Local presets (in code) ---
+                def fetch_classes(sb_client: Client) -> list[dict]:  # type: ignore[no-redef]
+                    return fetch_all_classes_by_keyset(sb_client)
+
+                fetch_classes._full_fetch = True  # type: ignore[attr-defined]
+        except Exception:
+
+            def fetch_classes(sb_client: Client) -> list[dict]:  # fallback
+                return fetch_all_classes_by_keyset(sb_client)
+
+    # ---------- Always load full set on render (prevents shrink-on-rerun) ----------
+    sb = supabase_client()
+    if not sb:
+        st.info("Configure Supabase in the sidebar.")
+        st.stop()
+
+    rows = fetch_all_classes_by_keyset(sb)  # <- always full set
+    st.session_state["db_classes"] = {r["name"]: r for r in rows}
+    db_map: dict[str, dict] = st.session_state["db_classes"]
+
+    st.subheader("Classes in Supabase")
+    st.caption(f"Loaded **{len(db_map)}** classes from Supabase.")
+
+    # ---------- X-code legend & helpers ----------
+    with st.expander("X-code legend (A..F)", expanded=False):
+        st.markdown(
+            """
+        **Format:** `X A B C D E F`  (e.g., `X232237`)  
+
+        | pos | meaning | codes → value |
+        |---|---|---|
+        | A | period **T** (also sets `zero_head`) | 1→20 (`zero_head`=2), 2→30 (3), 3→40 (4) |
+        | B | **#items** (`n_items`) | 1→10, 2→20, 3→30 |
+        | C | capacity tightness (`cap_tight`) | 1→Loose, 2→Tight |
+        | D | demand CV level (drives demand range) | 1→Low CV → `dem_hi`=125, 2→High CV → `dem_hi`=200 (both `dem_lo`=0) |
+        | E | shelf-life set (`m_lo`,`m_hi`) | 1→(1,10), 2→(5,15), 3→(10,20), 4→(5,25), 5→(10,30) |
+        | F | TBO parameter (`s_params.L`) | integer **1..12** |
+        """
+        )
+
+    import re
+
+    _x_pat = re.compile(r"^X(\d+)$")
+
+    def _x_digits(name: str) -> tuple[str, str, str, str, str, str] | None:
+        """
+        Parse X-codes: X A B C D E F
+        A..E are one digit; F can be one or two digits (1..12).
+        Returns (A,B,C,D,E,F) as strings or None if not a valid X-code.
+        """
+        m = _x_pat.match(str(name))
+        if not m:
+            return None
+        s = m.group(1)
+        if len(s) < 6:  # need at least A..E (5) + F (>=1)
+            return None
+
+        A, B, C, D, E = s[0], s[1], s[2], s[3], s[4]
+        F = s[5:]  # remainder = 1–2 digits
+
+        # validate against your legend
+        if A not in {"1", "2", "3"}:
+            return None
+        if B not in {"1", "2", "3"}:
+            return None
+        if C not in {"1", "2"}:
+            return None
+        if D not in {"1", "2"}:
+            return None
+        if E not in {"1", "2", "3", "4", "5"}:
+            return None
+        if not (F.isdigit() and 1 <= int(F) <= 12):
+            return None
+
+        return (A, B, C, D, E, F)
+
+    # ---------- Table with checkboxes ----------
+    st.session_state.setdefault("db_table_checked", set())
+
+    def _safe_spec(row: dict, key: str, default=None):
+        try:
+            return (row.get("spec") or {}).get(key, default)
+        except Exception:
+            return default
+
+    df_db = pd.DataFrame(
+        [
+            {
+                "name": r["name"],
+                "period": _safe_spec(r, "period"),
+                "#items": _safe_spec(r, "n_items"),
+                "cap_mode": _safe_spec(r, "cap_mode"),
+                "created_at": r.get("created_at"),
+            }
+            for r in db_map.values()
+        ]
+    ).sort_values("name", kind="mergesort")
+
+    # Keep existing checks
+    df_db["✓"] = df_db["name"].isin(st.session_state["db_table_checked"])
+
+    edited = st.data_editor(
+        df_db,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        column_config={
+            "name": st.column_config.TextColumn(disabled=True),
+            "period": st.column_config.NumberColumn(format="%d", disabled=True),
+            "#items": st.column_config.NumberColumn(format="%d", disabled=True),
+            "cap_mode": st.column_config.TextColumn(disabled=True),
+            "created_at": st.column_config.TextColumn(disabled=True),
+            "✓": st.column_config.CheckboxColumn(
+                "✓", help="Check to include in actions below.", default=False
+            ),
+        },
+        key="db_classes_editor",
+        height=560,
+    )
+
+    # Sync back checks (and drop any stale names)
+    try:
+        checked_now = set(edited.loc[edited["✓"], "name"].astype(str).tolist())
+        st.session_state["db_table_checked"] = checked_now & set(db_map.keys())
+    except Exception:
+        pass
+
+    # ---------- X-code bulk selection (include/exclude by A..F) ----------
+    with st.expander("Bulk select X-coded classes by legend filters", expanded=False):
+        POS = ["A", "B", "C", "D", "E", "F"]
+        CHOICES = {
+            "A": [str(i) for i in (1, 2, 3)],  # period code
+            "B": [str(i) for i in (1, 2, 3)],  # items code
+            "C": [str(i) for i in (1, 2)],  # cap tightness code
+            "D": [str(i) for i in (1, 2)],  # CV code
+            "E": [str(i) for i in (1, 2, 3, 4, 5)],  # shelf set code
+            "F": [str(i) for i in range(1, 13)],  # TBO L
+        }
+
+        # Persist selections across reruns
+        for p in POS:
+            st.session_state.setdefault(f"x_inc_{p}", [])
+            st.session_state.setdefault(f"x_exc_{p}", [])
+
+        ccols = st.columns(6)
+        for idx, p in enumerate(POS):
+            with ccols[idx]:
+                st.session_state[f"x_inc_{p}"] = st.multiselect(
+                    f"Include {p}",
+                    options=CHOICES[p],
+                    default=st.session_state[f"x_inc_{p}"],
+                    key=f"x_inc_ms_{p}",
+                    help=f"Leave empty to allow any {p}",
+                )
+                st.session_state[f"x_exc_{p}"] = st.multiselect(
+                    f"Exclude {p}",
+                    options=CHOICES[p],
+                    default=st.session_state[f"x_exc_{p}"],
+                    key=f"x_exc_ms_{p}",
+                    help=f"Digits of {p} to exclude",
+                )
+
+        def _matches_x_filters(name: str) -> bool:
+            tup = _x_digits(name)
+            if not tup:
+                return False
+            for pos_idx, p in enumerate(POS):
+                d = tup[pos_idx]
+                inc = set(st.session_state.get(f"x_inc_{p}", []))
+                exc = set(st.session_state.get(f"x_exc_{p}", []))
+                if inc and d not in inc:
+                    return False
+                if d in exc:
+                    return False
+            return True
+
+        b1, b2, b3, b4 = st.columns(4)
+        with b1:
+            if st.button("✨ Check all X*"):
+                x_names = [n for n in db_map.keys() if _x_digits(n)]
+                if not x_names:
+                    st.info("No X-coded classes in DB.")
+                else:
+                    st.session_state["db_table_checked"].update(x_names)
+                    st.rerun()
+        with b2:
+            if st.button("➕ Check matches (keep current)"):
+                matches = [n for n in db_map.keys() if _matches_x_filters(n)]
+                if not matches:
+                    st.info("No X-coded classes match current filters.")
+                else:
+                    st.session_state["db_table_checked"].update(matches)
+                    st.rerun()
+        with b3:
+            if st.button("📌 Replace checks with matches"):
+                matches = [n for n in db_map.keys() if _matches_x_filters(n)]
+                st.session_state["db_table_checked"] = set(matches)
+                st.rerun()
+        with b4:
+            if st.button("🧹 Clear all checks"):
+                st.session_state["db_table_checked"].clear()
+                st.rerun()
+
+        st.caption(
+            "Examples: **B=2** → include B=[2]. **F=9** → include F=[9]. "
+            "**A∈{2,3} & F∉{1,2,3,4}** → include A=[2,3], exclude F=[1,2,3,4]."
+        )
+
+    # ---------- Actions ----------
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        if st.button("➕ Queue checked (DB)"):
+            chosen = list(st.session_state["db_table_checked"])
+            if not chosen:
+                st.info("No rows are checked.")
+            else:
+                st.session_state.setdefault("classes", [])
+                st.session_state["classes"] += [
+                    db_map[name]["spec"] for name in chosen if name in db_map
+                ]
+                try:
+                    dedupe_queue_by_name()
+                except Exception:
+                    pass
+                st.success(f"Queued {len(chosen)} DB class(es).")
+
+    with c2:
+        if st.button("📥 Replace queue with ALL DB"):
+            st.session_state["classes"] = [r["spec"] for r in db_map.values()]
+            try:
+                dedupe_queue_by_name()
+            except Exception:
+                pass
+            st.success(
+                f"Queue replaced with {len(st.session_state['classes'])} DB class(es)."
+            )
+
+    with c3:
+        if st.button("🔄 Full refresh now"):
+            # just rerun; full fetch happens at top every render
+            st.rerun()
+
+    # ---------- Local presets (in code) ----------
     lp_map = st.session_state.get("local_presets", {})
     st.subheader("Local presets (in code)")
     if lp_map:
@@ -1223,22 +1360,25 @@ with classes_tab:
                 }
                 for p in lp_map.values()
             ]
-        )
+        ).sort_values("name", kind="mergesort")
         st.dataframe(df_lp, use_container_width=True)
 
         pick_local = st.multiselect(
             "Select local presets", options=sorted(lp_map.keys()), key="pick_local"
         )
 
-        c1, c2 = st.columns(2)
-        with c1:
+        cL1, cL2 = st.columns(2)
+        with cL1:
             if st.button("➕ Queue selected local"):
                 for name in pick_local:
-                    st.session_state["classes"].append(lp_map[name])
-                dedupe_queue_by_name()
+                    st.session_state.setdefault("classes", []).append(lp_map[name])
+                try:
+                    dedupe_queue_by_name()
+                except Exception:
+                    pass
                 st.success("Queued selected local preset(s).")
 
-        with c2:
+        with cL2:
             if st.button("⬆️ Save selected local to Supabase"):
                 sbx = supabase_client()
                 saved = 0
@@ -1255,9 +1395,9 @@ with classes_tab:
             "No local presets defined. Edit LOCAL_PRESETS near the top to add some."
         )
 
-    c_name = st.text_input(
-        "Class name", value="demo_60_uniformcap_meditems", key="cls_name"
-    )
+    # ---------- New class form ----------
+
+    c_name = st.text_input("Class name", value="X...", key="cls_name")
 
     st.markdown("**Periods**")
     pchoice = st.radio(
@@ -1611,8 +1751,33 @@ with classes_tab:
             if k.startswith("class_sort_"):
                 st.session_state.pop(k, None)
 
-    # Quick table view  ✅ now editable for batch sizes
-    if st.session_state["classes"]:
+    # ---------- Batch override (this run only) ----------
+    st.session_state.setdefault("run_batch_override_enabled", False)
+    st.session_state.setdefault("run_batch_override_value", 1)
+
+    oc1, oc2 = st.columns([1, 1])
+    with oc1:
+        # Do NOT assign to st.session_state here; just use a key
+        st.checkbox(
+            "Use batch override (this run only)",
+            help="Apply one batch size to every queued class for the next run, without changing class specs.",
+            key="run_batch_override_enabled",
+        )
+    with oc2:
+        # Same: widget controls the state via the key
+        st.number_input(
+            "Override batch size",
+            min_value=1,
+            step=1,
+            help="How many instances per class to run (temporary).",
+            key="run_batch_override_value",
+        )
+
+    override_enabled = bool(st.session_state["run_batch_override_enabled"])
+    override_value = int(st.session_state["run_batch_override_value"])
+
+    # Quick table view  ✅ editable when override is OFF; locked when ON
+    if st.session_state.get("classes"):
         dfq = pd.DataFrame(
             [
                 {
@@ -1625,8 +1790,11 @@ with classes_tab:
             ]
         )
 
+        # When override is ON, show the effective value in the table (read-only)
+        data_to_show = dfq.assign(batch=override_value) if override_enabled else dfq
+
         edited_dfq = st.data_editor(
-            dfq,
+            data_to_show,
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
@@ -1636,40 +1804,75 @@ with classes_tab:
                 "items": st.column_config.NumberColumn(format="%d", disabled=True),
                 "batch": st.column_config.NumberColumn(
                     "batch",
-                    help="Instances per class (batch size)",
+                    help=(
+                        "Instances per class (batch size). "
+                        "This column is temporarily ignored when the override is enabled."
+                    ),
                     min_value=1,
                     step=1,
                     format="%d",
+                    disabled=override_enabled,  # lock when override is active
                 ),
             },
             key="queue_editor",
         )
 
-    # Write edited batch sizes back into the queued class specs
-    try:
-        batches_by_name = {
-            row["name"]: int(row["batch"])
-            for _, row in edited_dfq.iterrows()
-            if pd.notnull(row["batch"])
-        }
-        for c in st.session_state["classes"]:
-            if c["name"] in batches_by_name:
-                c["batch_size"] = max(1, batches_by_name[c["name"]])
-    except Exception:
-        pass
+        # ---- Persist edits or apply override ----
+        if override_enabled:
+            # Mutate every queued class's batch_size, then rerun so UI reflects it
+            changed = False
+            for c in st.session_state["classes"]:
+                if int(c.get("batch_size", 1)) != override_value:
+                    c["batch_size"] = override_value
+                    changed = True
+            # Handy mapping for downstream code (if any uses it)
+            st.session_state["effective_batch_by_name"] = {
+                c["name"]: int(c.get("batch_size", 1))
+                for c in st.session_state["classes"]
+            }
+            if changed:
+                st.toast(
+                    f"Applied batch size {override_value} to all queued classes.",
+                    icon="✅",
+                )
+                st.rerun()
+            else:
+                st.info(
+                    f"Batch override active: running **{override_value}** instance(s) per class."
+                )
+        else:
+            # Persist user edits from the table back to class specs
+            try:
+                batches_by_name = {
+                    row["name"]: int(row["batch"])
+                    for _, row in edited_dfq.iterrows()
+                    if pd.notnull(row["batch"])
+                }
+                for c in st.session_state["classes"]:
+                    if c["name"] in batches_by_name:
+                        c["batch_size"] = max(1, batches_by_name[c["name"]])
+            except Exception:
+                pass
 
+            # Reflect the persisted values as the effective mapping
+            st.session_state["effective_batch_by_name"] = {
+                c["name"]: int(c.get("batch_size", 1))
+                for c in st.session_state["classes"]
+            }
     # Remove/clear controls
     rm_names = st.multiselect(
         "Select queued classes to remove",
-        options=[c["name"] for c in st.session_state["classes"]],
+        options=[c["name"] for c in st.session_state.get("classes", [])],
         key="rm_from_queue",
     )
     c_rm, c_clr, c_save = st.columns(3)
     with c_rm:
         if st.button("🗑️ Remove selected from queue"):
-            before = len(st.session_state["classes"])
+            before = len(st.session_state.get("classes", []))
             st.session_state["classes"] = [
-                c for c in st.session_state["classes"] if c["name"] not in rm_names
+                c
+                for c in st.session_state.get("classes", [])
+                if c["name"] not in rm_names
             ]
             _reset_sortables_state()
             st.success(
@@ -1689,232 +1892,14 @@ with classes_tab:
         ):
             dedupe_queue_by_name()
             saved = 0
-            for cls in st.session_state["classes"]:
+            for cls in st.session_state.get("classes", []):
                 if ensure_class_row(sb_for_classes, cls):  # upsert by name
                     saved += 1
             _reset_sortables_state()
             st.success(f"Saved/updated {saved} unique class spec(s) to Supabase.")
 
-    # ---cascade delete portion in this tab ----
-
-    def _delete_in_chunks(
-        sb: Client, table: str, col: str, ids: list[str], chunk: int = 500
-    ) -> int:
-        total = 0
-        for k in range(0, len(ids), chunk):
-            part = ids[k : k + chunk]
-            if not part:
-                continue
-            try:
-                res = sb.table(table).delete().in_(col, part).execute()
-                total += len(part) if (res.data is None) else len(res.data)
-            except Exception:
-                # bazı kurulumlarda returning kapalı veya RLS uyarısı baskılanmış olabilir
-                total += len(part)
-        return total
-
-    def _select_ids_eq(
-        sb: Client, table: str, col: str, val: str, step: int = 1000
-    ) -> list[str]:
-        """eq ile sayfa sayfa id topla (RLS varsa erişilebilenleri döner)."""
-        out, start = [], 0
-        while True:
-            res = (
-                sb.table(table)
-                .select("id")
-                .eq(col, val)
-                .range(start, start + step - 1)
-                .order("id")
-                .execute()
-            )
-            rows = res.data or []
-            if not rows:
-                break
-            out.extend([r["id"] for r in rows])
-            if len(rows) < step:
-                break
-            start += len(rows)
-        return out
-
-    def _fetch_ids_or(
-        sb: Client, table: str, or_expr: str, step: int = 1000
-    ) -> list[str]:
-        """
-        or_expr: PostgREST or= ifadesi, ör: "class_id.eq.<uuid>,data->meta->>class_key.eq.<name>"
-        """
-        out, start = [], 0
-        while True:
-            q = (
-                sb.table(table)
-                .select("id")
-                .or_(or_expr)
-                .order("id", desc=False)
-                .range(start, start + step - 1)
-            )
-            res = q.execute()
-            rows = res.data or []
-            if not rows:
-                break
-            out.extend([r["id"] for r in rows])
-            if len(rows) < step:
-                break
-            start += len(rows)
-        return out
-
-    def delete_class_everywhere(sb: Client, class_name: str) -> Dict[str, int]:
-        # 0) class_id çek
-        cls_res = (
-            sb.table("classes").select("id").eq("name", class_name).limit(1).execute()
-        )
-        cls_rows = cls_res.data or []
-        if not cls_rows:
-            return {"classes": 0, "instances": 0, "runs": 0, "orders": 0}
-        cid = cls_rows[0]["id"]
-
-        deleted_orders = 0
-        deleted_runs = 0
-        deleted_insts = 0
-
-        # 1) Döngü: class_id=cid olan INSTANCES bitene kadar silme adımlarını tekrarla
-        while True:
-            inst_ids = _select_ids_eq(sb, "instances", "class_id", cid, step=1000)
-            if not inst_ids:
-                break
-
-            # Bu instance'lara bağlı RUN id'lerini topla
-            run_ids = []
-            for k in range(0, len(inst_ids), 500):
-                part = inst_ids[k : k + 500]
-                r = (
-                    sb.table("runs")
-                    .select("id")
-                    .in_("instance_id", part)
-                    .order("id")
-                    .execute()
-                )
-                run_ids.extend([x["id"] for x in (r.data or [])])
-
-            # Orders → Runs → Instances sırayla sil
-            if run_ids:
-                deleted_orders += _delete_in_chunks(
-                    sb, "orders", "run_id", run_ids, chunk=500
-                )
-                deleted_runs += _delete_in_chunks(sb, "runs", "id", run_ids, chunk=500)
-
-            deleted_insts += _delete_in_chunks(
-                sb, "instances", "id", inst_ids, chunk=500
-            )
-
-            # Döngü başına dönüp kalan var mı tekrar bakacağız
-
-        # 2) Emniyet: class_id=cid bağlı RUN varsa (nadiren) onları da temizle
-        # (ör. biri instance_id=NULL, class_id=cid kalmış olabilir)
-        extra_run_ids = _select_ids_eq(sb, "runs", "class_id", cid, step=1000)
-        if extra_run_ids:
-            deleted_orders += _delete_in_chunks(
-                sb, "orders", "run_id", extra_run_ids, chunk=500
-            )
-            deleted_runs += _delete_in_chunks(
-                sb, "runs", "id", extra_run_ids, chunk=500
-            )
-
-        # 3) Hâlâ class_id=cid'li instance var mı? Varsa NULL'la ve bir kez daha dene
-        try:
-            chk = (
-                sb.table("instances")
-                .select("id", count="exact")
-                .eq("class_id", cid)
-                .execute()
-            )
-            remain = getattr(chk, "count", 0) or 0
-        except Exception:
-            remain = 0
-
-        if remain > 0:
-            # class_id NULL'la
-            try:
-                sb.table("instances").update({"class_id": None}).eq(
-                    "class_id", cid
-                ).execute()
-            except Exception:
-                pass
-            # tekrar dene
-            inst_ids = _select_ids_eq(sb, "instances", "class_id", cid, step=1000)
-            if inst_ids:
-                deleted_insts += _delete_in_chunks(
-                    sb, "instances", "id", inst_ids, chunk=500
-                )
-
-        # 4) Son kontrol: sınıf bağlı instance kaldıysa, RLS/policy engelliyordur → hata göster
-        try:
-            chk2 = (
-                sb.table("instances")
-                .select("id", count="exact")
-                .eq("class_id", cid)
-                .execute()
-            )
-            remain2 = getattr(chk2, "count", 0) or 0
-        except Exception:
-            remain2 = 0
-
-        if remain2 > 0:
-            # Bu durumda sınıfı silmeye kalkarsan tekrar 23503 alırsın.
-            # UI'da kullanıcıya net hata gösterebilmen için Exception fırlatıyorum.
-            raise RuntimeError(
-                f"Cannot delete class '{class_name}': {remain2} instance(s) still reference it. "
-                "Check RLS/Policies or use a service key / ON DELETE CASCADE."
-            )
-
-        # 5) Artık class'ı sil
-        sb.table("classes").delete().eq("id", cid).execute()
-
-        # (İSTEĞE BAĞLI) meta.class_key eşleşen yetim 'instances' varsa onları da temizlemek istersen:
-        #   NOT: class silmek için şart değil; sadece temizlik amaçlı.
-        # try:
-        #     # JSON path ile: data->meta->>class_key = class_name
-        #     # Bu kısım RLS'e takılabilir; takılırsa görmezden gel.
-        #     orphans = sb.table("instances").select("id").or_(f"data->meta->>class_key.eq.{class_name}").execute().data or []
-        #     orphan_ids = [x["id"] for x in orphans]
-        #     if orphan_ids:
-        #         _delete_in_chunks(sb, "instances", "id", orphan_ids, chunk=500)
-        # except Exception:
-        #     pass
-
-        return {
-            "classes": 1,
-            "instances": deleted_insts,
-            "runs": deleted_runs,
-            "orders": deleted_orders,
-        }
-
-    # ### deletion
-    st.markdown("### Danger zone")
-    to_del = st.multiselect(
-        "Select DB classes to DELETE (cascade)",
-        options=sorted(db_map.keys()),
-        key="pick_db_del",
-    )
-
-    if st.button("🗑️ Delete selected classes (DB + instances + runs + orders)"):
-        sbx = supabase_client()
-        if not sbx:
-            st.error("Supabase not configured.")
-        else:
-            total = {"classes": 0, "instances": 0, "runs": 0, "orders": 0}
-            for nm in to_del:
-                cnt = delete_class_everywhere(sbx, nm)
-                for k in total:
-                    total[k] += cnt.get(k, 0)
-            st.success(
-                f"Deleted: classes={total['classes']} instances={total['instances']} runs={total['runs']} orders={total['orders']}"
-            )
-            # refresh DB list
-            rows = fetch_classes(sbx)
-            st.session_state["db_classes"] = {r["name"]: r for r in rows}
-    # -----------------------------------------------------------------------------
 
 # ----------------- Batch Runner tab -----------------
-
 with batch_tab:
     st.header("Batch Runner (generate → solve → log)")
     sb = supabase_client()
@@ -2293,13 +2278,13 @@ with inspect_tab:
             df_runs["ins_id"] = None
         df_runs["instance"] = df_runs["ins_id"].apply(_ins_label)
 
-        # -------- Add batch inference (≥ 2h gap → new batch) + batch filter --------
+        # -------- Add batch inference (≥ 1h gap → new batch) + batch filter --------
         try:
             df_sorted = df_runs.sort_values("created_at").copy()
             ts_sorted = pd.to_datetime(
                 df_sorted["created_at"], utc=True, errors="coerce"
             )
-            boundaries = ts_sorted.diff() > pd.Timedelta(hours=2)
+            boundaries = ts_sorted.diff() > pd.Timedelta(hours=HOUR_GAP_FOR_BATCH)
             df_sorted["run_batch"] = (boundaries.cumsum() + 1).astype(int)
             batch_map = df_sorted.set_index("run_id")["run_batch"]
             df_runs["run_batch"] = df_runs["run_id"].map(batch_map)
@@ -2698,7 +2683,7 @@ with saved_run_tab:
             try:
                 st.rerun()
             except Exception:
-                st.experimental_rerun()
+                st.rerun()
 
     # keyset pagination helper
     def fetch_instances_keyset(sb_client: Client, total: int, class_name: str | None):
@@ -3112,7 +3097,7 @@ with viz_tab:
                 try:
                     st.rerun()
                 except Exception:
-                    st.experimental_rerun()
+                    st.rerun()
 
         # ---- Helper: paginate Supabase fetch to bypass 1000-row caps ----
         def fetch_runs_keyset(sb_client: Client, total: int, page_size: int = 1000):
@@ -3248,13 +3233,13 @@ with viz_tab:
             # Numeric gap alias (for robust aggregations)
             df["gap_num"] = df["gap"]
 
-            # ---- Infer run batches from created_at (≥2 hour gap starts a new batch) ----
+            # ---- Infer run batches from created_at (≥1 hour gap starts a new batch) ----
             try:
                 df_sorted = df.sort_values("created_at").copy()
                 ts_sorted = pd.to_datetime(
                     df_sorted["created_at"], utc=True, errors="coerce"
                 )
-                boundaries = ts_sorted.diff() > pd.Timedelta(hours=2)
+                boundaries = ts_sorted.diff() > pd.Timedelta(hours=HOUR_GAP_FOR_BATCH)
                 df_sorted["run_batch"] = (boundaries.cumsum() + 1).astype(int)
                 batch_map = df_sorted.set_index("run_id")["run_batch"]
                 df["run_batch"] = df["run_id"].map(batch_map)
