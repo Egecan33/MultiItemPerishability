@@ -39,6 +39,49 @@ SOLVER_REGISTRY = {
 
 HOUR_GAP_FOR_BATCH = 1  # hours gap in created_at to start a new batch
 
+# ==== X-code helpers (shared) ====
+_x_pat = re.compile(r"^[Xx](\d+)$")
+
+
+def _x_digits(name: str):
+    m = _x_pat.match(str(name))
+    if not m:
+        return None
+    s = m.group(1)
+    if len(s) < 6:
+        return None
+    A, B, C, D, E = s[0], s[1], s[2], s[3], s[4]
+    F = s[5:]
+    if A not in {"1", "2", "3"}:
+        return None
+    if B not in {"1", "2", "3"}:
+        return None
+    if C not in {"1", "2"}:
+        return None
+    if D not in {"1", "2"}:
+        return None
+    if E not in {"1", "2", "3", "4", "5"}:
+        return None
+    if not (F.isdigit() and 1 <= int(F) <= 12):
+        return None
+    return (A, B, C, D, E, F)
+
+
+def _matches_x_filters(
+    name: str, inc: dict[str, set[str]], exc: dict[str, set[str]]
+) -> bool:
+    tup = _x_digits(name)
+    if not tup:
+        return False
+    POS = ["A", "B", "C", "D", "E", "F"]
+    for pos_idx, p in enumerate(POS):
+        d = tup[pos_idx]
+        if inc.get(p) and d not in inc[p]:
+            return False
+        if d in exc.get(p, set()):
+            return False
+    return True
+
 
 def parse_orders_lines(orders_txt):
     """
@@ -387,6 +430,7 @@ with st.sidebar:
         "Supabase anon key", value=DEFAULT_ANON, type="password"
     )
 
+
 # ===== CLASS SOURCE OF TRUTH: Supabase + optional local presets =====
 st.session_state.setdefault("classes", [])  # queue to run
 st.session_state.setdefault("db_classes", {})  # classes from DB
@@ -433,6 +477,139 @@ for _p in LOCAL_PRESETS:
         _p["cap_params"].setdefault("jitter_pct", 3.0)
 st.session_state["local_presets"] = {p["name"]: p for p in LOCAL_PRESETS}
 # ===== END =====
+
+
+# ==== INSTANCE GENERATION HELPERS (shared) ====
+def generate_cap_series(period: int, mode: str, params: dict, seed: int) -> List[int]:
+    g = rng(seed)
+    if mode == "Constant":
+        return [int(params.get("value", 10000))] * period
+    if mode == "Uniform":
+        lo, hi = int(params.get("lo", 9000)), int(params.get("hi", 11000))
+        return [int(x) for x in g.integers(lo, hi + 1, size=period)]
+    mu, sd = float(params.get("mean", 10000)), float(params.get("std", 500))
+    clip_lo, clip_hi = float(params.get("clip_lo", 0)), float(
+        params.get("clip_hi", 2 * mu)
+    )
+    arr = clip_list(g.normal(mu, sd, size=period), clip_lo, clip_hi).round().astype(int)
+    return [int(x) for x in arr]
+
+
+def generate_instance_from_class(cls: dict, j: int) -> dict:
+    period = int(cls["period"])
+    zero_head = int(cls.get("zero_head", 0))
+    rng_local = np.random.default_rng(int(cls["seed_base"] + 31 * j))
+
+    items = {}
+    total_by_t = np.zeros(period, dtype=float)
+
+    for i in range(cls["n_items"]):
+        seed_k = int(cls["seed_base"] + 1000 * j + 17 * i)
+        # demand
+        D = list(
+            np.random.default_rng(seed_k).integers(
+                int(cls["dem_lo"]), int(cls["dem_hi"]) + 1, size=period
+            )
+        )
+        if zero_head > 0:
+            for z in range(min(zero_head, period)):
+                D[z] = 0
+        # shelf life
+        Mseq = list(
+            np.random.default_rng(seed_k + 1).integers(
+                int(cls["m_lo"]), int(cls["m_hi"]) + 1, size=period
+            )
+        )
+        # c, h
+        c_seq = make_series(
+            cls["c_mode"], period, dict(cls["c_params"] or {}), seed_k + 2
+        )
+        h_seq = make_series(
+            cls["h_mode"], period, dict(cls["h_params"] or {}), seed_k + 3
+        )
+        c_out = (
+            float(cls["c_params"].get("value", 0.0))
+            if cls["c_mode"] == "scalar"
+            else [float(x) for x in c_seq]
+        )
+        h_out = (
+            float(cls["h_params"].get("value", 0.0))
+            if cls["h_mode"] == "scalar"
+            else [float(x) for x in h_seq]
+        )
+
+        # setup (TBO or generator)
+        # setup (TBO or generator)
+        if cls["s_mode"] == "tbo":
+            # --- base from TBO formula ---
+            # use mean(h) and mean(d) like before
+            h_avg = float(h_out) if isinstance(h_out, float) else float(np.mean(h_out))
+            d_avg = float(np.mean(D)) if D else 0.0
+
+            L_raw = float((cls.get("s_params") or {}).get("L", 2.0))
+            L = max(0.1, L_raw if math.isfinite(L_raw) else 2.0)
+            jitter_pct = float(
+                (cls.get("s_params") or {}).get("jitter_pct", SETUP_TBO_JITTER_DEFAULT)
+            )
+            per_period = bool(
+                (cls.get("s_params") or {}).get("per_period", True)
+            )  # ✅ default True
+
+            base_s = 0.5 * h_avg * d_avg * (L**2)
+            if base_s <= 0:
+                base_s = 1e-6
+
+            # use an item-specific RNG so items get different jitters
+            g_s = np.random.default_rng(seed_k + 4)
+
+            if per_period:
+                # one jittered value per period
+                eps = g_s.uniform(-jitter_pct / 100.0, jitter_pct / 100.0, size=period)
+                s_out = list((base_s * (1.0 + eps)).astype(float))
+            else:
+                # single jittered scalar for the whole horizon
+                jit = 1.0 + g_s.uniform(-jitter_pct / 100.0, jitter_pct / 100.0)
+                s_out = float(base_s * jit)
+
+        items[str(i)] = {
+            "demand": [int(x) for x in D],
+            "setup": s_out,
+            "c_var": c_out,
+            "h": h_out,
+            "b_var": 0.0,
+            "shelf_seq": [int(x) for x in Mseq],
+        }
+        total_by_t += np.array(D, dtype=float)
+
+    # capacity
+    cap_mode = cls.get("cap_mode", "Uniform")
+    if cap_mode == "DemandBased":
+        beta = CAP_TIGHT_BETAS.get(cls.get("cap_tight") or "Medium", 0.60)
+        mean_total = float(np.mean(total_by_t)) if period > 0 else 0.0
+        base_cap = max(1, int(round(beta * mean_total)))
+        jit_pct = float((cls.get("cap_params") or {}).get("jitter_pct", 3.0))
+        if jit_pct > 0:
+            g = np.random.default_rng(int(cls["seed_base"] + 31 * j + 7))
+            noise = g.uniform(-jit_pct / 100.0, jit_pct / 100.0, size=period)
+            cap = np.maximum(0, np.round(base_cap * (1.0 + noise)).astype(int)).tolist()
+        else:
+            cap = [base_cap] * period
+    else:
+        cap = generate_cap_series(
+            period, cap_mode, cls.get("cap_params") or {}, cls["seed_base"] + 31 * j
+        )
+
+    inst = {
+        "period": period,
+        "items": items,
+        "manual_capacity": [int(x) for x in cap],
+        "warehouse_capacity": (float(W_txt) if W_txt.strip() != "" else None),
+        "allow_unmet_demand": bool(cls.get("allow_unmet_demand", False)),
+        "lost_sales_penalty_factor": float(cls.get("lost_sales_penalty_factor", 200.0)),
+        "meta": {"origin": "class", "class_key": cls["name"], "class_params": cls},
+    }
+    return inst
+
 
 # ======================= Tabs ======================
 cap_tab, items_tab, classes_tab, batch_tab, inspect_tab, saved_run_tab, viz_tab = (
@@ -1143,42 +1320,6 @@ with classes_tab:
         """
         )
 
-    import re
-
-    _x_pat = re.compile(r"^X(\d+)$")
-
-    def _x_digits(name: str) -> tuple[str, str, str, str, str, str] | None:
-        """
-        Parse X-codes: X A B C D E F
-        A..E are one digit; F can be one or two digits (1..12).
-        Returns (A,B,C,D,E,F) as strings or None if not a valid X-code.
-        """
-        m = _x_pat.match(str(name))
-        if not m:
-            return None
-        s = m.group(1)
-        if len(s) < 6:  # need at least A..E (5) + F (>=1)
-            return None
-
-        A, B, C, D, E = s[0], s[1], s[2], s[3], s[4]
-        F = s[5:]  # remainder = 1–2 digits
-
-        # validate against your legend
-        if A not in {"1", "2", "3"}:
-            return None
-        if B not in {"1", "2", "3"}:
-            return None
-        if C not in {"1", "2"}:
-            return None
-        if D not in {"1", "2"}:
-            return None
-        if E not in {"1", "2", "3", "4", "5"}:
-            return None
-        if not (F.isdigit() and 1 <= int(F) <= 12):
-            return None
-
-        return (A, B, C, D, E, F)
-
     # ---------- Table with checkboxes ----------
     st.session_state.setdefault("db_table_checked", set())
 
@@ -1265,20 +1406,6 @@ with classes_tab:
                     help=f"Digits of {p} to exclude",
                 )
 
-        def _matches_x_filters(name: str) -> bool:
-            tup = _x_digits(name)
-            if not tup:
-                return False
-            for pos_idx, p in enumerate(POS):
-                d = tup[pos_idx]
-                inc = set(st.session_state.get(f"x_inc_{p}", []))
-                exc = set(st.session_state.get(f"x_exc_{p}", []))
-                if inc and d not in inc:
-                    return False
-                if d in exc:
-                    return False
-            return True
-
         b1, b2, b3, b4 = st.columns(4)
         with b1:
             if st.button("✨ Check all X*"):
@@ -1345,6 +1472,56 @@ with classes_tab:
         if st.button("🔄 Full refresh now"):
             # just rerun; full fetch happens at top every render
             st.rerun()
+
+    st.markdown("### Generate instances only (no solve) for checked classes")
+    gen_copies = st.number_input(
+        "Copies per class to generate",
+        min_value=1,
+        value=5,
+        step=1,
+        key="gen_only_copies",
+    )
+
+    if st.button("🧪 Generate & save (no solve) for CHECKED"):
+        sbx = supabase_client()
+        if sbx is None:
+            st.error("Supabase not configured.")
+        else:
+            # which classes? — the currently checked rows in the table
+            chosen = list(st.session_state.get("db_table_checked", set()))
+            if not chosen:
+                st.info("No classes are checked.")
+            else:
+                prog = st.progress(0.0, text="Generating…")
+                done = 0
+                total = len(chosen) * int(gen_copies)
+
+                # prebuild name->spec and name->class_id
+                name_to_spec = {nm: db_map[nm]["spec"] for nm in chosen if nm in db_map}
+                name_to_cid = {nm: db_map[nm]["id"] for nm in chosen if nm in db_map}
+
+                for nm in chosen:
+                    cls_spec = name_to_spec[nm]
+                    cid = name_to_cid.get(nm)
+                    for j in range(int(gen_copies)):
+                        inst = generate_instance_from_class(cls_spec, j)
+                        payload = sanitize_json(
+                            {
+                                "period": int(inst["period"]),
+                                "manual_capacity": inst.get("manual_capacity"),
+                                "warehouse_capacity": inst.get("warehouse_capacity"),
+                                "data": to_py(inst),
+                                "class_id": cid,
+                            }
+                        )
+                        try:
+                            sbx.table("instances").insert(payload).execute()
+                        except Exception as e:
+                            st.warning(f"Insert failed for {nm} copy {j+1}: {e}")
+                        done += 1
+                        prog.progress(done / total, text=f"Generating… {done}/{total}")
+
+                st.success(f"Generated {total} instance(s) with no solve.")
 
     # ---------- Local presets (in code) ----------
     lp_map = st.session_state.get("local_presets", {})
@@ -1633,6 +1810,9 @@ with classes_tab:
     # use keyed ui_params
     c_params = ui_params("c", c_mode, {"value": 2.0}, key_base="cls_c")
     h_params = ui_params("h", h_mode, {"value": 0.4}, key_base="cls_h")
+
+    # s_params special case for "tbo"
+
     if s_mode == "tbo":
         st.markdown("**Setup from TBO target**")
 
@@ -1666,7 +1846,19 @@ with classes_tab:
             step=1.0,
             key="cls_tbo_jit",
         )
-        s_params = {"L": float(tbo_L), "jitter_pct": float(tbo_jit)}
+
+        per_period = st.checkbox(
+            "Per-period jitter",
+            value=st.session_state.get("cls_tbo_per_period", True),  # ✅ default True
+            key="cls_tbo_per_period",
+            help="If on, TBO setup is stored as an array with one jittered value per period.",
+        )
+
+        s_params = {
+            "L": float(tbo_L),
+            "jitter_pct": float(tbo_jit),
+            "per_period": bool(per_period),
+        }
     else:
         s_params = ui_params(
             "s", s_mode, {"base": 80.0, "amp": 0.10, "period": 30.0}, key_base="cls_s"
@@ -1911,155 +2103,6 @@ with batch_tab:
     if sb is not None:
         for cls in st.session_state["classes"]:
             class_id_cache[cls["name"]] = ensure_class_row(sb, cls)
-
-    def generate_cap_series(
-        period: int, mode: str, params: dict, seed: int
-    ) -> List[int]:
-        g = rng(seed)
-        if mode == "Constant":
-            return [int(params.get("value", 10000))] * period
-
-        if mode == "Uniform":
-            lo, hi = int(params.get("lo", 9000)), int(params.get("hi", 11000))
-            # cast each element to builtin int
-            return [int(x) for x in g.integers(lo, hi + 1, size=period)]
-
-        # Normal
-        mu, sd = float(params.get("mean", 10000)), float(params.get("std", 500))
-        clip_lo, clip_hi = float(params.get("clip_lo", 0)), float(
-            params.get("clip_hi", 2 * mu)
-        )
-        arr = (
-            clip_list(g.normal(mu, sd, size=period), clip_lo, clip_hi)
-            .round()
-            .astype(int)
-        )
-        return [int(x) for x in arr]  # cast to builtin ints
-
-    # --- generate_instance_from_class
-    def generate_instance_from_class(cls: dict, j: int) -> dict:
-        period = int(cls["period"])
-        zero_head = int(cls.get("zero_head", 0))
-        rng_local = np.random.default_rng(int(cls["seed_base"] + 31 * j))
-
-        items = {}
-        total_by_t = np.zeros(period, dtype=float)
-
-        for i in range(cls["n_items"]):
-            seed_k = int(cls["seed_base"] + 1000 * j + 17 * i)
-
-            # demand
-            D = list(
-                np.random.default_rng(seed_k).integers(
-                    int(cls["dem_lo"]), int(cls["dem_hi"]) + 1, size=period
-                )
-            )
-            if zero_head > 0:
-                for z in range(min(zero_head, period)):
-                    D[z] = 0
-
-            # shelf life
-            Mseq = list(
-                np.random.default_rng(seed_k + 1).integers(
-                    int(cls["m_lo"]), int(cls["m_hi"]) + 1, size=period
-                )
-            )
-
-            # c, h sequences or scalar
-            c_seq = make_series(
-                cls["c_mode"], period, dict(cls["c_params"] or {}), seed_k + 2
-            )
-            h_seq = make_series(
-                cls["h_mode"], period, dict(cls["h_params"] or {}), seed_k + 3
-            )
-            c_out = (
-                float(cls["c_params"].get("value", 0.0))
-                if cls["c_mode"] == "scalar"
-                else [float(x) for x in c_seq]
-            )
-            h_out = (
-                float(cls["h_params"].get("value", 0.0))
-                if cls["h_mode"] == "scalar"
-                else [float(x) for x in h_seq]
-            )
-
-            # setup (support TBO)
-            if cls["s_mode"] == "tbo":
-                # h average for this item
-                h_avg = (
-                    float(h_out) if isinstance(h_out, float) else float(np.mean(h_out))
-                )
-                d_avg = float(np.mean(D)) if len(D) else 0.0
-                L_raw = float(cls["s_params"].get("L", 2.0))
-                L = max(0.1, L_raw if math.isfinite(L_raw) else 2.0)
-                jitter_pct = float(
-                    cls["s_params"].get("jitter_pct", SETUP_TBO_JITTER_DEFAULT)
-                )
-                base_s = 0.5 * h_avg * d_avg * (L**2)
-                if base_s <= 0:
-                    base_s = 1e-6
-                jitter = 1.0 + rng_local.uniform(
-                    -jitter_pct / 100.0, jitter_pct / 100.0
-                )
-                s_out = float(base_s * jitter)  # scalar setup
-            else:
-                s_seq = make_series(
-                    cls["s_mode"], period, dict(cls["s_params"] or {}), seed_k + 4
-                )
-                s_out = (
-                    float(cls["s_params"].get("value", 0.0))
-                    if cls["s_mode"] == "scalar"
-                    else [float(x) for x in s_seq]
-                )
-
-            items[str(i)] = {
-                "demand": [int(x) for x in D],
-                "setup": s_out,
-                "c_var": c_out,
-                "h": h_out,
-                "b_var": 0.0,
-                "shelf_seq": [int(x) for x in Mseq],
-            }
-            total_by_t += np.array(D, dtype=float)
-
-        # capacity
-        cap_mode = cls.get("cap_mode", "Uniform")
-        if cap_mode == "DemandBased":
-            beta = CAP_TIGHT_BETAS.get(cls.get("cap_tight") or "Medium", 0.60)
-            mean_total = float(np.mean(total_by_t)) if period > 0 else 0.0
-            base_cap = max(0, int(round(beta * mean_total)))
-
-            # NEW: small per-period jitter (defaults to 3% if not specified)
-            jit_pct = float((cls.get("cap_params") or {}).get("jitter_pct", 3.0))
-            if jit_pct > 0:
-                g = np.random.default_rng(int(cls["seed_base"] + 31 * j + 7))
-                noise = g.uniform(-jit_pct / 100.0, jit_pct / 100.0, size=period)
-                cap = np.maximum(
-                    0, np.round(base_cap * (1.0 + noise)).astype(int)
-                ).tolist()
-            else:
-                cap = [base_cap] * period
-        else:
-            cap = generate_cap_series(
-                period, cap_mode, cls.get("cap_params") or {}, cls["seed_base"] + 31 * j
-            )
-
-        inst = {
-            "period": period,
-            "items": items,
-            "manual_capacity": [int(x) for x in cap],
-            "warehouse_capacity": (float(W_txt) if W_txt.strip() != "" else None),
-            "allow_unmet_demand": bool(cls.get("allow_unmet_demand", False)),
-            "lost_sales_penalty_factor": float(
-                cls.get("lost_sales_penalty_factor", 200.0)
-            ),
-            "meta": {
-                "origin": "class",
-                "class_key": cls["name"],
-                "class_params": cls,
-            },
-        }
-        return inst
 
     # -----------------------------------------------------------------------------
 
@@ -2668,8 +2711,8 @@ with saved_run_tab:
     class_choices = ["<ALL>", "<ADHOC (NULL)>"] + sorted(db_map.keys())
     pick_cls = st.selectbox("Filter by class", class_choices, index=0)
 
-    # limit + refresh
-    c1, c2, _ = st.columns([1, 1, 1])
+    # limit + refresh + page size + ALL
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
     with c1:
         inst_limit = st.number_input(
             "Fetch last N instances",
@@ -2679,54 +2722,25 @@ with saved_run_tab:
             key="saved_run_limit",
         )
     with c2:
+        page_size = st.number_input(
+            "Page size",
+            min_value=50,
+            value=200,
+            step=50,
+            help="Smaller = safer; larger = faster",
+            key="saved_run_pagesize",
+        )
+    with c3:
+        load_all = st.checkbox(
+            "Load ALL (keyset)",
+            value=False,
+            help="Fetches every matching instance by paging until empty.",
+        )
+    with c4:
         if st.button("🔄 Refresh instances"):
-            try:
-                st.rerun()
-            except Exception:
-                st.rerun()
+            st.rerun()
 
-    # keyset pagination helper
-    def fetch_instances_keyset(sb_client: Client, total: int, class_name: str | None):
-        out, last_seen = [], None
-        page_size = 1000
-        # map class name -> id (if needed)
-        cls_id = None
-        if class_name and class_name in db_map:
-            cls_id = db_map[class_name]["id"]
-        while len(out) < total:
-            need = min(page_size, total - len(out))
-            q = (
-                sb_client.table("instances_enriched")
-                .select("id,ins_id,created_at,period,class_id,manual_capacity,data")
-                .order("created_at", desc=True)
-            )
-            if last_seen is not None:
-                q = q.lt("created_at", last_seen)
-            if class_name == "<ADHOC (NULL)>":
-                q = q.is_("class_id", None)
-            elif cls_id:
-                q = q.eq("class_id", cls_id)
-            batch = q.limit(need).execute().data
-            if not batch:
-                break
-            out.extend(batch)
-            last_seen = batch[-1]["created_at"]
-        return out
-
-    class_name_filter = None if pick_cls == "<ALL>" else pick_cls
-    instances = fetch_instances_keyset(sb, int(inst_limit), class_name_filter)
-
-    if not instances:
-        st.info("No instances match the filter.")
-        st.stop()
-
-    # -------- small table (+ pretty instance labels) --------
-    def _safe_len_items(row):
-        try:
-            return len((row.get("data") or {}).get("items") or {})
-        except Exception:
-            return None
-
+    # -------- helpers --------
     def _class_of(row):
         if row.get("class_id"):
             return next(
@@ -2734,37 +2748,142 @@ with saved_run_tab:
             )
         return "adhoc"
 
+    def _n_items(row):
+        v = row.get("n_items")
+        if v is None:
+            return None
+        try:
+            return int(v)
+        except Exception:
+            return None
+
+    # Fast keyset pagination over base table; then backfill ins_id/n_items from the view.
+    def fetch_instances_keyset(
+        sb_client: Client, total: int | None, class_name: str | None, page_sz: int = 200
+    ):
+        out, last_id = [], None
+
+        # map class name -> id once
+        cls_id = None
+        if class_name and class_name in db_map:
+            cls_id = db_map[class_name]["id"]
+
+        base_select = "id,created_at,period,class_id"
+        fetched = 0
+        while True:
+            need = page_sz if (total is None) else min(page_sz, max(0, total - fetched))
+            if need == 0:
+                break
+
+            q = sb_client.table("instances").select(base_select).order("id", desc=True)
+            if last_id is not None:
+                q = q.lt("id", last_id)  # keyset by id
+
+            if class_name == "<ADHOC (NULL)>":
+                q = q.is_("class_id", None)
+            elif cls_id:
+                q = q.eq("class_id", cls_id)
+
+            batch = q.limit(need).execute().data or []
+            if not batch:
+                break
+            out.extend(batch)
+            fetched += len(batch)
+            last_id = batch[-1]["id"]
+
+            # if total is None we keep going until empty; otherwise stop when we hit the cap
+            if total is not None and fetched >= total:
+                break
+
+        # backfill ins_id & n_items cheaply from the view
+        if out:
+            ids = [r["id"] for r in out]
+            CH = 400
+            meta_map = {}
+            for k in range(0, len(ids), CH):
+                part = ids[k : k + CH]
+                vv = (
+                    sb_client.table("instances_enriched")
+                    .select("id,ins_id")  # ← drop n_items here
+                    .in_("id", part)
+                    .execute()
+                    .data
+                    or []
+                )
+                for v in vv:
+                    meta_map[v["id"]] = {"ins_id": v.get("ins_id")}
+
+            for r in out:
+                m = meta_map.get(r["id"], {})
+                r["ins_id"] = m.get("ins_id")
+                r["n_items"] = None  # ← safe default (not shown)
+        return out
+
+    # tiny helper: fetch JSON for a list of instance ids (chunked)
+    def fetch_instances_json_map(sb_client: Client, ids: list[str]) -> dict[str, dict]:
+        m: dict[str, dict] = {}
+        if not ids:
+            return m
+        CH = 200
+        for k in range(0, len(ids), CH):
+            sub = ids[k : k + CH]
+            part = (
+                sb_client.table("instances")
+                .select("id,data")
+                .in_("id", sub)
+                .execute()
+                .data
+                or []
+            )
+            for row in part:
+                m[row["id"]] = row.get("data") or {}
+        return m
+
+    # -------- fetch rows (ALL or limited) --------
+    class_name_filter = None if pick_cls == "<ALL>" else pick_cls
+    with st.spinner("Loading instances..."):
+        if load_all:
+            instances = fetch_instances_keyset(
+                sb, None, class_name_filter, page_sz=int(page_size)
+            )
+        else:
+            instances = fetch_instances_keyset(
+                sb, int(inst_limit), class_name_filter, page_sz=int(page_size)
+            )
+
+    if not instances:
+        st.info("No instances match the filter.")
+        st.stop()
+
+    # -------- present table --------
     dfI = pd.DataFrame(
         [
             {
                 "instance_id": r["id"],
                 "ins_id": r.get("ins_id"),
-                "instance": _ins_label(r.get("ins_id")),  # ← ins#N
+                "instance": _ins_label(r.get("ins_id")),
                 "created_at": r["created_at"],
                 "class": _class_of(r),
                 "period": r.get("period"),
-                "n_items": _safe_len_items(r),
+                "n_items": _n_items(r),
             }
             for r in instances
         ]
     )
-
-    # Show nice columns (hide the UUID by default)
     st.dataframe(
         dfI[["instance", "created_at", "class", "period", "n_items"]],
         use_container_width=True,
-        height=300,
+        height=320,
     )
 
     # -------- choose which instances to run (pretty labels) --------
-    # Build "ins#N × class" labels mapped to real UUIDs
     opt_pairs = [
         (f"{_ins_label(r.get('ins_id'))} × {_class_of(r)}", r["id"]) for r in instances
     ]
     label_to_id = {lbl: iid for lbl, iid in opt_pairs}
 
     pick_labels = st.multiselect(
-        "Pick specific instances (leave empty to use ALL loaded above)",
+        "Pick specific instances (leave empty to run ALL loaded above)",
         options=[lbl for lbl, _ in opt_pairs],
     )
 
@@ -2795,14 +2914,17 @@ with saved_run_tab:
             st.info("Nothing to run with current selections.")
             st.stop()
 
+        # fetch JSON for selected instances once (chunked)
+        inst_json_map = fetch_instances_json_map(sb, ids_to_run)
+
         prog = st.progress(0.0, text="Running saved instances...")
         done = 0
-        created_run_ids: list[str] = []  # ← collect run_ids we just created
+        created_run_ids: list[str] = []
 
         from datetime import datetime, timezone, timedelta
 
         for r in rows:
-            inst_json = r.get("data") or {}
+            inst_json = inst_json_map.get(r["id"]) or {}
             # write temp json for solver I/O
             tmp_path = Path("tmp_instance_saved.json")
             tmp_path.write_text(
@@ -2810,17 +2932,13 @@ with saved_run_tab:
             )
 
             for label in multi_solver_labels:
-                # Resolve backend with safe fallback, skip if none importable
                 entry = SOLVER_REGISTRY.get(label) or SOLVER_REGISTRY.get(
                     "LEFO v2 (permission-based)", {}
                 )
                 solve_fn = (entry or {}).get("fn")
                 solver_tag = (entry or {}).get("tag", "unknown")
                 if solve_fn is None:
-                    st.warning(
-                        f"Skipping '{label}': backend not importable. "
-                        "Install/enable the solver module or pick another backend."
-                    )
+                    st.warning(f"Skipping '{label}': backend not importable.")
                     done += 1
                     prog.progress(
                         done / total, text=f"Running saved instances... {done}/{total}"
@@ -2853,31 +2971,27 @@ with saved_run_tab:
                         }
                     )
 
-                    # Record a lower bound on created_at (UTC) BEFORE hitting insert
+                    # lower bound on created_at (UTC) BEFORE insert
                     t0 = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
 
-                    # Robust insert: request returning rows if supported; fallback otherwise
+                    # insert + robust fallback to select just-inserted id
                     run_res = None
                     run_id = None
                     try:
-                        # supabase-py >=2 supports returning="representation"
                         run_res = (
                             sb.table("runs")
                             .insert(run_payload, returning="representation")
                             .execute()
                         )
                     except TypeError:
-                        # Older clients: no 'returning' kwarg
                         run_res = sb.table("runs").insert(run_payload).execute()
 
-                    # Primary path: use returned data if available
                     if run_res and getattr(run_res, "data", None):
                         try:
                             run_id = run_res.data[0]["id"]
                         except Exception:
                             run_id = None
 
-                    # Fallback: fetch the row we just inserted
                     if not run_id:
                         try:
                             sel = (
@@ -2895,7 +3009,6 @@ with saved_run_tab:
                             if sel and sel.data:
                                 run_id = sel.data[0]["id"]
                         except Exception:
-                            # swallow; handled below
                             run_id = None
 
                     if not run_id:
@@ -2903,7 +3016,7 @@ with saved_run_tab:
                             "Insert succeeded but no run_id returned; could not resolve via fallback select."
                         )
 
-                    created_run_ids.append(run_id)  # ← track it
+                    created_run_ids.append(run_id)
 
                     # parse orders and chunk insert
                     rows_ord = [
@@ -2927,7 +3040,7 @@ with saved_run_tab:
 
         st.success("Saved instances run complete.")
 
-        # ============ NEW: “batch” logic copied from Explore (≥ 2h gaps) ============
+        # ============  “batch” logic copied from Explore (≥ 1h gaps) ============
         try:
             if created_run_ids:
                 # 1) Pull just-created runs
@@ -3063,6 +3176,498 @@ with saved_run_tab:
                     st.dataframe(cnt, use_container_width=True)
         except Exception as e:
             st.caption(f"Batch summary unavailable: {e}")
+
+    # === NEW: X-coded tools (generate only, queue & run, download) ===
+    with st.expander(
+        "X-coded tools: generate instances (no solve), queue & run, download",
+        expanded=False,
+    ):
+        import re, io, zipfile
+
+        # --- Local, non-intrusive helper: parse X-codes X A B C D E F (F can be 1..12) ---
+        _x_pat_local = re.compile(r"^X(\d+)$")
+
+        def _x_digits_local(name: str):
+            m = _x_pat_local.match(str(name))
+            if not m:
+                return None
+            s = m.group(1)
+            if len(s) < 6:
+                return None
+            A, B, C, D, E = s[0], s[1], s[2], s[3], s[4]
+            F = s[5:]
+            if A not in {"1", "2", "3"}:
+                return None
+            if B not in {"1", "2", "3"}:
+                return None
+            if C not in {"1", "2"}:
+                return None
+            if D not in {"1", "2"}:
+                return None
+            if E not in {"1", "2", "3", "4", "5"}:
+                return None
+            if not (F.isdigit() and 1 <= int(F) <= 12):
+                return None
+            return (A, B, C, D, E, F)
+
+        # --- Gather all X-coded class names present in DB ---
+        x_names_all = [n for n in db_map.keys() if _x_digits_local(n)]
+        st.caption(f"Found **{len(x_names_all)}** X-coded classes in Supabase.")
+
+        # --- A..F include/exclude filters (persist in session) ---
+        POS = ["A", "B", "C", "D", "E", "F"]
+        CHOICES = {
+            "A": [str(i) for i in (1, 2, 3)],
+            "B": [str(i) for i in (1, 2, 3)],
+            "C": [str(i) for i in (1, 2)],
+            "D": [str(i) for i in (1, 2)],
+            "E": [str(i) for i in (1, 2, 3, 4, 5)],
+            "F": [str(i) for i in range(1, 13)],
+        }
+        for p in POS:
+            st.session_state.setdefault(f"x_inc_{p}_saved", [])
+            st.session_state.setdefault(f"x_exc_{p}_saved", [])
+
+        ccols = st.columns(6)
+        for idx, p in enumerate(POS):
+            with ccols[idx]:
+                st.session_state[f"x_inc_{p}_saved"] = st.multiselect(
+                    f"Include {p}",
+                    options=CHOICES[p],
+                    default=st.session_state[f"x_inc_{p}_saved"],
+                    key=f"x_inc_ms_saved_{p}",
+                )
+                st.session_state[f"x_exc_{p}_saved"] = st.multiselect(
+                    f"Exclude {p}",
+                    options=CHOICES[p],
+                    default=st.session_state[f"x_exc_{p}_saved"],
+                    key=f"x_exc_ms_saved_{p}",
+                )
+
+        def _match_x_filters(name: str) -> bool:
+            tup = _x_digits_local(name)
+            if not tup:
+                return False
+            for pos_idx, p in enumerate(POS):
+                d = tup[pos_idx]
+                inc = set(st.session_state.get(f"x_inc_{p}_saved", []))
+                exc = set(st.session_state.get(f"x_exc_{p}_saved", []))
+                if inc and d not in inc:
+                    return False
+                if d in exc:
+                    return False
+            return True
+
+        x_selected = [n for n in x_names_all if _match_x_filters(n)]
+        st.write(f"**Selected X classes:** {len(x_selected)}")
+        if x_selected:
+            st.caption(
+                ", ".join(sorted(x_selected)[:12])
+                + (" …" if len(x_selected) > 12 else "")
+            )
+
+        st.markdown("---")
+
+        # ========== 1) Generate instances for selected X-classes (no solve) ==========
+        gen_n = st.number_input(
+            "Instances per selected class to GENERATE (no solve)",
+            min_value=1,
+            value=5,
+            step=1,
+            key="x_gen_n",
+        )
+        if st.button("➕ Generate to Supabase (no solve)", key="btn_x_gen"):
+            if not x_selected:
+                st.warning("No X classes selected by filters.")
+            else:
+                total = len(x_selected) * int(gen_n)
+                prog = st.progress(0.0, text="Generating...")
+                done, saved = 0, 0
+                for cname in x_selected:
+                    cls_row = db_map.get(cname)
+                    if not cls_row:
+                        continue
+                    cls_spec = cls_row.get("spec") or {}
+                    class_id = cls_row.get("id")
+                    # use time-based j offset to avoid deterministic duplicates on repeated clicks
+                    j_base = int(time.time())
+                    for j in range(int(gen_n)):
+                        try:
+                            inst = generate_instance_from_class(cls_spec, j_base + j)
+                            payload = sanitize_json(
+                                {
+                                    "period": int(inst["period"]),
+                                    "manual_capacity": inst.get("manual_capacity"),
+                                    "warehouse_capacity": inst.get(
+                                        "warehouse_capacity"
+                                    ),
+                                    "data": to_py(inst),
+                                    "class_id": class_id,
+                                }
+                            )
+                            sb.table("instances").insert(payload).execute()
+                            saved += 1
+                        except Exception as e:
+                            st.warning(f"[{cname}] insert failed (j={j}): {e}")
+                        finally:
+                            done += 1
+                            prog.progress(
+                                done / total, text=f"Generating... {done}/{total}"
+                            )
+                st.success(
+                    f"Generated and saved **{saved}** instance(s). Click 'Refresh instances' above to see them."
+                )
+
+        st.markdown("---")
+
+        # Helper: fetch ALL instances for a list of class_ids (keyset pagination)
+        def _fetch_all_instances_for_class_ids(
+            sb_client: Client, class_ids: list[str]
+        ) -> list[dict]:
+            out = []
+            for cid in class_ids:
+                last_seen = None
+                while True:
+                    q = (
+                        sb_client.table("instances_enriched")
+                        .select("id,ins_id,created_at,period,class_id,data")
+                        .eq("class_id", cid)
+                        .order("created_at", desc=True)
+                        .limit(1000)
+                    )
+                    if last_seen is not None:
+                        q = q.lt("created_at", last_seen)
+                    batch = (q.execute().data) or []
+                    if not batch:
+                        break
+                    out.extend(batch)
+                    last_seen = batch[-1]["created_at"]
+            return out
+
+        # ========== 2) Queue & run all instances for selected X-classes ==========
+        st.subheader("Run a batch for selected X-classes")
+        x_solver_labels = st.multiselect(
+            "Solvers to run (X-batch)",
+            options=list(SOLVER_REGISTRY.keys()),
+            default=[
+                st.session_state.get("solver_backend_label")
+                or "LEFO v2 (permission-based)"
+            ],
+            key="x_solver_labels",
+        )
+        x_run_source = st.radio(
+            "Which instances to include?",
+            [
+                "Use instances loaded above",
+                "Fetch ALL from Supabase for selected X classes",
+            ],
+            index=0,
+            key="x_run_source",
+        )
+
+        if st.button(
+            "🚀 Run ALL instances for selected X classes", key="btn_x_run_all"
+        ):
+            if not x_selected:
+                st.warning("No X classes selected by filters.")
+            elif not x_solver_labels:
+                st.warning("Pick at least one solver.")
+            else:
+                # Build the rows set
+                if x_run_source.startswith("Use instances loaded"):
+                    rows_to_run = [
+                        r for r in instances if _class_of(r) in set(x_selected)
+                    ]
+                    # NEW: the lightweight "instances" rows have no data JSON → fetch it
+                    ids = [r["id"] for r in rows_to_run]
+                    inst_json_map = fetch_instances_json_map(sb, ids)
+                else:
+                    class_ids = [db_map[n]["id"] for n in x_selected if n in db_map]
+                    rows_to_run = _fetch_all_instances_for_class_ids(sb, class_ids)
+                    inst_json_map = {}  # rows from this branch already include "data"
+
+                if not rows_to_run:
+                    st.info(
+                        "No instances found for the selected X classes with current source."
+                    )
+                else:
+                    total = len(rows_to_run) * len(x_solver_labels)
+                    prog = st.progress(0.0, text="Running X-batch...")
+                    done = 0
+                    from datetime import datetime, timezone, timedelta
+
+                    created_run_ids_x: list[str] = []
+
+                    # Solve (same pattern as your run_btn logic, kept local to avoid touching existing code)
+                    for r in rows_to_run:
+
+                        # Prefer prefetched JSON (loaded-branch), otherwise use row['data']
+                        inst_json = inst_json_map.get(r["id"]) or r.get("data") or {}
+                        if "period" not in inst_json:
+                            st.warning(
+                                f"Skipping instance {r.get('id')} (no JSON/period)."
+                            )
+                            done += 1
+                            prog.progress(
+                                done / total, text=f"Running X-batch... {done}/{total}"
+                            )
+                            continue
+
+                        tmp_path = Path("tmp_instance_saved_x.json")
+                        tmp_path.write_text(
+                            json.dumps(to_py(inst_json), indent=2), encoding="utf-8"
+                        )
+
+                        for label in x_solver_labels:
+                            entry = SOLVER_REGISTRY.get(label) or SOLVER_REGISTRY.get(
+                                "LEFO v2 (permission-based)", {}
+                            )
+                            solve_fn = (entry or {}).get("fn")
+                            solver_tag = (entry or {}).get("tag", "unknown")
+                            if solve_fn is None:
+                                st.warning(
+                                    f"Skipping '{label}': backend not importable."
+                                )
+                                done += 1
+                                prog.progress(
+                                    done / total,
+                                    text=f"Running X-batch... {done}/{total}",
+                                )
+                                continue
+
+                            summary, orders_txt = solve_fn(
+                                str(tmp_path),
+                                time_limit=time_limit,
+                                mip_gap=mip_gap,
+                            )
+
+                            try:
+                                run_payload = sanitize_json(
+                                    {
+                                        "instance_id": r["id"],
+                                        "class_id": r.get("class_id"),
+                                        "time_limit_sec": int(time_limit),
+                                        "mip_gap": _safe_float(mip_gap),
+                                        "status": (
+                                            int(summary.get("status"))
+                                            if summary.get("status") is not None
+                                            else None
+                                        ),
+                                        "objective": _safe_float(
+                                            summary.get("objective")
+                                        ),
+                                        "best_bound": _safe_float(
+                                            summary.get("best_bound")
+                                        ),
+                                        "gap": _safe_float(summary.get("gap")),
+                                        "runtime_sec": _safe_float(
+                                            summary.get("runtime_sec")
+                                        ),
+                                        "solver_version": solver_tag,
+                                    }
+                                )
+
+                                t0 = (
+                                    datetime.now(timezone.utc) - timedelta(seconds=5)
+                                ).isoformat()
+                                run_res = None
+                                run_id = None
+                                try:
+                                    run_res = (
+                                        sb.table("runs")
+                                        .insert(run_payload, returning="representation")
+                                        .execute()
+                                    )
+                                except TypeError:
+                                    run_res = (
+                                        sb.table("runs").insert(run_payload).execute()
+                                    )
+
+                                if run_res and getattr(run_res, "data", None):
+                                    try:
+                                        run_id = run_res.data[0]["id"]
+                                    except Exception:
+                                        run_id = None
+
+                                if not run_id:
+                                    try:
+                                        sel = (
+                                            sb.table("runs")
+                                            .select("id,created_at")
+                                            .eq("instance_id", r["id"])
+                                            .eq("solver_version", solver_tag)
+                                            .eq("time_limit_sec", int(time_limit))
+                                            .eq("mip_gap", _safe_float(mip_gap))
+                                            .gte("created_at", t0)
+                                            .order("created_at", desc=True)
+                                            .limit(1)
+                                            .execute()
+                                        )
+                                        if sel and sel.data:
+                                            run_id = sel.data[0]["id"]
+                                    except Exception:
+                                        run_id = None
+
+                                if not run_id:
+                                    raise RuntimeError(
+                                        "Insert succeeded but no run_id returned; fallback select failed."
+                                    )
+
+                                created_run_ids_x.append(run_id)
+
+                                # orders insert
+                                rows_ord = [
+                                    {"run_id": run_id, **row}
+                                    for row in parse_orders_lines(orders_txt)
+                                ]
+                                if rows_ord:
+                                    CH = 500
+                                    for k in range(0, len(rows_ord), CH):
+                                        sb.table("orders").insert(
+                                            rows_ord[k : k + CH]
+                                        ).execute()
+
+                            except Exception as e:
+                                st.warning(
+                                    f"Supabase logging failed (instance {r['id']} / {label}): {e}"
+                                )
+
+                            done += 1
+                            prog.progress(
+                                done / total,
+                                text=f"Running X-batch... {done}/{total}",
+                            )
+
+                    st.success("X-batch run complete.")
+
+        st.markdown("---")
+
+        # ========== 3) Download all chosen X instances as ZIP (CHOSEN/<class>/<file>.json) ==========
+        st.subheader("Download selected X instances")
+
+        # Extra options for saving locally and progress feedback
+        save_to_disk = st.checkbox(
+            "Also save CHOSEN.zip to local disk",
+            value=False,
+            help="Writes the ZIP beside your Streamlit script on the host machine.",
+            key="x_zip_save_disk",
+        )
+        zip_filename_input = st.text_input(
+            "Output filename",
+            value="CHOSEN.zip",
+            disabled=not save_to_disk,
+            key="x_zip_filename",
+        )
+
+        x_dl_source = st.radio(
+            "Which instances to include in ZIP?",
+            [
+                "Use instances loaded above",
+                "Fetch ALL from Supabase for selected X classes",
+            ],
+            index=0,
+            key="x_dl_source",
+        )
+
+        if st.button("⬇️ Build ZIP (CHOSEN.zip)", key="btn_x_zip"):
+            import re, io, zipfile, time, unicodedata
+
+            def _safe_name(s: str) -> str:
+                # ASCII-ish and filesystem-safe (and short)
+                s = unicodedata.normalize("NFKD", str(s))
+                s = s.encode("ascii", "ignore").decode("ascii")
+                s = re.sub(r"[^A-Za-z0-9_.-]", "_", s)
+                return s[:120] or "file"
+
+            if not x_selected:
+                st.warning("No X classes selected by filters.")
+            else:
+                # Determine rows to include
+                if x_dl_source.startswith("Use instances loaded"):
+                    rows_src = [r for r in instances if _class_of(r) in set(x_selected)]
+                else:
+                    class_ids = [db_map[n]["id"] for n in x_selected if n in db_map]
+                    rows_src = _fetch_all_instances_for_class_ids(sb, class_ids)
+
+                if not rows_src:
+                    st.info(
+                        "No instances found for the selected X classes with current source."
+                    )
+                else:
+                    # Prefetch missing JSON in bulk (avoid N round-trips)
+                    missing_ids = [r["id"] for r in rows_src if not r.get("data")]
+                    data_map = (
+                        fetch_instances_json_map(sb, missing_ids) if missing_ids else {}
+                    )
+
+                    total = len(rows_src)
+                    prog = st.progress(0.0, text="Zipping instances...")
+                    added = 0
+                    by_class = {}
+
+                    buf = io.BytesIO()
+                    with zipfile.ZipFile(
+                        buf, "w", compression=zipfile.ZIP_DEFLATED
+                    ) as zf:
+                        for idx, r in enumerate(rows_src, start=1):
+                            cls_name = _class_of(r)
+                            data = r.get("data") or data_map.get(r["id"])
+                            if not data:
+                                # skip rows with no data
+                                prog.progress(
+                                    idx / total, text=f"Zipping… {idx}/{total}"
+                                )
+                                continue
+
+                            ins_label = _ins_label(r.get("ins_id"))
+                            base = (
+                                ins_label
+                                if ins_label and ins_label != "—"
+                                else str(r["id"])[:8]
+                            )
+
+                            rel_path = (
+                                f"CHOSEN/{_safe_name(cls_name)}/{_safe_name(base)}.json"
+                            )
+                            zf.writestr(rel_path, json.dumps(to_py(data), indent=2))
+                            added += 1
+                            by_class[cls_name] = by_class.get(cls_name, 0) + 1
+                            prog.progress(idx / total, text=f"Zipping… {idx}/{total}")
+
+                    buf.seek(0)
+
+                    # Optional: persist to disk on the Streamlit host
+                    if save_to_disk:
+                        try:
+                            with open(zip_filename_input or "CHOSEN.zip", "wb") as f:
+                                f.write(buf.getbuffer())
+                            st.success(
+                                f"Saved to **{zip_filename_input or 'CHOSEN.zip'}** on disk."
+                            )
+                        except Exception as e:
+                            st.warning(f"Could not save to disk: {e}")
+
+                    # Always offer browser download (unique key avoids stale caching)
+                    st.download_button(
+                        "Download ZIP (CHOSEN)",
+                        data=buf.getvalue(),
+                        file_name="CHOSEN.zip",
+                        mime="application/zip",
+                        key=f"dl_zip_{int(time.time())}",
+                    )
+
+                    # Tiny summary
+                    if added == 0:
+                        st.info(
+                            "ZIP created but no JSON files were added (no data found)."
+                        )
+                    else:
+                        parts = ", ".join(
+                            f"{k}: {v}" for k, v in sorted(by_class.items())
+                        )
+                        st.caption(
+                            f"ZIP includes **{added}** JSON files across classes → {parts}"
+                        )
 
 # ----------------- Explore & Visualize tab -----------------
 
