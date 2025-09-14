@@ -273,7 +273,6 @@ def solve_instance(
         Ciu = float(items_raw[i]["demand"][u])
         m.addConstr(X[i, t, u] <= Ciu * Z[i, t, u], name=f"arc_on_{i}_{t}_{u}")
 
-    # ---- LEFO via permission (suffix-OR) variables; exact pairwise equivalence ----
     # build S[i,t2,u] once
     S = {}
     for ii in items_raw:
