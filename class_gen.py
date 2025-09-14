@@ -11,7 +11,7 @@ from typing import Dict, Tuple, Iterable
 #   C: 1→Loose, 2→Medium
 #   V: 1→CV low (0–125), 2→CV high (0–200)
 #   M: 1→(1,10), 2→(5,15), 3→(10,20), 4→(5,25), 5→(10,30)
-#   L: 1..10  (TBO L as float)
+#   L: 1..12  (TBO L as float)
 # ---------------------------
 
 PERIOD_MAP: Dict[int, int] = {1: 20, 2: 30, 3: 40}

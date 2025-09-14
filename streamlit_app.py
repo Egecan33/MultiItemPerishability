@@ -40,7 +40,7 @@ SOLVER_REGISTRY = {
 HOUR_GAP_FOR_BATCH = 1  # hours gap in created_at to start a new batch
 
 # ==== X-code helpers (shared) ====
-_x_pat = re.compile(r"^[Xx](\d+)$")
+_x_pat = re.compile(r"^[Xx]([A-Za-z0-9]+)$")
 
 
 def _x_digits(name: str):
@@ -58,7 +58,7 @@ def _x_digits(name: str):
         return None
     if C not in {"1", "2"}:
         return None
-    if D not in {"1", "2"}:
+    if D not in {"1", "2", "L", "H"}:
         return None
     if E not in {"1", "2", "3", "4", "5"}:
         return None
@@ -1314,7 +1314,7 @@ with classes_tab:
         | A | period **T** (also sets `zero_head`) | 1→20 (`zero_head`=2), 2→30 (3), 3→40 (4) |
         | B | **#items** (`n_items`) | 1→10, 2→20, 3→30 |
         | C | capacity tightness (`cap_tight`) | 1→Loose, 2→Tight |
-        | D | demand CV level (drives demand range) | 1→Low CV → `dem_hi`=125, 2→High CV → `dem_hi`=200 (both `dem_lo`=0) |
+        | D | demand CV level (drives demand range) | 1→Low CV → `dem_hi`=125, 2→High CV → `dem_hi`=200 (both `dem_lo`=0) , L low from folders / H high from folders |
         | E | shelf-life set (`m_lo`,`m_hi`) | 1→(1,10), 2→(5,15), 3→(10,20), 4→(5,25), 5→(10,30) |
         | F | TBO parameter (`s_params.L`) | integer **1..12** |
         """
@@ -3185,7 +3185,7 @@ with saved_run_tab:
         import re, io, zipfile
 
         # --- Local, non-intrusive helper: parse X-codes X A B C D E F (F can be 1..12) ---
-        _x_pat_local = re.compile(r"^X(\d+)$")
+        _x_pat_local = re.compile(r"^[Xx]([A-Za-z0-9]+)$")
 
         def _x_digits_local(name: str):
             m = _x_pat_local.match(str(name))
@@ -3202,7 +3202,7 @@ with saved_run_tab:
                 return None
             if C not in {"1", "2"}:
                 return None
-            if D not in {"1", "2"}:
+            if D not in {"1", "2", "L", "H"}:
                 return None
             if E not in {"1", "2", "3", "4", "5"}:
                 return None
@@ -3220,7 +3220,7 @@ with saved_run_tab:
             "A": [str(i) for i in (1, 2, 3)],
             "B": [str(i) for i in (1, 2, 3)],
             "C": [str(i) for i in (1, 2)],
-            "D": [str(i) for i in (1, 2)],
+            "D": ["1", "2", "L", "H"],
             "E": [str(i) for i in (1, 2, 3, 4, 5)],
             "F": [str(i) for i in range(1, 13)],
         }
