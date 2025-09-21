@@ -236,26 +236,6 @@ def solve_instance(
     for i, t, u in Triples:
         Ciu = float(items_raw[i]["demand"][u])
         m.addConstr(X[i, t, u] <= Ciu * Z[i, t, u], name=f"arc_on_{i}_{t}_{u}")
-    # (C5) No–crossing (LEFO, full pairwise form for equivalence)
-    # for i in items_raw:
-    #     prods = [t for t in Periods if Gamma.get((i, t))]
-    #     prods.sort(key=lambda t: Expiry[(i, t)])
-    #     for a in range(len(prods)):
-    #         t1 = prods[a]
-    #         v1 = Expiry[(i, t1)]
-    #         for b in range(a + 1, len(prods)):
-    #             t2 = prods[b]
-    #             v2 = Expiry[(i, t2)]
-    #             if v1 >= v2:
-    #                 continue
-    #             for up in Gamma[(i, t2)]:
-    #                 for u in Gamma[(i, t1)]:
-    #                     if u >= t2 and u < up:
-    #                         # block t1 at u if t2 is consumed at up
-    #                         m.addConstr(
-    #                             Z[i, t1, u] + Z[i, t2, up] <= 1,
-    #                             name=f"nocross_{i}_{t1}_{t2}_{u}_{up}",
-    #                         )
 
     # (C5) No--crossing (LEFO)
     for i in items_raw:

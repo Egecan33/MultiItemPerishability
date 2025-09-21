@@ -7,14 +7,17 @@ CV letters (L/H) while PRESERVING the capacity digit (C), and insert
 classes + instances into Supabase.
 
 X-code format used here (matches your legend, with CV letter):
-    X A B C V E F  -> example: X132H412
+    X A B C V E F  -> example: X132HA12
       | | | | | |
       | | | | | └─ F: TBO parameter L (1..12 default set)
-      | | | | └─── E: shelf-life group (1..5) → (m_lo, m_hi)
+      | | | | └─── E: shelf-life group (A/B/C) → (relative to T)
       | | | └───── V: demand CV (L=low, H=high)
       | | └─────── C: capacity tightness (1=Loose, 2=Medium)
       | └───────── B: #items (1→10, 2→20, 3→30)
       └─────────── A: periods (1→20, 2→30, 3→40)  (zero_head {20:2,30:3,40:4})
+
+Shelf-life modes (relative to period T):
+E=A: m ∈ [0, ⌊T/2⌋],  E=B: m ∈ [0, ⌊3T/4⌋],  E=C: m ∈ [5, ⌊T/2⌋].
 
 Demand library folder structure:
     <demand_lib_root>/<low|high>/<periods>/<items>/<original_or_synth>.txt
@@ -23,7 +26,7 @@ Each file stores an I×T integer matrix (rows=items, cols=periods).
 CLI highlights:
   - Parse raw dataset into the library: --dataset-root <540-root> --demand-lib-root <lib>
   - Insert ONE example class+instance: --create-example  (name becomes X111L11)
-  - Insert ALL combos (P∈1..3, N∈1..3, C∈{1,2}, V∈{L,H}, M∈1..5, L in list):
+  - Insert ALL combos (P∈1..3, N∈1..3, C∈{1,2}, V∈{L,H}, E∈{A,B,C}, L in list):
       --create-all --instances-per-class 5 --L-list 2,5,7,9,11,12 -y
   - No missing buckets: script synthesizes from 10×20 donors on the fly.
 
@@ -49,6 +52,13 @@ DEFAULT_SUPABASE_ANON = (
     "Y3NnanZncHV1dGl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU1NDMwODMsImV4cCI6MjA3MTExOTA4M30."
     "gissvSrKruPsYJOHOoLqfzQGLrB4oFVckVwhrUpGJXU"
 )
+
+# Encode E as letters in the class code; accept ints for API/backcompat
+E_CODE_MAP = {1: "A", 2: "B", 3: "C"}
+E_CODE_REV = {v: k for k, v in E_CODE_MAP.items()}
+
+# How to render E in the class NAME: "letters" or "digits"
+E_CODE_STYLE = os.getenv("E_CODE_STYLE", "letters")  # "letters" | "digits"
 
 try:
     from supabase import create_client, Client  # type: ignore
@@ -403,13 +413,36 @@ def ensure_bucket_with_synthesis(
 PERIOD_MAP: Dict[int, int] = {1: 20, 2: 30, 3: 40}
 NITEMS_MAP: Dict[int, int] = {1: 10, 2: 20, 3: 30}
 CAP_TIGHT_MAP: Dict[int, str] = {1: "Loose", 2: "Medium"}
-SHELF_MAP: Dict[int, Tuple[int, int]] = {
-    1: (1, 10),
-    2: (5, 15),
-    3: (10, 20),
-    4: (5, 25),
-    5: (10, 30),
-}
+
+
+def shelf_bounds(T: int, mode: int) -> Tuple[int, int]:
+    """
+    Compute (m_lo, m_hi) from class period T and shelf-life mode (1..3):
+      1 -> [0, floor(T/2)]
+      2 -> [0, floor(3T/4)]
+      3 -> [5, floor(T/2)]
+    """
+    if mode == 1:
+        lo, hi = 0, T // 2
+    elif mode == 2:
+        lo, hi = 0, (3 * T) // 4
+    elif mode == 3:
+        lo, hi = 5, T // 2
+    else:
+        raise ValueError(f"Invalid shelf-life mode {mode}; expected 1..3.")
+    # Ensure a valid interval (hi >= lo)
+    hi = max(hi, lo)
+    return int(lo), int(hi)
+
+
+# SHELF_MAP: Dict[int, Tuple[int, int]] = {
+#     1: (1, 10),
+#     2: (5, 15),
+#     3: (10, 20),
+#     4: (5, 25),
+#     5: (10, 30),
+# }
+
 ZERO_HEAD_BY_T: Dict[int, int] = {20: 0, 30: 1, 40: 2}
 
 
@@ -439,10 +472,26 @@ def make_config_cv(
     T = PERIOD_MAP[P]
     n_items = NITEMS_MAP[N]
     cap_tight = CAP_TIGHT_MAP[C]
-    m_lo, m_hi = SHELF_MAP[M]
+    # Accept M as int 1..3 or letter 'A'/'B'/'C'
+    if isinstance(M, str):
+        M_norm = E_CODE_REV.get(M.upper())
+        if M_norm is None:
+            if M.isdigit():
+                M_norm = int(M)
+            else:
+                raise ValueError(f"Invalid shelf-life code '{M}'. Use A/B/C or 1/2/3.")
+        E_part = E_CODE_MAP.get(M_norm, str(M_norm))
+    else:
+        M_norm = int(M)
+        E_part = E_CODE_MAP.get(M_norm, str(M_norm))
+
+    m_lo, m_hi = shelf_bounds(T, M_norm)
+
     zero_head = (zero_head_map or ZERO_HEAD_BY_T).get(T, 0)
-    # >>> FIXED HERE: include C in the code string <<<
-    name = f"X{P}{N}{C}{cv_letter.upper()}{M}{L}"
+
+    # Class code: use letters (A/B/C) unless E_CODE_STYLE forces digits
+    E_token = E_part if E_CODE_STYLE == "letters" else str(M_norm)
+    name = f"X{P}{N}{C}{cv_letter.upper()}{E_token}{L}"
 
     return {
         "name": name,
@@ -669,7 +718,7 @@ def generate_all_class_specs(
         for N in (1, 2, 3):
             for C in (1, 2):
                 for cv_letter in ("L", "H"):
-                    for M in (1, 2, 3, 4, 5):
+                    for M in ("A", "B", "C"):
                         for L in L_values:
                             specs.append(
                                 make_config_cv(
@@ -715,7 +764,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     p.add_argument(
         "--create-all",
         action="store_true",
-        help="Generate ALL combinations (P:1..3, N:1..3, C:{1,2}, V:{L,H}, M:1..5, L: from --L-list).",
+        help="Generate ALL combinations (P:1..3, N:1..3, C:{1,2}, V:{L,H}, E:{A,B,C}, L: from --L-list).",
     )
     p.add_argument(
         "--instances-per-class",
