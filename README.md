@@ -14,6 +14,7 @@ pip install -r requirements.txt
 
 # ensure Gurobi is installed and licensed on this machine
 streamlit run streamlit_app.py
+caffeinate -idm streamlit run streamlit_app.py
 
 
 (.venv) (base) egecanaktan@192 MultiItemPerishability % python parse_demands_and_insert.py \

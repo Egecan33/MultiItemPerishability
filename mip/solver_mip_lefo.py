@@ -326,7 +326,7 @@ def solve_instance(
         "best_bound": None,
         "gap": None,
         "runtime_sec": float(getattr(m, "Runtime", 0.0)),
-        "solver_version": "gurobi_12_0_3",
+        "solver_version": "solverv2",
     }
     # best bound, gap if available
     try:

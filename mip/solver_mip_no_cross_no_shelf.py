@@ -70,29 +70,22 @@ def solve_instance(
     )
     loss_penalty_global = data.get("lost_sales_penalty", None)
     loss_penalty_factor = float(data.get("lost_sales_penalty_factor", 200.0))
-    m = gp.Model("perishable_LEFO_no_crossing")
+    m = gp.Model("perishable_LEFO_no_crossing_no_shelf")
     m.Params.OutputFlag = 1
     if time_limit:
         m.Params.TimeLimit = int(time_limit)
     if mip_gap:
         m.Params.MIPGap = float(mip_gap)
-    # -------- Feasible arcs & expiry --------
+
+    # -------- Feasible arcs (NO SHELF LIVES) --------
+    # We IGNORE items[i]['shelf_seq'] entirely and allow production at time t
+    # to satisfy ANY future demand period u >= t (full-horizon arcs).
     Gamma: Dict[Tuple[int, int], List[int]] = {}
-    Expiry: Dict[Tuple[int, int], int] = {}
     Triples: List[Tuple[int, int, int]] = []
+
     for i, it in items_raw.items():
-        mseq = list(it["shelf_seq"])
-        if len(mseq) != T:
-            raise ValueError(f"items[{i}]['shelf_seq'] must have length {T}")
         for t in Periods:
-            m_it = int(mseq[t])
-            v_it = t + m_it
-            Expiry[(i, t)] = v_it
-            if m_it <= 0:
-                Gamma[(i, t)] = []
-                continue
-            u_max = min(T - 1, v_it - 1)
-            us = [u for u in range(t, u_max + 1)]
+            us = list(range(t, T))  # no expiry → full horizon
             Gamma[(i, t)] = us
             for u in us:
                 Triples.append((i, t, u))
@@ -237,26 +230,8 @@ def solve_instance(
         Ciu = float(items_raw[i]["demand"][u])
         m.addConstr(X[i, t, u] <= Ciu * Z[i, t, u], name=f"arc_on_{i}_{t}_{u}")
 
-    # (C5) No--crossing (LEFO)
-    for i in items_raw:
-        prods = [t for t in Periods if Gamma.get((i, t))]
-        prods.sort(key=lambda t: Expiry[(i, t)])  # ascending by v_{it}
-        for a in range(len(prods)):
-            t1 = prods[a]
-            v1 = Expiry[(i, t1)]
-            for b in range(a + 1, len(prods)):
-                t2 = prods[b]
-                v2 = Expiry[(i, t2)]
-                if v1 >= v2:
-                    continue
-                for up in Gamma[(i, t2)]:  # u' for t_2
-                    for u in [
-                        uu for uu in Gamma[(i, t1)] if t2 <= uu <= up - 1
-                    ]:  # u for t_1 in [t_2, u'-1]
-                        m.addConstr(
-                            Z[i, t1, u] + Z[i, t2, up] <= 1,
-                            name=f"nocross_{i}_{t1}_{t2}_{u}_{up}",
-                        )
+    # (C5) No--crossing (LEFO) not needed in this version.
+
     # -------- Solve & report --------
     m.optimize()
     status = m.Status
@@ -266,7 +241,7 @@ def solve_instance(
         "best_bound": None,
         "gap": None,
         "runtime_sec": float(getattr(m, "Runtime", 0.0)),
-        "solver_version": "lefo_mip_v1",
+        "solver_version": "no_shelf_v1_no_shelf",
     }
     try:
         summary["best_bound"] = float(m.ObjBound)

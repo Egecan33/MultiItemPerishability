@@ -14,6 +14,14 @@ import re
 import math
 
 # register alternative solver backends that share the same I/O
+
+try:
+    from mip.solver_mip_no_cross_no_shelf import (
+        solve_instance as _solve_nocross_no_shelf_v1,
+    )
+except Exception:
+    _solve_nocross_no_shelf_v1 = None  # optional backend
+
 try:
     from mip.solver_mip_lefo import solve_instance as _solve_lefo_v2
 except Exception:
@@ -25,6 +33,11 @@ except Exception:
     _solve_nocross_v1 = None  # optional backend
 
 SOLVER_REGISTRY = {
+    "No-Crossing (no shelf) v1": {
+        "fn": _solve_nocross_no_shelf_v1,
+        "tag": "lefo_mip_no_shelf_v1",  # the DB signature you wanted
+        "desc": "No-crossing model, ignore cap(v1).",
+    },
     "LEFO v2 (permission-based)": {
         "fn": _solve_lefo_v2,
         "tag": "lefo_mip_v2",
@@ -1415,7 +1428,7 @@ with classes_tab:
         | B | **#items** (`n_items`) | 1→10, 2→20, 3→30 |
         | C | capacity tightness (`cap_tight`) | 1→Loose, 2→Tight |
         | D | demand CV level (drives demand range) | 1→Low CV → `dem_hi`=125, 2→High CV → `dem_hi`=200 (both `dem_lo`=0) , L low from folders / H high from folders |
-        | E | shelf-life set (`m_lo`,`m_hi`) | 1→(1,10), 2→(5,15), 3→(10,20), 4→(5,25), 5→(10,30), | **A**: m∈[0, ⌊T/2⌋], **B**: m∈[0, ⌊3T/4⌋], **C**: m∈[5, ⌊T/2⌋]  |
+        | E | shelf-life set (`m_lo`,`m_hi`) | 1→(1,10), 2→(5,15), 3→(10,20), 4→(5,25), 5→(10,30),  **A**: m∈[0, ⌊T/2⌋], **B**: m∈[0, ⌊3T/4⌋], **C**: m∈[5, ⌊T/2⌋]  |
         | F | TBO parameter (`s_params.L`) | integer **1..12** |
         """
         )

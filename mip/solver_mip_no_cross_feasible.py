@@ -6,6 +6,15 @@ import gurobipy as gp
 from gurobipy import GRB
 
 
+# Stop the solve as soon as the first incumbent solution appears (i.e., when a gap exists)
+def _stop_on_first_gap_cb(model, where):
+    if where == GRB.Callback.MIPSOL:
+        try:
+            model.terminate()
+        except gp.GurobiError:
+            pass
+
+
 # ---------------- helpers ----------------
 def _cap_global_from_dem(items: Dict[int, dict], T: int) -> List[int]:
     cap_raw = [0] * T
@@ -258,7 +267,7 @@ def solve_instance(
                             name=f"nocross_{i}_{t1}_{t2}_{u}_{up}",
                         )
     # -------- Solve & report --------
-    m.optimize()
+    m.optimize(_stop_on_first_gap_cb)
     status = m.Status
     summary = {
         "status": int(status),
@@ -266,7 +275,7 @@ def solve_instance(
         "best_bound": None,
         "gap": None,
         "runtime_sec": float(getattr(m, "Runtime", 0.0)),
-        "solver_version": "lefo_mip_v1",
+        "solver_version": "lefo_mip_v2",
     }
     try:
         summary["best_bound"] = float(m.ObjBound)
@@ -312,10 +321,7 @@ def solve_instance(
         )
     else:
         try:
-            m.computeIIS()
-            iis_path = f"iis_{int(time.time())}.ilp"
-            m.write(iis_path)
-            summary["iis_file"] = iis_path
+            print("inf")
         except:
             pass
     return summary, orders_txt
