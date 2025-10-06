@@ -25,3 +25,7 @@ caffeinate -idm streamlit run streamlit_app.py
   --synth-variants-per-bucket 15 \
   --pick first \
   -y
+
+
+
+python report.py --csv /Users/egecanaktan/github_repositories/MultiItemPerishability/batch11.csv --out out --xlsx

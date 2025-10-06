@@ -1,10 +1,10 @@
 {
   "status": 2,
-  "objective": 27184.32619460142,
-  "best_bound": 27183.388067396725,
-  "gap": 3.450985681896647e-05,
-  "runtime_sec": 0.16351914405822754,
-  "solver_version": "gurobi_12_0_3",
-  "n_items": 2,
-  "T": 40
+  "objective": 539.6084521303612,
+  "best_bound": 539.6084521303612,
+  "gap": 0.0,
+  "runtime_sec": 0.012325048446655273,
+  "solver_version": "solverv2",
+  "n_items": 1,
+  "T": 10
 }

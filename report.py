@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import argparse
 import re
+import zlib
 from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# ---------- IO helpers ----------
+# ---------- IO helpers (STRICT schema) ----------
+
+REQUIRED_COLS = ("class_key", "solver_version", "gap")
 
 
 def read_any(path: Path) -> pd.DataFrame:
@@ -22,52 +25,16 @@ def read_any(path: Path) -> pd.DataFrame:
     raise RuntimeError(f"Failed to read {path}: {last_err}")
 
 
-def guess_class_col(df: pd.DataFrame) -> str:
-    for cand in [
-        "X_class",
-        "class",
-        "Class",
-        "CLASS",
-        "name",
-        "Name",
-        "instance",
-        "Instance",
-        "X",
-    ]:
-        if cand in df.columns:
-            return cand
-    best, best_ratio = None, -1.0
-    for col in df.columns:
-        try:
-            ratio = df[col].astype(str).str.strip().str.startswith("X").mean()
-        except Exception:
-            ratio = 0.0
-        if ratio > best_ratio:
-            best_ratio, best = ratio, col
-    return best or df.columns[0]
+def require_columns(df: pd.DataFrame, cols: tuple[str, ...]) -> None:
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Missing required columns: {missing}. "
+            f"Available columns: {list(df.columns)}"
+        )
 
 
-def guess_gap_col(df: pd.DataFrame) -> str:
-    for cand in [
-        "GAP",
-        "gap",
-        "Gap",
-        "best_gap",
-        "obj_gap",
-        "relative_gap",
-        "rel_gap",
-        "GAP%",
-    ]:
-        if cand in df.columns:
-            return cand
-    for col in df.columns:
-        if "gap" in col.lower():
-            return col
-    nums = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-    return nums[-1] if nums else df.columns[-1]
-
-
-# ---------- X-code parsing & maps ----------
+# ---------- X-code parsing & maps (from class_key) ----------
 
 
 def parse_xcode(s: str):
@@ -76,10 +43,7 @@ def parse_xcode(s: str):
       - A..E are SINGLE characters (digits or letters)
       - F is one or more DIGITS (e.g., 8, 10, 12)
     Examples:
-      X232237     -> A=2,B=3,C=2,D=2,E=3,F=7
-      X132H412    -> A=1,B=3,C=2,D=H,E=4,F=12
-      X23 2 2 H4 10 -> A=2,B=3,C=2,D=H,E=4,F=10
-    Anything after F's digits is ignored.
+      X232237, X132H412, X332HB12
     """
     s = str(s)
 
@@ -91,7 +55,7 @@ def parse_xcode(s: str):
         A, B, C, D, E, F = m.groups()
         return {"A": A, "B": B, "C": C, "D": D, "E": E, "F": F}
 
-    # Fallback: clean payload; take first 5 as A..E, then leading digits as F
+    # Fallback: clean after 'X', take first 5 as A..E, then leading digits as F
     m2 = re.search(r"X([A-Za-z0-9_\-\s]+)", s)
     if not m2:
         return dict(A=np.nan, B=np.nan, C=np.nan, D=np.nan, E=np.nan, F=np.nan)
@@ -111,6 +75,7 @@ def parse_xcode(s: str):
     return {"A": A, "B": B, "C": C, "D": D, "E": E, "F": F}
 
 
+# Maps
 MAP_A = {"1": 20, "2": 30, "3": 40}
 MAP_B = {"1": 10, "2": 20, "3": 30}
 MAP_C = {"1": "Loose", "2": "Medium"}  # Medium is tighter
@@ -157,16 +122,18 @@ def map_E_ord(e):
     return np.nan
 
 
-# ---------- Enrichment ----------
+# ---------- Enrichment (STRICT: class_key, solver_version, gap) ----------
 
 
 def enrich(df: pd.DataFrame) -> pd.DataFrame:
-    cls = guess_class_col(df)
-    gapc = guess_gap_col(df)
-    out = df.copy()
-    out.rename(columns={cls: "X_class", gapc: "GAP"}, inplace=True)
-    out["GAP"] = pd.to_numeric(out["GAP"], errors="coerce")
+    require_columns(df, REQUIRED_COLS)
 
+    out = df.copy()
+    out.rename(columns={"class_key": "X_class", "gap": "GAP"}, inplace=True)
+    out["GAP"] = pd.to_numeric(out["GAP"], errors="coerce")
+    out["solver_bucket"] = out["solver_version"].astype(str)
+
+    # Parse features from class name (X-code)
     parsed = out["X_class"].astype(str).map(parse_xcode)
     xdf = pd.DataFrame(list(parsed))
     out = pd.concat([out, xdf], axis=1)
@@ -178,7 +145,7 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
     out["E_bucket"] = out["E"].map(map_E_label)
     out["F_tbo"] = out["F"].apply(lambda v: int(v) if str(v).isdigit() else np.nan)
 
-    # Ordinal codes for monotone “increase/lower” questions
+    # Ordinals for monotonicity questions
     out["A_code"] = out["A_T"].map({20: 1, 30: 2, 40: 3})
     out["B_code"] = out["B_n_items"].map({10: 1, 20: 2, 30: 3})
     out["C_code"] = out["C"].map({"1": 1, "2": 2})
@@ -284,9 +251,7 @@ def ols_views(df: pd.DataFrame):
             dd[["A_code", "B_code", "F_code"]].astype(float),
             pd.get_dummies(dd["C_cap"], prefix="C_cap", dtype=float),
             pd.get_dummies(dd["D_cv"], prefix="D_cv", dtype=float),
-            pd.get_dummies(
-                dd["E_bucket"], prefix="E_bucket", dtype=float
-            ),  # A/B/C + E1..E5
+            pd.get_dummies(dd["E_bucket"], prefix="E_bucket", dtype=float),
         ],
         axis=1,
     )
@@ -304,53 +269,94 @@ def ols_views(df: pd.DataFrame):
     return t1, t2
 
 
-# ---------- Report writers ----------
+# ---------- Uniform XLSX helpers ----------
 
 
-def write_consolidated_csv(
-    out_path: Path,
-    per_feat: dict[str, pd.DataFrame],
-    adj_deltas: dict[str, pd.DataFrame],
-    spear: pd.DataFrame,
-    ols_tbl: pd.DataFrame,
-):
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(
-            "# GAP feature effect report v3 (A..F; E_bucket fixed incl. A/B/C & 1..5)\n"
-        )
-        for name, tbl in per_feat.items():
-            f.write(f"\n## {name}\n")
-            tbl.to_csv(f, index=False)
-        f.write("\n## Adjacent deltas (monotone)\n")
-        for name, tbl in adj_deltas.items():
-            f.write(f"\n### {name}\n")
-            tbl.to_csv(f, index=False)
-        f.write("\n## Spearman (codes vs GAP)\n")
-        spear.to_csv(f, index=False)
-        f.write("\n## OLS (onehot-all & ordinal)\n")
-        ols_tbl.to_csv(f, index=False)
+def _sanitize_tag(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_]+", "_", str(s))
 
 
-def write_xlsx(
-    out_xlsx: Path,
-    per_feat: dict[str, pd.DataFrame],
-    adj_deltas: dict[str, pd.DataFrame],
-    spear: pd.DataFrame,
-    ols_tbl: pd.DataFrame,
-    enr1: pd.DataFrame,
-    enr10: pd.DataFrame,
-):
-    with pd.ExcelWriter(out_xlsx, engine="xlsxwriter") as xw:
-        enr1.to_excel(xw, sheet_name="parsed_1min", index=False)
-        enr10.to_excel(xw, sheet_name="parsed_10min", index=False)
-        for name, tbl in per_feat.items():
-            sheet = name[:31] if len(name) > 31 else name
-            tbl.to_excel(xw, sheet_name=sheet, index=False)
-        spear.to_excel(xw, sheet_name="spearman", index=False)
-        ols_tbl.to_excel(xw, sheet_name="ols", index=False)
-        for name, tbl in adj_deltas.items():
-            sheet = name[:31] if len(name) > 31 else name
-            tbl.to_excel(xw, sheet_name=sheet, index=False)
+def _sheet_name(prefix: str, raw_tag: str, suffix: str) -> str:
+    """
+    Build an Excel-safe sheet name (<=31 chars).
+    If truncation is needed, keep a short CRC to avoid collisions.
+    """
+    tag = _sanitize_tag(raw_tag)
+    max_len = 31 - len(prefix) - len(suffix)
+    if max_len < 1:
+        h = format(zlib.crc32(tag.encode()), "x")[:6]
+        return f"{prefix}{h[:1]}{suffix}"
+    if len(tag) <= max_len:
+        return f"{prefix}{tag}{suffix}"
+    h = format(zlib.crc32(tag.encode()), "x")[:6]
+    keep = max_len - 7  # room for "_"+6 hash
+    keep = max(1, keep)
+    tag_short = f"{tag[:keep]}_{h}"
+    return f"{prefix}{tag_short}{suffix}"
+
+
+def _levels_stacked(df: pd.DataFrame, feat_cols: list[str]) -> pd.DataFrame:
+    rows = []
+    for feat in feat_cols:
+        t = summarize_levels(df, feat)
+        level_col = t.columns[0]  # the feature column name (e.g., 'A_T')
+        t = t.rename(columns={level_col: "feature_level"})
+        t.insert(0, "feature", feat)
+        t = t[
+            [
+                "feature",
+                "feature_level",
+                "n",
+                "gap_mean",
+                "gap_median",
+                "gap_std",
+                "gap_min",
+                "gap_max",
+            ]
+        ]
+        rows.append(t)
+    if rows:
+        return pd.concat(rows, ignore_index=True)
+    return pd.DataFrame(
+        columns=[
+            "feature",
+            "feature_level",
+            "n",
+            "gap_mean",
+            "gap_median",
+            "gap_std",
+            "gap_min",
+            "gap_max",
+        ]
+    )
+
+
+def _deltas_stacked(df: pd.DataFrame, code_cols: list[str]) -> pd.DataFrame:
+    rows = []
+    for code in code_cols:
+        t = adjacent_deltas(df, code)
+        t = t.rename(columns={code: "level"})
+        t.insert(0, "feature_code", code)
+        t = t[["feature_code", "level", "gap_mean", "delta_from_prev"]]
+        rows.append(t)
+    if rows:
+        return pd.concat(rows, ignore_index=True)
+    return pd.DataFrame(
+        columns=["feature_code", "level", "gap_mean", "delta_from_prev"]
+    )
+
+
+def _spearman_uniform(df: pd.DataFrame, code_cols: list[str]) -> pd.DataFrame:
+    t = spearman_monotone(df, code_cols)
+    return t[["feature_code", "spearman_rho", "n"]]
+
+
+def _ols_uniform(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=["feature", "coef", "model", "R2"])
+    t1, t2 = ols_views(df)
+    out = pd.concat([t1, t2], ignore_index=True)
+    return out[["feature", "coef", "model", "R2"]]
 
 
 # ---------- Main ----------
@@ -358,11 +364,10 @@ def write_xlsx(
 
 def main():
     ap = argparse.ArgumentParser(
-        description="GAP drivers from X(A..F) on 1 & 10 datasets."
+        description="GAP drivers from X(A..F) (in class_key) on a single CSV, split by solver_version, with uniform tabs."
     )
-    ap.add_argument("--one", default="1.csv", help="1-minute CSV path (default: 1.csv)")
     ap.add_argument(
-        "--ten", default="10.csv", help="10-minute CSV path (default: 10.csv)"
+        "--csv", default="data.csv", help="Input CSV path (default: data.csv)"
     )
     ap.add_argument("--out", default="out", help="Output directory (default: out/)")
     ap.add_argument("--xlsx", action="store_true", help="Also write an XLSX workbook")
@@ -371,66 +376,68 @@ def main():
     outdir = Path(args.out)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # Load + enrich
-    df1 = enrich(read_any(Path(args.one)))
-    df10 = enrich(read_any(Path(args.ten)))
+    # Load + enforce schema + enrich
+    df_raw = read_any(Path(args.csv))
+    require_columns(df_raw, REQUIRED_COLS)
+    df = enrich(df_raw)
 
-    # Per-feature summaries + deltas
-    per_feat, adj_deltas = {}, {}
-    for key, df in [("1min", df1), ("10min", df10)]:
-        for feat in ["A_T", "B_n_items", "C_cap", "D_cv", "E_bucket", "F_tbo"]:
-            per_feat[f"{key}__{feat}"] = summarize_levels(df, feat)
-        for code in ["A_code", "B_code", "C_code", "D_code", "E_code", "F_code"]:
-            adj_deltas[f"{key}__{code}_adjacent_deltas"] = adjacent_deltas(df, code)
-
-    # Spearman + OLS
-    spear = pd.concat(
-        [
-            spearman_monotone(
-                df1, ["A_code", "B_code", "C_code", "D_code", "E_code", "F_code"]
-            ).assign(dataset="1min"),
-            spearman_monotone(
-                df10, ["A_code", "B_code", "C_code", "D_code", "E_code", "F_code"]
-            ).assign(dataset="10min"),
-        ],
-        ignore_index=True,
-    )[["dataset", "feature_code", "spearman_rho", "n"]]
-
-    ols_parts = []
-    for key, df in [("1min", df1), ("10min", df10)]:
-        t1, t2 = ols_views(df)
-        t1.insert(0, "dataset", key)
-        t2.insert(0, "dataset", key)
-        ols_parts.extend([t1, t2])
-    ols_tbl = pd.concat(ols_parts, ignore_index=True)
-
-    # Write outputs
-    df1.to_csv(outdir / "parsed_1min_enriched.csv", index=False)
-    df10.to_csv(outdir / "parsed_10min_enriched.csv", index=False)
-    write_consolidated_csv(
-        outdir / "gap_feature_effect_report_v3.csv",
-        per_feat,
-        adj_deltas,
-        spear,
-        ols_tbl,
+    # Buckets: per solver_version + ALL
+    solver_values = list(
+        pd.Series(df["solver_bucket"].unique()).astype(str).sort_values()
     )
+    buckets = solver_values + ["ALL"]
 
-    if args.xlsx:
-        write_xlsx(
-            outdir / "gap_feature_effect_report_v3.xlsx",
-            per_feat,
-            adj_deltas,
-            spear,
-            ols_tbl,
-            df1,
-            df10,
-        )
+    # Feature lists
+    code_cols = ["A_code", "B_code", "C_code", "D_code", "E_code", "F_code"]
+    feat_cols = ["A_T", "B_n_items", "C_cap", "D_cv", "E_bucket", "F_tbo"]
 
-    print(f"OK → {outdir/'gap_feature_effect_report_v3.csv'}")
-    print(f"OK → {outdir/'parsed_1min_enriched.csv'}")
-    print(f"OK → {outdir/'parsed_10min_enriched.csv'}")
+    # Prepare uniform tables for each bucket
+    levels_by_solver: dict[str, pd.DataFrame] = {}
+    deltas_by_solver: dict[str, pd.DataFrame] = {}
+    spearman_by_solver: dict[str, pd.DataFrame] = {}
+    ols_by_solver: dict[str, pd.DataFrame] = {}
+
+    for bucket in buckets:
+        dff = df if bucket == "ALL" else df[df["solver_bucket"] == bucket]
+        levels_by_solver[bucket] = _levels_stacked(dff, feat_cols)
+        deltas_by_solver[bucket] = _deltas_stacked(dff, code_cols)
+        spearman_by_solver[bucket] = _spearman_uniform(dff, code_cols)
+        ols_by_solver[bucket] = _ols_uniform(dff)
+
+    # Write CSV exports (uniform + sanitized filenames)
+    df.to_csv(outdir / "parsed_enriched.csv", index=False)
+    for bucket in buckets:
+        tag = _sanitize_tag(bucket)
+        levels_by_solver[bucket].to_csv(outdir / f"levels_{tag}.csv", index=False)
+        deltas_by_solver[bucket].to_csv(outdir / f"deltas_{tag}.csv", index=False)
+        spearman_by_solver[bucket].to_csv(outdir / f"spearman_{tag}.csv", index=False)
+        ols_by_solver[bucket].to_csv(outdir / f"ols_{tag}.csv", index=False)
+
+    # Write XLSX with identical tab structures per solver (sheet names <= 31 chars)
     if args.xlsx:
-        print(f"OK → {outdir/'gap_feature_effect_report_v3.xlsx'}")
+        with pd.ExcelWriter(
+            outdir / "gap_feature_effect_report.xlsx", engine="xlsxwriter"
+        ) as xw:
+            df.to_excel(xw, sheet_name="parsed_enriched", index=False)
+
+            for bucket in buckets:
+                xw_sheet = _sheet_name("01_", bucket, "_levels")
+                levels_by_solver[bucket].to_excel(xw, sheet_name=xw_sheet, index=False)
+
+                xw_sheet = _sheet_name("02_", bucket, "_deltas")
+                deltas_by_solver[bucket].to_excel(xw, sheet_name=xw_sheet, index=False)
+
+                xw_sheet = _sheet_name("03_", bucket, "_spearman")
+                spearman_by_solver[bucket].to_excel(
+                    xw, sheet_name=xw_sheet, index=False
+                )
+
+                xw_sheet = _sheet_name("04_", bucket, "_ols")
+                ols_by_solver[bucket].to_excel(xw, sheet_name=xw_sheet, index=False)
+
+    print(f"OK → {outdir/'parsed_enriched.csv'}")
+    if args.xlsx:
+        print(f"OK → {outdir/'gap_feature_effect_report.xlsx'}")
 
 
 if __name__ == "__main__":

@@ -32,6 +32,13 @@ try:
 except Exception:
     _solve_nocross_v1 = None  # optional backend
 
+try:
+    from mip.solver_column_generation import (
+        solve_instance as _solve_column_generation_v1,
+    )
+except Exception:
+    _solve_column_generation_v1 = None  # optional backend
+
 SOLVER_REGISTRY = {
     "No-Crossing (no shelf) v1": {
         "fn": _solve_nocross_no_shelf_v1,
@@ -45,8 +52,13 @@ SOLVER_REGISTRY = {
     },
     "No-Crossing v1": {
         "fn": _solve_nocross_v1,
-        "tag": "lefo_mip_v1",  # the DB signature you wanted
+        "tag": "lefo_mip_v1",
         "desc": "No-crossing model (v1).",
+    },
+    "Solve Column Generation v1": {
+        "fn": _solve_column_generation_v1,
+        "tag": "lefo_cg_v1",
+        "desc": "cg1",
     },
 }
 
