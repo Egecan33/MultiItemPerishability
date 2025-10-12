@@ -3,7 +3,7 @@
   "objective": 539.6084521303612,
   "best_bound": 539.6084521303612,
   "gap": 0.0,
-  "runtime_sec": 0.012325048446655273,
+  "runtime_sec": 0.018358945846557617,
   "solver_version": "solverv2",
   "n_items": 1,
   "T": 10
