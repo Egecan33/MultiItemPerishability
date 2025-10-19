@@ -20,7 +20,7 @@ import gurobipy as gp
 from gurobipy import GRB
 
 EPS = 1e-9
-RC_EPS = 1e-7
+RC_EPS = 1e-9  # Tuned: stricter for adding columns
 
 
 @dataclass
@@ -972,10 +972,10 @@ def solve_instance(
     seed_extra_chunked: bool = False,
     # Pricing knobs
     stabilize: bool = True,
-    stab_alpha: float = 0.6,
-    max_iter: int = 40000,
-    max_add_per_item_per_iter: int = 3,
-    pricing_k: int = 3,
+    stab_alpha: float = 0.8,  # Tuned: less smoothing for more columns
+    max_iter: int = 50000,  # Tuned: increased for more iterations
+    max_add_per_item_per_iter: int = 5,  # Tuned: more adds per iter
+    pricing_k: int = 5,  # Tuned: more diverse plans
     drop_age: int = 10,
     # final
     finalize_as_mip: bool = True,
@@ -1071,14 +1071,50 @@ def solve_instance(
             setups_log = sorted({t for t, q in enumerate(pl.prod_by_t) if q > EPS})
             _log(f"[ADD] i={i} plan={pid} cost={pl.cost:.3f} setups={setups_log}")
 
-    # ------- Seed: ONLY DUMMY outsourcing columns -------
+    # ------- Seed: DUMMY + Legacy greedy/random for better starting pool -------
     if verbose:
-        _log("[SEED] Adding per-item DUMMY outsourcing columns (feasible root).")
+        _log(
+            "[SEED] Adding per-item DUMMY outsourcing + greedy/random columns (feasible root)."
+        )
     for i in items_raw:
         pl_dummy = seed_plan_dummy_outsource(
             i, items_raw, T, unit_cost=outsource_unit_cost
         )
         add_column(i, pl_dummy)
+        # Add legacy seeds for diversity
+        add_column(
+            i,
+            seed_plan_naive_latest(
+                i, items_raw, T, Gamma, c_at, s_at, hsum, allow_lost_sales, loss_pen
+            ),
+        )
+        add_column(
+            i,
+            seed_plan_naive_earliest(
+                i, items_raw, T, Gamma, c_at, s_at, hsum, allow_lost_sales, loss_pen
+            ),
+        )
+        add_column(
+            i,
+            seed_plan_random_blocks(
+                i, items_raw, T, Gamma, Expiry, per_item_cap, c_at, s_at, hsum
+            ),
+        )
+        add_column(
+            i,
+            seed_plan_chunked(
+                i,
+                items_raw,
+                T,
+                Gamma,
+                Expiry,
+                per_item_cap,
+                c_at,
+                s_at,
+                hsum,
+                chunk_len=seed_chunk_len,
+            ),
+        )
 
     # ------- CG loop -------
     iter_no = 0
@@ -1211,6 +1247,30 @@ def solve_instance(
         if iter_no >= max_iter:
             _log("[STOP] Max iterations reached.")
             break
+
+    # ------- Tail-off phase: more pricing without stabilization -------
+    if verbose:
+        _log("[TAIL] Starting tail-off pricing without stabilization...")
+    stabilize = False  # Disable stab for tail-off
+    tail_iters = 100  # Tuned: 100 extra iters
+    for _ in range(tail_iters):
+        rmp.optimize()
+        try:
+            pi_raw = [cap_con[t].Pi for t in range(T)]
+            rho_raw = [inv_con[u].Pi for u in range(T - 1)] if use_wh else []
+            sigma = {i: one_con[i].Pi for i in items_raw}
+        except Exception:
+            break
+        pi, rho = pi_raw, rho_raw
+        any_added = False
+        for i in items_raw:
+            added = _price_and_add_for(i, pi, rho)
+            any_added = any_added or added
+        if not any_added:
+            _log("[TAIL] No more adds in tail-off.")
+            break
+    if verbose:
+        _log("[TAIL] Tail-off complete.")
 
     # ------- Optional: Fix-and-Price Diving to get a strong incumbent --------
     warm_start = None
@@ -1448,10 +1508,10 @@ if __name__ == "__main__":
 
     # pricing / CG döngüsü
     p.add_argument("--stab_off", action="store_true")
-    p.add_argument("--stab_alpha", type=float, default=0.6)
-    p.add_argument("--max_iter", type=int, default=40000)
-    p.add_argument("--max_add_per_item_per_iter", type=int, default=3)
-    p.add_argument("--pricing_k", type=int, default=3)
+    p.add_argument("--stab_alpha", type=float, default=0.8)
+    p.add_argument("--max_iter", type=int, default=50000)
+    p.add_argument("--max_add_per_item_per_iter", type=int, default=10)
+    p.add_argument("--pricing_k", type=int, default=5)
     p.add_argument("--drop_age", type=int, default=10)
 
     # finalize / limitler

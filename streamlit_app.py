@@ -39,6 +39,11 @@ try:
 except Exception:
     _solve_column_generation_v1 = None  # optional backend
 
+try:
+    from mip.solver_bnp import solve_instance as _solve_bnp
+except Exception:
+    _solve_bnp = None  # optional backend
+
 SOLVER_REGISTRY = {
     "No-Crossing (no shelf) v1": {
         "fn": _solve_nocross_no_shelf_v1,
@@ -59,6 +64,11 @@ SOLVER_REGISTRY = {
         "fn": _solve_column_generation_v1,
         "tag": "lefo_cg_v1",
         "desc": "cg1",
+    },
+    "BNP": {
+        "fn": _solve_bnp,
+        "tag": "bnp_v1",
+        "desc": "BNP (v1).",
     },
 }
 

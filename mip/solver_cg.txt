@@ -1,97 +1,115 @@
-
-[12:31:01] [LOAD] instance=tmp_instance_saved.json
-[12:31:01] [INFO] items=30 periods=40 allow_lost_sales=False
-[12:31:01] [INFO] prod_cap max=2947.0 W=None
-[12:31:01] [ENUM] item 0 start
-[12:31:03] [ENUM] item=0 step=47,277 plans=40,946 s=40 elapsed=2.0s mem≈733088.0MB 
-[12:31:05] [ENUM] item=0 step=92,656 plans=80,163 s=39 elapsed=4.0s mem≈847184.0MB 
-[12:31:07] [ENUM] item=0 step=143,168 plans=123,493 s=40 elapsed=6.0s mem≈962.5MB 
-[12:31:09] [ENUM] item=0 step=192,266 plans=165,175 s=40 elapsed=8.0s mem≈1092.5MB 
-[12:31:11] [ENUM] item=0 step=239,326 plans=204,240 s=40 elapsed=10.0s mem≈1214.4MB 
-[12:31:13] [ENUM] item=0 step=300,415 plans=255,867 s=40 elapsed=12.0s mem≈1375.5MB 
-[12:31:15] [ENUM] item=0 step=343,281 plans=291,897 s=40 elapsed=14.0s mem≈1487.8MB 
-[12:31:17] [ENUM] item=0 step=390,160 plans=332,413 s=40 elapsed=16.2s mem≈1614.0MB 
-[12:31:19] [ENUM] item=0 step=451,211 plans=385,020 s=40 elapsed=18.2s mem≈1777.8MB 
-[12:31:21] [ENUM] item=0 step=501,428 plans=428,113 s=39 elapsed=20.8s mem≈1912.3MB 
-[12:31:23] [ENUM] item=0 step=562,866 plans=479,286 s=40 elapsed=22.8s mem≈2072.4MB 
-[12:31:25] [ENUM] item=0 step=623,509 plans=530,784 s=40 elapsed=24.8s mem≈2233.4MB 
-[12:31:27] [ENUM] item=0 step=652,099 plans=554,263 s=40 elapsed=26.8s mem≈2306.9MB 
-[12:31:29] [ENUM] item=0 step=712,588 plans=606,037 s=40 elapsed=28.8s mem≈2468.5MB 
-[12:31:31] [ENUM] item=0 step=773,622 plans=658,030 s=40 elapsed=30.8s mem≈2630.7MB 
-[12:31:34] [ENUM] item=0 step=820,674 plans=697,147 s=40 elapsed=33.6s mem≈2753.0MB 
-[12:31:36] [ENUM] item=0 step=882,374 plans=748,297 s=40 elapsed=35.6s mem≈2912.9MB 
-[12:31:38] [ENUM] item=0 step=944,766 plans=799,422 s=40 elapsed=37.6s mem≈3072.7MB 
-[12:31:40] [ENUM] item=0 step=1,007,760 plans=850,561 s=40 elapsed=39.6s mem≈3232.6MB 
-[12:31:43] [ENUM] item=0 step=1,048,938 plans=884,315 s=40 elapsed=42.6s mem≈3338.1MB 
-[12:31:45] [ENUM] item=0 step=1,111,229 plans=936,308 s=40 elapsed=44.6s mem≈3500.5MB 
-[12:31:47] [ENUM] item=0 step=1,172,483 plans=987,313 s=40 elapsed=46.6s mem≈3660.5MB 
-[12:31:49] [ENUM] item=0 step=1,232,208 plans=1,037,973 s=40 elapsed=48.6s mem≈3819.0MB 
-[12:31:51] [ENUM] item=0 step=1,293,443 plans=1,089,031 s=40 elapsed=50.6s mem≈3979.0MB 
-[12:31:54] [ENUM] item=0 step=1,327,349 plans=1,117,912 s=40 elapsed=53.8s mem≈4077.4MB 
-[12:31:56] [ENUM] item=0 step=1,388,920 plans=1,168,032 s=39 elapsed=55.8s mem≈4234.5MB 
-[12:31:58] [ENUM] item=0 step=1,450,901 plans=1,218,150 s=40 elapsed=57.8s mem≈4382.5MB 
-[12:32:00] [ENUM] item=0 step=1,512,873 plans=1,269,310 s=40 elapsed=59.8s mem≈4542.8MB 
-[12:32:02] [ENUM] item=0 step=1,573,190 plans=1,320,980 s=40 elapsed=61.8s mem≈4704.2MB 
-[12:32:04] [ENUM] item=0 step=1,633,310 plans=1,372,712 s=40 elapsed=63.8s mem≈4864.5MB 
-[12:32:08] [ENUM] item=0 step=1,676,780 plans=1,409,978 s=40 elapsed=67.7s mem≈4991.2MB 
-[12:32:10] [ENUM] item=0 step=1,736,886 plans=1,461,302 s=40 elapsed=69.7s mem≈5151.6MB 
-[12:32:12] [ENUM] item=0 step=1,797,744 plans=1,511,993 s=40 elapsed=71.7s mem≈5298.8MB 
-[12:32:14] [ENUM] item=0 step=1,858,768 plans=1,563,107 s=40 elapsed=73.7s mem≈5458.6MB 
-[12:32:16] [ENUM] item=0 step=1,918,704 plans=1,614,715 s=39 elapsed=75.7s mem≈5619.7MB 
-[12:32:18] [ENUM] item=0 step=1,979,009 plans=1,666,708 s=39 elapsed=77.7s mem≈5781.9MB 
-[12:32:20] [ENUM] item=0 step=2,038,587 plans=1,717,843 s=39 elapsed=79.7s mem≈5940.4MB 
-[12:32:22] [ENUM] item=0 step=2,099,243 plans=1,768,384 s=40 elapsed=81.7s mem≈6098.9MB 
-[12:32:26] [ENUM] item=0 step=2,106,730 plans=1,774,690 s=40 elapsed=84.9s mem≈6131.6MB 
-[12:32:28] [ENUM] item=0 step=2,166,460 plans=1,825,504 s=40 elapsed=86.9s mem≈6290.9MB 
-[12:32:30] [ENUM] item=0 step=2,227,330 plans=1,876,310 s=40 elapsed=88.9s mem≈6450.1MB 
-[12:32:32] [ENUM] item=0 step=2,286,773 plans=1,927,434 s=39 elapsed=90.9s mem≈6595.5MB 
-[12:32:34] [ENUM] item=0 step=2,346,973 plans=1,977,758 s=38 elapsed=92.9s mem≈6753.4MB 
-[12:32:36] [ENUM] item=0 step=2,407,740 plans=2,027,836 s=39 elapsed=94.9s mem≈6910.7MB 
-[12:32:38] [ENUM] item=0 step=2,468,110 plans=2,078,554 s=39 elapsed=96.9s mem≈7069.8MB 
-[12:32:40] [ENUM] item=0 step=2,530,658 plans=2,128,644 s=40 elapsed=98.9s mem≈7227.2MB 
-[12:32:42] [ENUM] item=0 step=2,592,269 plans=2,179,236 s=38 elapsed=100.9s mem≈7384.3MB 
-[12:32:44] [ENUM] item=0 step=2,653,753 plans=2,230,444 s=39 elapsed=102.9s mem≈7545.0MB 
-[12:32:47] [ENUM] item=0 step=2,654,049 plans=2,230,694 s=40 elapsed=106.8s mem≈7562.1MB 
-[12:32:49] [ENUM] item=0 step=2,714,910 plans=2,281,599 s=40 elapsed=108.8s mem≈7722.0MB 
-[12:32:51] [ENUM] item=0 step=2,775,140 plans=2,332,538 s=40 elapsed=110.8s mem≈7881.8MB 
-[12:32:53] [ENUM] item=0 step=2,835,841 plans=2,383,113 s=40 elapsed=112.8s mem≈8040.7MB 
-[12:32:55] [ENUM] item=0 step=2,896,246 plans=2,434,013 s=40 elapsed=114.8s mem≈8181.9MB 
-[12:32:57] [ENUM] item=0 step=2,958,216 plans=2,483,927 s=40 elapsed=116.8s mem≈8338.8MB 
-[12:32:59] [ENUM] item=0 step=3,020,031 plans=2,534,408 s=40 elapsed=118.8s mem≈8497.5MB 
-[12:33:01] [ENUM] item=0 step=3,080,877 plans=2,584,906 s=40 elapsed=120.8s mem≈8656.0MB 
-[12:33:03] [ENUM] item=0 step=3,140,525 plans=2,636,048 s=40 elapsed=122.8s mem≈8816.0MB 
-[12:33:05] [ENUM] item=0 step=3,199,978 plans=2,686,863 s=40 elapsed=124.8s mem≈8975.0MB 
-[12:33:07] [ENUM] item=0 step=3,261,425 plans=2,737,994 s=40 elapsed=126.8s mem≈9133.1MB 
-[12:33:09] [ENUM] item=0 step=3,322,118 plans=2,788,857 s=40 elapsed=128.8s mem≈9292.6MB 
-[12:33:15] [ENUM] item=0 step=3,336,319 plans=2,800,745 s=40 elapsed=134.0s mem≈9350.6MB 
-[12:33:17] [ENUM] item=0 step=3,396,513 plans=2,852,328 s=39 elapsed=136.0s mem≈9511.9MB 
-[12:33:19] [ENUM] item=0 step=3,457,157 plans=2,903,939 s=40 elapsed=138.0s mem≈9673.2MB 
-[12:33:21] [ENUM] item=0 step=3,518,301 plans=2,954,178 s=39 elapsed=140.0s mem≈9830.9MB 
-[12:33:23] [ENUM] item=0 step=3,577,409 plans=3,003,909 s=40 elapsed=142.0s mem≈9986.6MB 
-[12:33:25] [ENUM] item=0 step=3,639,231 plans=3,053,699 s=40 elapsed=144.0s mem≈10126.5MB 
-[12:33:27] [ENUM] item=0 step=3,700,534 plans=3,103,955 s=40 elapsed=146.0s mem≈10277.5MB 
-[12:33:29] [ENUM] item=0 step=3,761,388 plans=3,154,501 s=40 elapsed=148.0s mem≈10436.3MB 
-[12:33:31] [ENUM] item=0 step=3,823,501 plans=3,204,268 s=40 elapsed=150.0s mem≈10592.7MB 
-[12:33:33] [ENUM] item=0 step=3,885,110 plans=3,254,085 s=39 elapsed=152.0s mem≈10749.2MB 
-[12:33:35] [ENUM] item=0 step=3,946,050 plans=3,304,307 s=39 elapsed=154.0s mem≈10907.0MB 
-[12:33:37] [ENUM] item=0 step=4,006,229 plans=3,355,080 s=39 elapsed=156.0s mem≈11066.0MB 
-[12:33:39] [ENUM] item=0 step=4,067,001 plans=3,405,792 s=40 elapsed=158.0s mem≈11224.9MB 
-[12:33:41] [ENUM] item=0 step=4,127,674 plans=3,456,116 s=40 elapsed=160.0s mem≈11350.2MB 
-[12:33:43] [ENUM] item=0 step=4,189,888 plans=3,506,552 s=38 elapsed=162.0s mem≈11350.2MB 
-[12:33:50] [ENUM] item=0 step=4,198,771 plans=3,513,515 s=40 elapsed=169.0s mem≈11481.0MB 
-[12:33:52] [ENUM] item=0 step=4,262,018 plans=3,563,529 s=40 elapsed=171.0s mem≈11637.0MB 
-[12:33:54] [ENUM] item=0 step=4,325,402 plans=3,613,433 s=40 elapsed=173.0s mem≈11793.7MB 
-[12:33:56] [ENUM] item=0 step=4,387,583 plans=3,663,031 s=40 elapsed=175.0s mem≈11949.3MB 
-[12:33:58] [ENUM] item=0 step=4,449,412 plans=3,712,642 s=39 elapsed=177.0s mem≈12105.1MB 
-[12:34:00] [ENUM] item=0 step=4,510,906 plans=3,763,373 s=40 elapsed=179.0s mem≈12263.8MB 
-[12:34:02] [ENUM] item=0 step=4,572,032 plans=3,813,449 s=40 elapsed=181.0s mem≈12364.6MB 
-[12:34:04] [ENUM] item=0 step=4,633,625 plans=3,863,047 s=40 elapsed=183.0s mem≈12450.7MB 
-[12:34:06] [ENUM] item=0 step=4,694,702 plans=3,912,926 s=40 elapsed=185.0s mem≈12517.1MB 
-[12:34:08] [ENUM] item=0 step=4,754,995 plans=3,962,962 s=40 elapsed=187.0s mem≈12674.2MB 
-[12:34:10] [ENUM] item=0 step=4,816,110 plans=4,013,533 s=40 elapsed=189.0s mem≈12799.0MB 
-[12:34:12] [ENUM] item=0 step=4,876,109 plans=4,063,262 s=40 elapsed=191.0s mem≈12810.2MB 
-[12:34:14] [ENUM] item=0 step=4,936,774 plans=4,112,878 s=40 elapsed=193.0s mem≈12810.2MB 
-[12:34:16] [ENUM] item=0 step=4,997,240 plans=4,162,941 s=40 elapsed=195.0s mem≈12810.2MB 
-[12:34:18] [ENUM] item=0 step=5,057,732 plans=4,213,455 s=40 elapsed=197.0s mem≈12810.2MB 
-[12:34:20] [ENUM] item=0 step=5,119,677 plans=4,264,053 s=40 elapsed=199.0s mem≈12845.4MB 
-^C  Stopping...
+Academic license - for non-commercial use only - expires 2026-02-25
+[SEED] Adding per-item DUMMY outsourcing columns (feasible root).
+[ADD] i=0 plan=0 cost=2552250874.889 setups=[]
+[ADD] i=1 plan=0 cost=3566653273.537 setups=[]
+[ADD] i=2 plan=0 cost=3312751842.796 setups=[]
+[ADD] i=3 plan=0 cost=2877148440.292 setups=[]
+[ADD] i=4 plan=0 cost=2667770009.255 setups=[]
+[ADD] i=5 plan=0 cost=3060053736.371 setups=[]
+[ADD] i=6 plan=0 cost=3158726330.308 setups=[]
+[ADD] i=7 plan=0 cost=3465574030.967 setups=[]
+[ADD] i=8 plan=0 cost=3637649408.199 setups=[]
+[ADD] i=9 plan=0 cost=3239349059.501 setups=[]
+[ADD] i=10 plan=0 cost=3714662164.443 setups=[]
+[ADD] i=11 plan=0 cost=3459557409.385 setups=[]
+[ADD] i=12 plan=0 cost=3453540787.804 setups=[]
+[ADD] i=13 plan=0 cost=3455947436.436 setups=[]
+[ADD] i=14 plan=0 cost=2541420956.042 setups=[]
+[ADD] i=15 plan=0 cost=3084120222.697 setups=[]
+[ADD] i=16 plan=0 cost=3045613844.575 setups=[]
+[ADD] i=17 plan=0 cost=3352461545.234 setups=[]
+[ADD] i=18 plan=0 cost=2987854277.393 setups=[]
+[ADD] i=19 plan=0 cost=2674989955.153 setups=[]
+[ADD] i=20 plan=0 cost=4028729810.999 setups=[]
+[ADD] i=21 plan=0 cost=3126236573.768 setups=[]
+[ADD] i=22 plan=0 cost=3344038275.020 setups=[]
+[ADD] i=23 plan=0 cost=3571466570.802 setups=[]
+[ADD] i=24 plan=0 cost=2814575575.844 setups=[]
+[ADD] i=25 plan=0 cost=2465611524.115 setups=[]
+[ADD] i=26 plan=0 cost=3312751842.796 setups=[]
+[ADD] i=27 plan=0 cost=3394577896.305 setups=[]
+[ADD] i=28 plan=0 cost=3777235028.891 setups=[]
+[ADD] i=29 plan=0 cost=3603956327.342 setups=[]
+[PRICE] i=20 rc=-4.028695e+09 -> ADD
+[ADD] i=20 plan=1 cost=34376.753 setups=[3, 13, 22]
+[ITER] 1 obj=96747275031.160278 worst_rc=-4028695434.246409 cols=31
+[PRICE] i=28 rc=-3.777204e+09 -> ADD
+[ADD] i=28 plan=1 cost=30749.338 setups=[3, 11, 21]
+[ITER] 2 obj=92718579596.913864 worst_rc=-3777204279.552594 cols=32
+[PRICE] i=10 rc=-3.714632e+09 -> ADD
+[ADD] i=10 plan=1 cost=29840.171 setups=[3, 17]
+[ITER] 3 obj=88941375317.361267 worst_rc=-3714632324.271535 cols=33
+[PRICE] i=10 rc=-3.714630e+09 -> ADD
+[ADD] i=10 plan=2 cost=32284.322 setups=[2, 11, 19]
+[ITER] 4 obj=87921672326.384766 worst_rc=-3714629880.120546 cols=34
+[PRICE] i=8 rc=-3.637618e+09 -> ADD
+[ADD] i=8 plan=1 cost=31872.268 setups=[2, 16, 22]
+[ITER] 5 obj=85226744766.297302 worst_rc=-3637617535.930573 cols=35
+[PRICE] i=29 rc=-3.603923e+09 -> ADD
+[ADD] i=29 plan=1 cost=33346.328 setups=[2, 8, 23]
+[ITER] 6 obj=81589127230.366730 worst_rc=-3603922981.014033 cols=36
+[PRICE] i=23 rc=-3.571437e+09 -> ADD
+[ADD] i=23 plan=1 cost=29733.488 setups=[1, 11, 20]
+[ITER] 7 obj=77985204249.352707 worst_rc=-3571436837.313763 cols=37
+[PRICE] i=28 rc=-3.777203e+09 -> ADD
+[ADD] i=28 plan=2 cost=32301.407 setups=[2, 12, 21]
+[ITER] 8 obj=75099618007.643143 worst_rc=-3777202727.483822 cols=38
+[PRICE] i=1 rc=-3.566623e+09 -> ADD
+[ADD] i=1 plan=1 cost=30439.394 setups=[2, 8, 18]
+[ITER] 9 obj=74413767445.720184 worst_rc=-3566622834.142769 cols=39
+[PRICE] i=8 rc=-3.637616e+09 -> ADD
+[ADD] i=8 plan=2 cost=33899.324 setups=[0, 7, 16, 22]
+[ITER] 10 obj=71332372544.371155 worst_rc=-3637615508.875448 cols=40
+[PRICE] i=7 rc=-3.465542e+09 -> ADD
+[ADD] i=7 plan=1 cost=32048.012 setups=[0, 14, 22]
+[ITER] 11 obj=70847144881.969711 worst_rc=-3465541982.955207 cols=41
+[PRICE] i=20 rc=-4.028692e+09 -> ADD
+[ADD] i=20 plan=2 cost=37659.871 setups=[1, 10, 21, 26]
+[ITER] 12 obj=69076317581.499863 worst_rc=-4028692151.128027 cols=42
+[PRICE] i=11 rc=-3.459526e+09 -> ADD
+[ADD] i=11 plan=1 cost=31013.020 setups=[1, 7, 18]
+[ITER] 13 obj=67381603279.909645 worst_rc=-3459526396.365613 cols=43
+[PRICE] i=13 rc=-3.455917e+09 -> ADD
+[ADD] i=13 plan=1 cost=30587.341 setups=[1, 9, 20]
+[ITER] 14 obj=63922076883.544037 worst_rc=-3455916849.095530 cols=44
+[PRICE] i=12 rc=-3.453512e+09 -> ADD
+[ADD] i=12 plan=1 cost=28767.844 setups=[0, 9, 20]
+[ITER] 15 obj=60466160034.448502 worst_rc=-3453512019.959678 cols=45
+[PRICE] i=23 rc=-3.571436e+09 -> ADD
+[ADD] i=23 plan=2 cost=31059.036 setups=[1, 8, 14, 24]
+[ITER] 16 obj=58008666250.759239 worst_rc=-3571435511.766407 cols=46
+[PRICE] i=27 rc=-3.394545e+09 -> ADD
+[ADD] i=27 plan=1 cost=32801.952 setups=[1, 8, 15, 23]
+[ITER] 17 obj=57012648378.951874 worst_rc=-3394545094.352642 cols=47
+[PRICE] i=29 rc=-3.603921e+09 -> ADD
+[ADD] i=29 plan=2 cost=35345.767 setups=[0, 7, 21]
+[ITER] 18 obj=56296682447.075554 worst_rc=-3603920981.575490 cols=48
+[PRICE] i=20 rc=-3.694416e+09 -> ADD
+[ADD] i=20 plan=3 cost=39171.474 setups=[0, 6, 16, 24]
+[ITER] 19 obj=54260290388.307732 worst_rc=-3694415688.377068 cols=49
+[PRICE] i=17 rc=-3.352429e+09 -> ADD
+[ADD] i=17 plan=1 cost=32562.284 setups=[0, 5, 15]
+[ITER] 20 obj=53618104956.161667 worst_rc=-3352428982.949829 cols=50
+[PRICE] i=22 rc=-3.344008e+09 -> ADD
+[ADD] i=22 plan=1 cost=30472.678 setups=[0, 6, 15]
+[ITER] 21 obj=50265675973.211830 worst_rc=-3344007802.342030 cols=51
+[PRICE] i=17 rc=-3.352429e+09 -> ADD
+[ADD] i=17 plan=2 cost=32769.488 setups=[0, 5, 14, 26]
+[ITER] 22 obj=49408762561.055862 worst_rc=-3352428775.746370 cols=52
+[PRICE] i=26 rc=-3.312725e+09 -> ADD
+[ADD] i=26 plan=1 cost=26484.397 setups=[0, 10, 19]
+[ITER] 23 obj=46921668324.589561 worst_rc=-3312725358.398707 cols=53
+[PRICE] i=2 rc=-3.312722e+09 -> ADD
+[ADD] i=2 plan=1 cost=29380.398 setups=[0, 7, 14, 24]
+[ITER] 24 obj=43608942966.190857 worst_rc=-3312722462.397487 cols=54
+[PRICE] i=23 rc=-3.571433e+09 -> ADD
+[ADD] i=23 plan=3 cost=32960.362 setups=[2, 6, 16, 24]
+[ITER] 25 obj=41833813671.683136 worst_rc=-3571433068.805903 cols=55
+[PRICE] i=7 rc=-3.465538e+09 -> ADD
+[ADD] i=7 plan=2 cost=35309.367 setups=[3, 5, 13, 24]
+[ITER] 26 obj=41199556125.042068 worst_rc=-3465537625.600016 cols=56
+^C
+Interrupt request received
+[PRICE] i=9 rc=-3.239320e+09 -> ADD
+[ADD] i=9 plan=1 cost=27539.338 setups=[2, 10, 21]
+[ITER] 27 obj=40296220678.474060 worst_rc=-3239320109.277687 cols=57

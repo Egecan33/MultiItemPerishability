@@ -1,10 +1,10 @@
 {
   "status": 2,
-  "objective": 539.6084521303612,
-  "best_bound": 539.6084521303612,
+  "objective": 36554.38450572467,
+  "best_bound": 36554.38450572466,
   "gap": 0.0,
-  "runtime_sec": 0.018358945846557617,
+  "runtime_sec": 2.2417800426483154,
   "solver_version": "solverv2",
-  "n_items": 1,
-  "T": 10
+  "n_items": 6,
+  "T": 40
 }
