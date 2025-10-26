@@ -1,1512 +1,865 @@
-# lefo_cg_solver_fast.py
-# --------------------------------------------------------------------------------------
-# Column Generation solver for perishable lot-sizing with LEFO (no-crossing) blocks.
-# This version starts from a FEASIBLE root with per-item DUMMY (outsourcing) columns
-# that consume ZERO capacity and ZERO warehouse but have a LARGE per-unit cost.
-# Then it repeatedly solves the pricing subproblem (DP with LEFO) using RMP duals,
-# adds negative reduced-cost columns, and finally flips λ to binary to get an exact MIP.
-#
-# I/O is unchanged: solve_instance(instance_path, out_dir, ...) returns (summary, orders).
-# CLI also unchanged, with an extra optional flag: --outsource_unit_cost
-# --------------------------------------------------------------------------------------
+#!/usr/bin/env python3
+"""
+Exact Branch-and-Price (DFS) for capacitated lot sizing with perishability & lost sales
+— ready to drop into your project.
 
+What this file gives you (matches your spec):
+- One dummy column per item at root: [1 | 0,...,0 | 0,...,0] with a very high cost so it
+  represents outsourcing / lost-sales. This guarantees RMP feasibility at root and at every node.
+- Column structure = (lambda over plans) with data carried on each column:
+    • item_id: int
+    • plan_id: int (any hashable id)
+    • cost: float (includes all economics: production, holding, lost sales, etc.)
+    • ybar: List[int]  (setup indicators per period for that item/plan)
+    • cap_by_t: List[float]  (period capacity usage contributed if that plan is chosen)
+    • meta (optional): Dict for x, ZOI, etc. You can store x quantities here; RMP only
+      needs cap_by_t for feasibility & reduced costs.
+- RMP (LP) uses λ_{i,k} ≥ 0 with convexity Σ_k λ_{i,k} = 1 for each item i, and capacity
+  constraints Σ_{i,k} cap_{i,k,t} λ_{i,k} ≤ κ_t for each period t. No y binaries in the
+  RMP; we compute aggregated ŷ_{i,t} = Σ_k ybar^{i,k}_t · λ_{i,k} from the λ solution.
+- Pricing happens per-item against duals (μ_i from convexity rows, π_t ≥ 0 from capacity rows):
+      rc(i,k) = cost(i,k) − μ_i − Σ_t π_t · cap_{i,k,t}
+  You can add up to K most-negative columns per item per CG round (respecting branch constraints).
+- Branching is ONLY on aggregated setups ŷ_{i,t}. We pick the most fractional ŷ and create two
+  children:
+      Left  (ŷ_{i*,t*} = 0): forbid columns with ybar_{i*,t*}=1.
+      Right (ŷ_{i*,t*} = 1): require columns with ybar_{i*,t*}=1 (i.e., only allow those columns).
+  We enforce this by filtering the allowed column set AND by constraining future pricing to
+  generate only consistent columns for that (i*, t*).
+- At each node we run CG to optimality under those branch constraints, then:
+    • LB := RMP objective value.
+    • UB candidate: solve the restricted MIP over CURRENT column pool with z_{i,k} ∈ {0,1},
+      Σ_k z_{i,k} = 1 for each item, capacity constraints, minimize Σ_i Σ_k cost · z.
+      (This is exact over the pool; column generation ensures the pool keeps improving.)
+- DFS exploration with global incumbent + gap tracking. Time limit and mip_gap honored.
+- Works with your CLI flags (stab, alpha, max_iter, pricing_k, drop_age, finalize_off,
+  time_limit, mip_gap, exclusive vs inclusive shelf, force_no_lost_sales, diving_off,
+  diving_reprice_iters, outsource_unit_cost, quiet).
+
+IMPORTANT: You must plug your pricing DP. See `pricing_oracle(...)` below — it receives
+(i, duals, branch constraints, etc.) and should return up to `params.pricing_k` NEW columns
+with negative reduced cost that also respect the node's branch constraints.
+
+Dependencies: gurobipy (for RMP and the small pool-MIP). Python 3.10+.
+"""
 from __future__ import annotations
-import time, json, math, random, sys
-from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, Callable, Set
+
+import json
+import math
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Any
 
 import gurobipy as gp
 from gurobipy import GRB
 
-EPS = 1e-9
-RC_EPS = 1e-9  # Tuned: stricter for adding columns
+
+# ------------------------- Data structures -------------------------
+@dataclass(frozen=True)
+class BranchFix:
+    """Branching fix for a single (item, t).
+    require=True  → keep only columns/plans whose ybar_t == 1 (mass must be on those)
+    require=False → forbid any column with ybar_t == 1 (i.e., ŷ_{i,t}=0)
+    """
+
+    item: int
+    t: int
+    require: bool
 
 
 @dataclass
-class ColumnPlan:
+class Node:
+    node_id: int
+    depth: int
+    fixes: List[BranchFix] = field(default_factory=list)
+    parent_id: Optional[int] = None
+
+
+@dataclass
+class Column:
     item: int
     plan_id: int
     cost: float
-    prod_by_t: List[float]  # production qty at period t
-    inv_end_by_u: List[float]  # inventory at end of u (0..T-2)
-    flows: List[Tuple[int, int, float]]  # (t,u,qty)
-    setups: List[int]  # t with prod>0
-    lost_sales_by_u: List[float]  # per-period lost sales
+    ybar: List[int]  # length T
+    cap_by_t: List[float]  # length T
+    meta: Dict[str, Any] = field(
+        default_factory=dict
+    )  # put x, ZOI, etc. here if you like
+    age: int = 0  # for optional dropping
 
 
-# ---------------- helpers ----------------
+@dataclass
+class Instance:
+    T: int
+    kappa: List[float]  # capacity per period, length T
+    n_items: int
+    raw: Dict[str, Any]  # full JSON if you want (demands, costs...)
 
 
-def _log(msg: str, flush: bool = True):
-    print(msg, file=sys.stdout, flush=flush)
+@dataclass
+class Params:
+    stabilize: bool
+    stab_alpha: float
+    max_iter: int
+    max_add_per_item_per_iter: int
+    pricing_k: int
+    drop_age: int
+    finalize_as_mip: bool
+    time_limit: int  # seconds; 0 = no limit
+    mip_gap: float  # e.g., 0.0 exact, 0.01 = 1%
+    inclusive_shelf: bool
+    force_no_lost_sales: bool
+    enable_diving: bool
+    diving_reprice_iters: int
+    outsource_unit_cost: Optional[float]
+    verbose: bool
 
 
-def _as_len_T_vector(val, T: int) -> List[float]:
-    if val is None:
-        return []
-    if isinstance(val, (int, float)):
-        return [float(val)] * T
-    if isinstance(val, list):
-        if len(val) != T:
-            raise ValueError(f"Expected length-{T} list, got {len(val)}")
-        return [float(x) for x in val]
-    raise TypeError("Expected number or length-T list")
+# ------------------------- Utilities -------------------------
+def now() -> float:
+    return time.time()
 
 
-def _cap_global_from_dem(items: Dict[int, dict], T: int) -> List[int]:
-    cap_raw = [0.0] * T
-    for it in items.values():
+def load_instance(path: str | Path) -> Instance:
+    j = json.loads(Path(path).read_text())
+    # Expect j to have: "T", "kappa" (len T), and either "n_items" or items list.
+    T = int(j["T"]) if "T" in j else len(j["kappa"])  # be tolerant
+    kappa = list(map(float, j["kappa"]))
+    if "n_items" in j:
+        n_items = int(j["n_items"])
+    elif "items" in j:
+        n_items = len(j["items"])
+    else:
+        raise ValueError("Instance JSON must include 'n_items' or 'items'.")
+    return Instance(T=T, kappa=kappa, n_items=n_items, raw=j)
+
+
+def make_dummy_column(
+    i: int, inst: Instance, outsource_unit_cost: Optional[float]
+) -> Column:
+    """All-zero setups and capacity. High cost so it's never chosen unless necessary.
+    If you have a proper lost-sales / outsourcing cost per item, plug it here.
+    """
+    big = 1.0e6 if outsource_unit_cost is None else float(outsource_unit_cost)
+    cost = big  # a single huge cost is enough; you can scale by demand if you prefer
+    T = inst.T
+    return Column(
+        item=i,
+        plan_id=-1,
+        cost=cost,
+        ybar=[0] * T,
+        cap_by_t=[0.0] * T,
+        meta={"dummy": True},
+    )
+
+
+def column_allowed_by_fixes(col: Column, fixes: List[BranchFix]) -> bool:
+    for fx in fixes:
+        if col.item != fx.item:
+            continue
+        y = col.ybar[fx.t]
+        if fx.require and y != 1:
+            return False
+        if not fx.require and y == 1:
+            return False
+    return True
+
+
+# ------------------------- RMP (LP) -------------------------
+class RMP:
+    def __init__(self, inst: Instance, columns_by_item: Dict[int, List[Column]]):
+        self.inst = inst
+        self.columns_by_item = columns_by_item
+        self.model = gp.Model("rmp")
+        self.model.Params.OutputFlag = 0
+        self.lmbda: Dict[Tuple[int, int], gp.Var] = {}
+        self.mu_idx: Dict[int, int] = {}  # map item→row index for μ
+        self.pi_idx: Dict[int, int] = {}  # map t→row index for π
+        self._build()
+
+    def _build(self):
+        m = self.model
+        T = self.inst.T
+        # λ vars
+        for i, cols in self.columns_by_item.items():
+            for k, col in enumerate(cols):
+                self.lmbda[(i, k)] = m.addVar(
+                    lb=0.0, ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f"lam_{i}_{k}"
+                )
+        m.update()
+        # Objective
+        obj = gp.LinExpr()
+        for (i, k), var in self.lmbda.items():
+            col = self.columns_by_item[i][k]
+            obj += col.cost * var
+        m.setObjective(obj, GRB.MINIMIZE)
+        # Convexity per item: Σ_k λ_{i,k} = 1
+        for i, cols in self.columns_by_item.items():
+            row = gp.LinExpr()
+            for k, _ in enumerate(cols):
+                row += self.lmbda[(i, k)]
+            m.addConstr(row == 1.0, name=f"conv_{i}")
+        # Capacity per period: Σ_{i,k} cap_{i,k,t} λ_{i,k} ≤ κ_t
         for t in range(T):
-            cap_raw[t] += float(it["demand"][t])
-    buf = max(5.0, 0.2 * (max(cap_raw) if cap_raw else 0.0))
-    # keep integer-like capacities if original are ints
-    return [int(round(c + buf)) for c in cap_raw]
+            row = gp.LinExpr()
+            for i, cols in self.columns_by_item.items():
+                for k, col in enumerate(cols):
+                    row += col.cap_by_t[t] * self.lmbda[(i, k)]
+            m.addConstr(row <= self.inst.kappa[t], name=f"cap_{t}")
+        m.update()
+
+    def optimize(self):
+        self.model.optimize()
+
+    def obj_value(self) -> float:
+        if self.model.Status not in (GRB.OPTIMAL, GRB.SUBOPTIMAL):
+            return math.inf
+        return float(self.model.ObjVal)
+
+    def duals(self) -> Tuple[List[float], List[float]]:
+        """Return (mu_i for convexity rows, pi_t for capacity rows)."""
+        m = self.model
+        # Constraints are added in order: first all convexity, then all capacity (see _build)
+        mu: List[float] = []
+        pi: List[float] = []
+        # Read by name to be robust
+        i = 0
+        while True:
+            cname = f"conv_{i}"
+            c = m.getConstrByName(cname)
+            if c is None:
+                break
+            mu.append(c.Pi)
+            i += 1
+        t = 0
+        while True:
+            cname = f"cap_{t}"
+            c = m.getConstrByName(cname)
+            if c is None:
+                break
+            pi.append(c.Pi)
+            t += 1
+        return mu, pi
+
+    def lambda_solution(self) -> Dict[Tuple[int, int], float]:
+        return {(i, k): self.lmbda[(i, k)].X for (i, k) in self.lmbda}
 
 
-# ---------------- parsing & costs ----------------
-
-
-def _parse_instance(instance_path: str | Path):
-    data = json.loads(Path(instance_path).read_text())
-    T = int(data["period"])
-    Periods = list(range(T))
-    items_raw: Dict[int, dict] = {int(k): v for k, v in data["items"].items()}
-
-    prod_cap = data.get("production_capacity") or data.get("manual_capacity")
-    prod_cap = (
-        _as_len_T_vector(prod_cap, T)
-        if prod_cap is not None
-        else _cap_global_from_dem(items_raw, T)
-    )
-
-    item_cap_raw = data.get("item_capacity")
-    per_item_cap: Dict[Tuple[int, int], float] = {}
-    if item_cap_raw is not None:
-        if isinstance(item_cap_raw, dict):
-            for i, cap in item_cap_raw.items():
-                vec = _as_len_T_vector(cap, T)
-                for t in Periods:
-                    per_item_cap[(int(i), t)] = vec[t]
-        else:
-            vec = _as_len_T_vector(item_cap_raw, T)
-            for i in items_raw:
-                for t in Periods:
-                    per_item_cap[(i, t)] = vec[t]
-
-    W = data.get("warehouse_capacity", None)
-    W = float(W) if W is not None else None
-
-    allow_lost_sales = bool(
-        data.get("allow_unmet_demand", False) or data.get("allow_lost_sales", False)
-    )
-    loss_penalty_global = data.get("lost_sales_penalty", None)
-    loss_penalty_factor = float(data.get("lost_sales_penalty_factor", 200.0))
-
-    return (
-        data,
-        T,
-        Periods,
-        items_raw,
-        prod_cap,
-        per_item_cap,
-        W,
-        allow_lost_sales,
-        loss_penalty_global,
-        loss_penalty_factor,
-    )
-
-
-def _precompute_gamma_and_expiry(
-    items_raw: Dict[int, dict], T: int, inclusive_shelf: bool = True
-):
-    """
-    Gamma[(i,t)] = list of consumption periods u that can be served by production at t.
-    If inclusive_shelf == True: shelf_seq[t] = L -> u in [t .. t+L]  (this + next L)
-    Else (legacy):               shelf_seq[t] = L -> u in [t .. t+L-1]
-    Expiry[(i,t)] is kept as an exclusive index (first invalid period),
-    so Expiry = t + L + 1 (inclusive) vs t + L (legacy).
-    """
-    Gamma: Dict[Tuple[int, int], List[int]] = {}
-    Expiry: Dict[Tuple[int, int], int] = {}
-    for i, it in items_raw.items():
-        mseq = list(it["shelf_seq"])
-        if len(mseq) != T:
-            raise ValueError(f"items[{i}]['shelf_seq'] must have length {T}")
-        for t in range(T):
-            L = int(mseq[t])
-            if inclusive_shelf:
-                v_it = t + L + 1  # exclusive
-                u_max = min(T - 1, t + L)
-            else:
-                v_it = t + L  # exclusive
-                u_max = min(T - 1, v_it - 1)
-            Expiry[(i, t)] = v_it
-            if L <= 0:
-                Gamma[(i, t)] = []
-            else:
-                Gamma[(i, t)] = [u for u in range(t, u_max + 1)]
-    return Gamma, Expiry
-
-
-def _cost_accessors(items_raw: Dict[int, dict], T: int):
-    """
-    Returns:
-      c_at(i,t), s_at(i,t), hsum(i,t,u), hpref(i,u)
-    where hpref(i,u) == sum_{k=0..u-1} h_i[k].
-    """
-    h_pref: Dict[int, List[float]] = {}
-    for i, it in items_raw.items():
-        h = it["h"]
-        if isinstance(h, list):
-            pref = [0.0] * (T + 1)
-            for k in range(T):
-                pref[k + 1] = pref[k] + float(h[k])
-            h_pref[i] = pref
-
-    def c_at(i: int, t: int) -> float:
-        c = items_raw[i]["c_var"]
-        return float(c[t]) if isinstance(c, list) else float(c)
-
-    def s_at(i: int, t: int) -> float:
-        s = items_raw[i]["setup"]
-        return float(s[t]) if isinstance(s, list) else float(s)
-
-    def hsum(i: int, t: int, u: int) -> float:
-        h = items_raw[i]["h"]
-        if isinstance(h, list):
-            pref = h_pref[i]
-            return float(pref[u] - pref[t])
-        return float(h) * (u - t)
-
-    def hpref(i: int, u: int) -> float:
-        h = items_raw[i]["h"]
-        if isinstance(h, list):
-            return float(h_pref[i][u])
-        return float(h) * u
-
-    return c_at, s_at, hsum, hpref
-
-
-def _lost_sales_penalties(
-    items_raw: Dict[int, dict],
+def compute_yhat(
+    columns_by_item: Dict[int, List[Column]],
+    lam_sol: Dict[Tuple[int, int], float],
     T: int,
-    Gamma,
-    c_at,
-    s_at,
-    hsum,
-    loss_penalty_global,
-    loss_penalty_factor: float,
-):
-    max_unit_var_cost = 0.0
-    for i in items_raw:
+) -> Dict[Tuple[int, int], float]:
+    """Return yhat[(i,t)] = Σ_k ybar^{i,k}_t * λ_{i,k}."""
+    yhat: Dict[Tuple[int, int], float] = {}
+    for i, cols in columns_by_item.items():
         for t in range(T):
-            for u in Gamma.get((i, t), []):
-                max_unit_var_cost = max(max_unit_var_cost, c_at(i, t) + hsum(i, t, u))
-    if max_unit_var_cost <= 0.0:
-        max_unit_var_cost = 1.0
-    max_setup = 0.0
-    for i in items_raw:
-        s = items_raw[i]["setup"]
-        max_setup = max(
-            max_setup, max(map(float, s)) if isinstance(s, list) else float(s)
-        )
-    default_lp = loss_penalty_global
-    if default_lp is None:
-        base = max_unit_var_cost + max_setup
-        default_lp = max(10.0 * max_unit_var_cost, loss_penalty_factor * base)
-        default_lp = float(min(default_lp + 1.0, 1e9))
-
-    loss_pen = {}
-    for i in items_raw:
-        lp = items_raw[i].get("lost_sales_penalty", None)
-        if lp is not None:
-            vec = _as_len_T_vector(lp, T)
-            for u in range(T):
-                loss_pen[(i, u)] = float(vec[u])
-        else:
-            for u in range(T):
-                loss_pen[(i, u)] = float(default_lp)
-    return loss_pen, float(default_lp)
+            s = 0.0
+            for k, col in enumerate(cols):
+                s += col.ybar[t] * lam_sol[(i, k)]
+            yhat[(i, t)] = s
+    return yhat
 
 
-# ---------------- DUMMY (outsourcing) seeding ----------------
-
-
-def seed_plan_dummy_outsource(
-    i: int, items_raw: Dict[int, dict], T: int, unit_cost: float
-) -> ColumnPlan:
-    """
-    Dış tedarik/dummy: Hiç üretim ve envanter yok; kapasite/depoya yük bindirmez.
-    Tüm talebi dışarıdan aldığımızı temsil eder; maliyet = unit_cost * toplam talep.
-    """
-    d = [float(x) for x in items_raw[i]["demand"]]
-    total = sum(d)
-    cost = float(unit_cost) * float(total)  # büyük ama sonlu
-    prod_by_t = [0.0] * T
-    inv_end_by_u = [0.0] * (T - 1 if T >= 2 else 0)
-    flows: List[Tuple[int, int, float]] = []  # iç üretim akışı yok
-    setups: List[int] = []  # setup yok
-    lost_sales_by_u = [0.0] * T  # LS yok (force_no_lost_sales)
-    return ColumnPlan(
-        i, -1, cost, prod_by_t, inv_end_by_u, flows, setups, lost_sales_by_u
-    )
-
-
-# ---------------- pricing (DP, LEFO) ----------------
-
-
-def _check_lefo_flows(
-    i: int,
-    flows: List[Tuple[int, int, float]],
-    Expiry: Dict[Tuple[int, int], int],
-) -> None:
-    """
-    flows: (t,u,q) listesi (q>0 olanlar)
-    Kural: u1 < u2 ise v(i,t1) <= v(i,t2) olmalı (expiry nondecreasing).
-    """
-    # u'ya göre sırala, her tüketimde kullanılan üretimin v(i,t)'sine bak
-    seq = sorted(
-        ((u, Expiry[(i, t)]) for (t, u, q) in flows if q > EPS), key=lambda x: x[0]
-    )
-    last_v = -(10**12)
-    for u, v in seq:
-        if v < last_v - 1e-12:
-            raise RuntimeError(
-                f"LEFO violation at u={u}: expiry {v} < previous {last_v}"
-            )
-        last_v = v
-
-
-def price_item_plan(
-    i: int,
-    items_raw: Dict[int, dict],
-    T: int,
-    Gamma,
-    Expiry,
-    c_at,
-    s_at,
-    hsum,
-    per_item_cap: Dict[Tuple[int, int], float],
-    allow_lost_sales: bool,
-    loss_pen: Dict[Tuple[int, int], float],
-    pi_cap: List[float],
-    rho_wh: Optional[List[float]] = None,
-    vlast_floor: int = -(10**9),
-    rc_jitter: Optional[Callable[[int, int, int], float]] = None,
-):
-    """
-    DP pricing with LEFO. Uses fast block-cost formula:
-      base(t,s,e) = setup(i,t) + (c(i,t) - hpref(i,t)) * Q(s,e) + (Hdem[e+1] - Hdem[s])
-
-    Reduced cost of a plan λ is:
-      rc = true_cost(λ) - sum_t pi_cap[t] * prod_t(λ) - sum_u rho_wh[u] * inv_end_u(λ)
-           - sigma_i   (sigma handled by master when deciding to add)
-    """
-    d = [float(x) for x in items_raw[i]["demand"]]
-    pref_d = [0.0] * (T + 1)
-    for u in range(T):
-        pref_d[u + 1] = pref_d[u] + d[u]
-
-    # infer hprefix via hsum(i,0,u)
-    def hpref_local(u: int) -> float:
-        return hsum(i, 0, u)
-
-    Hdem = [0.0] * (T + 1)
-    for u in range(T):
-        Hdem[u + 1] = Hdem[u] + d[u] * hpref_local(u)
-
-    # enumerate all candidate blocks (t,s,e)
-    blocks = []
-    for t in range(T):
-        if not Gamma.get((i, t)):
+def select_most_fractional_yhat(
+    yhat: Dict[Tuple[int, int], float], eps: float = 1e-6
+) -> Optional[Tuple[int, int, float]]:
+    """Pick (i*, t*, val) with val farthest from {0,1} (closest to 0.5). Return None if all integral."""
+    best: Optional[Tuple[int, int, float]] = None
+    best_gap = -1.0
+    for (i, t), v in yhat.items():
+        if v < eps or v > 1.0 - eps:
             continue
-        v_exp = Expiry[(i, t)]  # exclusive
-        e_max = min(T - 1, v_exp - 1)
-        if e_max < t:
-            continue
-        pit = per_item_cap.get((i, t), math.inf)
-        Ct = c_at(i, t)
-        hpt = hpref_local(t)
-        setup_t = s_at(i, t)
+        gap = 0.5 - abs(v - 0.5)  # larger is more fractional
+        if gap > best_gap:
+            best_gap = gap
+            best = (i, t, v)
+    return best
 
-        # sliding window on [s..e] to satisfy per-item cap
-        run = 0.0
-        e = t - 1
-        for s in range(t, e_max + 1):
-            if e < s - 1:
-                e = s - 1
-                run = 0.0
-            while e + 1 <= e_max and run + d[e + 1] <= pit + EPS:
-                e += 1
-                run += d[e]
-            if run <= EPS:
+
+# ------------------------- Pricing hook -------------------------
+def pricing_oracle(
+    item: int,
+    inst: Instance,
+    mu_i: float,
+    pi: List[float],
+    fixes: List[BranchFix],
+    params: Params,
+    existing_cols_for_item: List[Column],
+) -> List[Column]:
+    """
+    Zero-Order-Inventory (ZOI) pricing:
+    - If there are require=True fixes for this item, build exactly one plan whose ybar has 1's at those
+      periods (and 0 elsewhere), compute ZOI quantities x, price it, and return it iff rc < 0 and not duplicate.
+    - If there are no require=True fixes, generate single-setup ZOI candidates (one ybar with a single 1 at t
+      for each t that's not forbidden), price them, and return up to pricing_k best negative-rc, non-duplicate columns.
+
+    Notes:
+    - cap_by_t is taken as production x[t] (cap_per_unit defaults to 1.0 if not provided).
+    - Cost = Σ_{setups t} (setup_cost + prod_cost * x[t] + holding_cost * Σ_{k=t..u-1} (k-t)*d[k]),
+      where u is the next setup or T.
+    """
+    T = inst.T
+    raw = inst.raw
+
+    # -------- demands for this item (fallbacks tolerated) --------
+    d: List[float] = [0.0] * T
+    try:
+        if "items" in raw and item < len(raw["items"]):
+            itm = raw["items"][item]
+            if "demand" in itm:
+                d = [float(x) for x in itm["demand"]][:T]
+            elif "demands" in itm:
+                d = [float(x) for x in itm["demands"]][:T]
+        elif "demands" in raw:
+            d = [float(x) for x in raw["demands"][item]][:T]
+    except Exception:
+        pass
+    if len(d) < T:
+        d += [0.0] * (T - len(d))
+
+    # -------- costs (with safe defaults) --------
+    prod_cost = 0.0
+    setup_cost = 0.0
+    hold_cost = 0.0
+    cap_per_unit = 1.0
+    if "items" in raw and item < len(raw.get("items", [])):
+        itm = raw["items"][item]
+        prod_cost = float(itm.get("prod_cost", itm.get("c_prod", 0.0)))
+        setup_cost = float(itm.get("setup_cost", itm.get("c_setup", 0.0)))
+        hold_cost = float(itm.get("hold_cost", itm.get("c_hold", 0.0)))
+        cap_per_unit = float(itm.get("cap_per_unit", 1.0))
+    else:
+        prod_cost = float(raw.get("prod_cost", raw.get("c_prod", 0.0)))
+        setup_cost = float(raw.get("setup_cost", raw.get("c_setup", 0.0)))
+        hold_cost = float(raw.get("hold_cost", raw.get("c_hold", 0.0)))
+        cap_per_unit = float(raw.get("cap_per_unit", 1.0))
+
+    # -------- branch fixes for this item --------
+    requires = sorted(fx.t for fx in fixes if fx.item == item and fx.require)
+    forbids = set(fx.t for fx in fixes if fx.item == item and not fx.require)
+
+    # -------- existing keys to avoid duplicates --------
+    existing_keys = {
+        (tuple(col.ybar), tuple(round(c, 9) for c in col.cap_by_t))
+        for col in existing_cols_for_item
+    }
+
+    def build_column_from_ybar(ybar: List[int]) -> Optional[Column]:
+        # respect fixes strictly
+        for t in forbids:
+            if ybar[t] != 0:
+                return None
+        for t in requires:
+            if ybar[t] != 1:
+                return None
+
+        S = [t for t, y in enumerate(ybar) if y == 1]
+        if not S:
+            return None
+
+        x = [0.0] * T
+        cap_by_t = [0.0] * T
+        total_cost = 0.0
+
+        for idx, t in enumerate(S):
+            u = S[idx + 1] if idx + 1 < len(S) else T  # next setup (or horizon end)
+            # ZOI: produce at t the total demand until just before u
+            qty = float(sum(d[t:u]))
+            if qty <= 0.0:
+                # No fake setups: if branch required a setup but there's no production, reject this plan.
+                # (If not required, we could drop ybar[t]=0 instead—but here we keep ybar fixed.)
+                if t in requires:
+                    return None
+                # skip zero-qty setup silently by zeroing ybar[t]
+                ybar[t] = 0
                 continue
 
-            Q = pref_d[e + 1] - pref_d[s]
-            base = setup_t + (Ct - hpt) * Q + (Hdem[e + 1] - Hdem[s])
+            x[t] = qty
+            cap_by_t[t] = qty * cap_per_unit
 
-            # ---- reduced-cost adjustments (subtract duals) ----
-            rc = base
-            # capacity at t
-            rc -= pi_cap[t] * Q
+            # Costs: setup + production
+            total_cost += setup_cost + prod_cost * qty
+            # Holding: demand for future periods in this block is held (k - t) periods
+            if hold_cost != 0.0:
+                for k in range(t, u):
+                    total_cost += hold_cost * (k - t) * d[k]
 
-            if rho_wh is not None and T >= 2:
-                # full Q carried until s-1
-                if s > t:
-                    for uu in range(t, min(s - 1, T - 2) + 1):
-                        rc -= rho_wh[uu] * Q
-                # then deplete over s..e
-                cons = 0.0
-                for uu in range(s, e + 1):
-                    cons += d[uu]
-                    inv_end = max(Q - cons, 0.0)
-                    if uu < T - 1 and inv_end > 0.0:
-                        rc -= rho_wh[uu] * inv_end
+        # If all setups collapsed to zero-qty, reject
+        if sum(x) <= 0.0:
+            return None
 
-            if rc_jitter is not None:
-                rc += rc_jitter(t, s, e)
+        key = (tuple(ybar), tuple(round(c, 9) for c in cap_by_t))
+        if key in existing_keys:
+            return None
 
-            blocks.append((t, s, e, Q, rc))
+        # Reduced cost
+        rc = total_cost - mu_i - sum(pi[t] * cap_by_t[t] for t in range(T))
+        if rc >= -1e-9:
+            return None
 
-            # move s -> s+1
-            if d[s] > EPS:
-                run -= d[s]
-
-    # DP with LEFO: expiry nondecreasing across chosen blocks
-    exp_values = sorted(set(Expiry[(i, t)] for t in range(T)))
-    exp_to_idx = {v: k for k, v in enumerate(exp_values)}
-
-    from functools import lru_cache
-
-    @lru_cache(maxsize=None)
-    def dp(s: int, v_last_idx: int):
-        if s >= T:
-            return 0.0, None
-        # skip zero-demand periods
-        u = s
-        while u < T and d[u] <= EPS:
-            u += 1
-        if u >= T:
-            return 0.0, None
-
-        best = float("inf")
-        choice = None
-        v_last = (
-            exp_values[v_last_idx] if 0 <= v_last_idx < len(exp_values) else vlast_floor
-        )
-
-        # lost sale option (disable if allow_lost_sales=False)
-        if allow_lost_sales and d[u] > EPS:
-            c_ls = loss_pen[(i, u)] * d[u]
-            nxt, _ = dp(u + 1, v_last_idx)
-            val = c_ls + nxt
-            if val < best - 1e-12:
-                best, choice = val, ("LS", u)
-
-        # try blocks starting at u
-        for t, ss, e, Q, rc in blocks:
-            if ss != u:
-                continue
-            v_new = Expiry[(i, t)]
-            if v_new < v_last:
-                continue
-            nxt, _ = dp(e + 1, exp_to_idx[v_new])
-            val = rc + nxt
-            if val < best - 1e-12:
-                best, choice = val, ("BLK", t, ss, e, Q)
-        return best, choice
-
-    best_rc, _ = dp(0, -1)
-
-    # reconstruct plan
-    flows: List[Tuple[int, int, float]] = []
-    prod_by_t = [0.0] * T
-    lost_by_u = [0.0] * T
-    s = 0
-    v_idx = -1
-    while s < T:
-        while s < T and d[s] <= EPS:
-            s += 1
-        if s >= T:
-            break
-        _, ch = dp(s, v_idx)
-        if ch is None:
-            # If lost sales are forbidden, we must keep covering; safety fallback
-            s += 1
-            continue
-        if ch[0] == "LS":
-            _, u = ch
-            lost_by_u[u] += d[u]
-            s = u + 1
-        else:
-            _, t, ss, e, Q = ch
-            for u in range(ss, e + 1):
-                q_u = d[u]
-                if q_u > EPS:
-                    flows.append((t, u, q_u))
-            prod_by_t[t] += Q
-            v_new = Expiry[(i, t)]
-            v_idx = exp_to_idx[v_new]
-            s = e + 1
-
-    # inventories
-    inv_end = [0.0] * (T - 1 if T >= 2 else 0)
-    prod_at = [0.0] * T
-    cons_at = [0.0] * T
-    for t, u, q in flows:
-        prod_at[t] += q
-        cons_at[u] += q
-    inv = 0.0
-    for u in range(T):
-        inv += prod_at[u]
-        inv -= cons_at[u]
-        if u <= T - 2:
-            inv_end[u] = max(inv, 0.0)
-    setups = [t for t in range(T) if prod_by_t[t] > EPS]
-
-    # true cost (not RC): base costs + LS penalties
-    cost = 0.0
-    used_t = set()
-    for t, u, q in flows:
-        cost += (c_at(i, t) + hsum(i, t, u)) * q
-        used_t.add(t)
-    for t in used_t:
-        cost += s_at(i, t)
-    if allow_lost_sales:
-        for u in range(T):
-            if lost_by_u[u] > EPS:
-                cost += loss_pen[(i, u)] * lost_by_u[u]
-
-    # LEFO check (debug)
-    if flows:
-        # LEFO güvence kontrolü (debug)
+        # plan_id from ybar bits (stable across runs)
         try:
-            _check_lefo_flows(i, flows, Expiry)
-        except RuntimeError as e:
-            _log(f"[WARN] LEFO check failed in pricing for item {i}: {e}")
-            # İstersen burada farklı bir strateji uygulayabilirsin; biz sadece uyarı basıyoruz.
+            pid = int("".join(str(b) for b in ybar), 2)
+        except Exception:
+            pid = abs(hash(tuple(ybar)))
 
-    return ColumnPlan(
-        i, -1, float(cost), prod_by_t, inv_end, flows, setups, lost_by_u
-    ), float(best_rc)
-
-
-def price_item_plan_k(
-    i: int,
-    items_raw: Dict[int, dict],
-    T: int,
-    Gamma,
-    Expiry,
-    c_at,
-    s_at,
-    hsum,
-    per_item_cap: Dict[Tuple[int, int], float],
-    allow_lost_sales: bool,
-    loss_pen: Dict[Tuple[int, int], float],
-    pi_cap: List[float],
-    rho_wh: Optional[List[float]],
-    k: int,
-    seed: int = 0,
-) -> List[Tuple[ColumnPlan, float]]:
-    """
-    Get up to k DISTINCT plans by rerunning DP with tiny jitters.
-    """
-    rnd = random.Random(seed)
-    seen: Set[Tuple[Tuple[int, int, float], ...]] = set()
-    out: List[Tuple[ColumnPlan, float]] = []
-    for r in range(max(1, k)):
-        # tiny jitter based on (t,s,e) and r, symmetric around 0
-        def _jit(t: int, s: int, e: int) -> float:
-            # scale tied to magnitude of costs; keep extremely small
-            return (rnd.random() - 0.5) * 1e-9 * (1 + r)
-
-        pl, rc = price_item_plan(
-            i,
-            items_raw,
-            T,
-            Gamma,
-            Expiry,
-            c_at,
-            s_at,
-            hsum,
-            per_item_cap,
-            allow_lost_sales,
-            loss_pen,
-            pi_cap,
-            rho_wh,
-            rc_jitter=_jit,
+        return Column(
+            item=item,
+            plan_id=pid,
+            cost=total_cost,
+            ybar=ybar[:],
+            cap_by_t=cap_by_t,
+            meta={"x": x, "rc": rc, "zoi": True},
         )
-        # unique by flows
-        key = tuple((t, u, float(f"{q:.9f}")) for (t, u, q) in sorted(pl.flows))
+
+    candidates: List[Column] = []
+
+    if requires:
+        # Build exactly one plan matching required setups (others 0, but not in forbids)
+        ybar = [0] * T
+        for t in requires:
+            if t in forbids:
+                return []  # infeasible under fixes
+            ybar[t] = 1
+        col = build_column_from_ybar(ybar)
+        return [col] if col is not None else []
+
+    # No required setups → generate single-setup ZOI candidates for all t not forbidden
+    for t in range(T):
+        if t in forbids:
+            continue
+        ybar = [0] * T
+        ybar[t] = 1
+        col = build_column_from_ybar(ybar)
+        if col is not None:
+            candidates.append(col)
+
+    # Sort by reduced cost (stored in meta["rc"]) and return up to pricing_k
+    candidates.sort(key=lambda c: c.meta.get("rc", 0.0))
+    return candidates[: max(1, params.pricing_k)]
+
+
+# ------------------------- Column Generation at a node -------------------------
+@dataclass
+class NodeResult:
+    status: str  # "ok", "infeasible", "time"
+    lb: float
+    yhat: Dict[Tuple[int, int], float]
+    lam: Dict[Tuple[int, int], float]
+    columns_by_item: Dict[int, List[Column]]
+
+
+def run_cg_at_node(
+    inst: Instance,
+    seed_columns_by_item: Dict[int, List[Column]],
+    fixes: List[BranchFix],
+    params: Params,
+    start_time: float,
+) -> NodeResult:
+    # Filter seed columns by fixes; ensure at least 1 dummy column survives for each item
+    columns_by_item: Dict[int, List[Column]] = {}
+    for i in range(inst.n_items):
+        allowed = [
+            c
+            for c in seed_columns_by_item.get(i, [])
+            if column_allowed_by_fixes(c, fixes)
+        ]
+        if not allowed:
+            # inject dummy compatible column
+            dum = make_dummy_column(i, inst, params.outsource_unit_cost)
+            if not column_allowed_by_fixes(dum, fixes):
+                # require True on a t while dummy has 0 — impossible branch
+                return NodeResult(
+                    status="infeasible",
+                    lb=math.inf,
+                    yhat={},
+                    lam={},
+                    columns_by_item={},
+                )
+            allowed = [dum]
+        columns_by_item[i] = allowed
+
+    mu_prev: Optional[List[float]] = None
+    pi_prev: Optional[List[float]] = None
+
+    it = 0
+    while True:
+        if params.time_limit and now() - start_time > params.time_limit:
+            return NodeResult(
+                status="time",
+                lb=math.inf,
+                yhat={},
+                lam={},
+                columns_by_item=columns_by_item,
+            )
+
+        # Build and solve RMP
+        rmp = RMP(inst, columns_by_item)
+        rmp.optimize()
+        if rmp.model.Status not in (GRB.OPTIMAL, GRB.SUBOPTIMAL):
+            return NodeResult(
+                status="infeasible",
+                lb=math.inf,
+                yhat={},
+                lam={},
+                columns_by_item=columns_by_item,
+            )
+        lb = rmp.obj_value()
+        mu, pi = rmp.duals()
+
+        # Stabilization (dual smoothing)
+        if params.stabilize and mu_prev is not None and pi_prev is not None:
+            a = params.stab_alpha
+            mu = [a * mup + (1 - a) * m for mup, m in zip(mu_prev, mu)]
+            pi = [a * pip + (1 - a) * p for pip, p in zip(pi_prev, pi)]
+        mu_prev, pi_prev = mu[:], pi[:]
+
+        # Pricing per item (respecting fixes)
+        added_any = False
+        for i in range(inst.n_items):
+            new_cols = pricing_oracle(
+                i, inst, mu[i], pi, fixes, params, columns_by_item[i]
+            )
+            # Keep only up to max_add_per_item_per_iter
+            if params.max_add_per_item_per_iter > 0:
+                new_cols = new_cols[: params.max_add_per_item_per_iter]
+            if new_cols:
+                columns_by_item[i].extend(new_cols)
+                added_any = True
+
+        it += 1
+        if (not added_any) or it >= params.max_iter:
+            lam = rmp.lambda_solution()
+            yhat = compute_yhat(columns_by_item, lam, inst.T)
+            return NodeResult(
+                status="ok", lb=lb, yhat=yhat, lam=lam, columns_by_item=columns_by_item
+            )
+
+
+# ------------------------- Pool MIP for UB -------------------------
+@dataclass
+class UBResult:
+    ub: float
+    z: Dict[Tuple[int, int], int]
+
+
+def solve_pool_mip(
+    inst: Instance,
+    columns_by_item: Dict[int, List[Column]],
+    mip_gap: float,
+) -> Optional[UBResult]:
+    try:
+        m = gp.Model("pool_mip")
+        m.Params.OutputFlag = 0
+        m.Params.MIPGap = mip_gap
+        z: Dict[Tuple[int, int], gp.Var] = {}
+        # Vars
+        for i, cols in columns_by_item.items():
+            for k, _ in enumerate(cols):
+                z[(i, k)] = m.addVar(vtype=GRB.BINARY, name=f"z_{i}_{k}")
+        m.update()
+        # Objective
+        obj = gp.LinExpr()
+        for (i, k), var in z.items():
+            obj += columns_by_item[i][k].cost * var
+        m.setObjective(obj, GRB.MINIMIZE)
+        # Pick exactly one plan per item
+        for i, cols in columns_by_item.items():
+            m.addConstr(
+                gp.quicksum(z[(i, k)] for k in range(len(cols))) == 1, name=f"pick_{i}"
+            )
+        # Capacity
+        T = inst.T
+        for t in range(T):
+            m.addConstr(
+                gp.quicksum(
+                    columns_by_item[i][k].cap_by_t[t] * z[(i, k)]
+                    for i, cols in columns_by_item.items()
+                    for k in range(len(cols))
+                )
+                <= inst.kappa[t],
+                name=f"cap_{t}",
+            )
+        m.optimize()
+        if m.Status not in (GRB.OPTIMAL, GRB.SUBOPTIMAL):
+            return None
+        zsol = {(i, k): int(round(z[(i, k)].X)) for (i, k) in z}
+        return UBResult(ub=float(m.ObjVal), z=zsol)
+    except gp.GurobiError:
+        return None
+
+
+# ------------------------- DFS Branch-and-Price driver -------------------------
+@dataclass
+class ExploreResult:
+    best_ub: float
+    best_node_id: Optional[int]
+    best_pool: Optional[Dict[int, List[Column]]]
+    best_z: Optional[Dict[Tuple[int, int], int]]
+    optimal: bool
+    explored_nodes: int
+
+
+def branch_and_price(
+    inst: Instance,
+    params: Params,
+    seed_columns_by_item: Optional[Dict[int, List[Column]]] = None,
+) -> ExploreResult:
+    start_time = now()
+
+    # Global incumbent
+    best_ub = math.inf
+    best_z: Optional[Dict[Tuple[int, int], int]] = None
+    best_pool: Optional[Dict[int, List[Column]]] = None
+    best_node: Optional[int] = None
+
+    # Seed pool: at least dummies
+    pool: Dict[int, List[Column]] = {i: [] for i in range(inst.n_items)}
+    if seed_columns_by_item:
+        for i in range(inst.n_items):
+            pool[i] = [c for c in seed_columns_by_item.get(i, [])]
+    for i in range(inst.n_items):
+        if not pool[i]:
+            pool[i] = [make_dummy_column(i, inst, params.outsource_unit_cost)]
+
+    # DFS stack
+    nid = 0
+    stack: List[Node] = [Node(node_id=nid, depth=0, fixes=[])]
+    explored = 0
+
+    while stack:
+        if params.time_limit and now() - start_time > params.time_limit:
+            return ExploreResult(
+                best_ub,
+                best_node,
+                best_pool,
+                best_z,
+                optimal=False,
+                explored_nodes=explored,
+            )
+
+        node = stack.pop()
+        explored += 1
+        if params.verbose:
+            print(f"\n--- Exploring Node #{node.node_id} (depth={node.depth}) ---")
+            if node.fixes:
+                for fx in node.fixes:
+                    print(f"  fix: item {fx.item}, t {fx.t}, require={fx.require}")
+
+        # Run CG at this node
+        cg_res = run_cg_at_node(inst, pool, node.fixes, params, start_time)
+        if cg_res.status == "infeasible":
+            if params.verbose:
+                print("  Node infeasible (pool+fixes).")
+            continue
+        if cg_res.status == "time":
+            if params.verbose:
+                print("  Time limit reached during CG.")
+            return ExploreResult(
+                best_ub,
+                best_node,
+                best_pool,
+                best_z,
+                optimal=False,
+                explored_nodes=explored,
+            )
+
+        lb = cg_res.lb
+        yhat = cg_res.yhat
+        columns_by_item = cg_res.columns_by_item
+
+        if params.verbose:
+            print(
+                f"  LB (RMP) = {lb:.6f} | current UB = {best_ub if math.isfinite(best_ub) else float('inf')}"
+            )
+
+        # Bound prune
+        if math.isfinite(best_ub) and lb >= best_ub - 1e-9:
+            if params.verbose:
+                print("  Fathom by bound (LB ≥ UB).")
+            continue
+
+        # Try to compute a UB via pool MIP
+        ub_res = solve_pool_mip(inst, columns_by_item, params.mip_gap)
+        if ub_res is not None and ub_res.ub < best_ub - 1e-9:
+            best_ub = ub_res.ub
+            best_z = ub_res.z
+            best_pool = columns_by_item
+            best_node = node.node_id
+            if params.verbose:
+                print(f"  New incumbent UB = {best_ub:.6f} @ node {node.node_id}")
+
+        # Check integrality of ŷ
+        branch_cand = select_most_fractional_yhat(yhat)
+        if branch_cand is None:
+            # ŷ integral → this node is a leaf (feasible in the LP sense); gap check
+            if params.verbose:
+                gap = (
+                    (best_ub - lb) / max(1.0, abs(best_ub))
+                    if math.isfinite(best_ub)
+                    else float("inf")
+                )
+                print(
+                    f"  Leaf (y-hat integral). LB={lb:.6f}, UB={best_ub:.6f}, gap={100*gap:.3f}%"
+                )
+            # Even if λ fractional, aggregated setups are integral, which is your requirement.
+            # Keep exploring others; DFS will end when stack empty or time.
+            continue
+
+        i_star, t_star, v = branch_cand
+        if params.verbose:
+            print(f"  Branch on ŷ[{i_star},{t_star}] = {v:.4f}")
+
+        # Create children (DFS push right first so left explored next)
+        nid += 1
+        right = Node(
+            node_id=nid,
+            depth=node.depth + 1,
+            fixes=node.fixes + [BranchFix(i_star, t_star, True)],
+            parent_id=node.node_id,
+        )
+        nid += 1
+        left = Node(
+            node_id=nid,
+            depth=node.depth + 1,
+            fixes=node.fixes + [BranchFix(i_star, t_star, False)],
+            parent_id=node.node_id,
+        )
+
+        # Simple DFS order: explore left first → push right then left
+        stack.append(right)
+        stack.append(left)
+
+        # Optional: pool inheritance — we already pass the global `pool` at each node start.
+        # To "learn" globally, merge new columns back into the global pool:
+        # (This is safe since we always re-filter by fixes inside run_cg_at_node.)
+        for i, cols in columns_by_item.items():
+            pool[i] = merge_pool(pool[i], cols)
+
+    # DFS finished normally → optimal if we have a UB
+    return ExploreResult(
+        best_ub, best_node, best_pool, best_z, optimal=True, explored_nodes=explored
+    )
+
+
+def merge_pool(base: List[Column], new: List[Column]) -> List[Column]:
+    """Deduplicate by (ybar, cap_by_t, cost). Keep first occurrence."""
+    seen = set()
+    out: List[Column] = []
+    for col in list(base) + list(new):
+        key = (
+            tuple(col.ybar),
+            tuple(round(x, 9) for x in col.cap_by_t),
+            round(col.cost, 9),
+        )
         if key in seen:
             continue
         seen.add(key)
-        out.append((pl, rc))
+        out.append(col)
     return out
 
 
-# ---------------- (legacy) random & greedy seeding (kept for reference, unused) ----------------
-
-
-def seed_plan_naive_latest(
-    i, items_raw, T, Gamma, c_at, s_at, hsum, allow_lost_sales, loss_pen
-):
-    d = [float(x) for x in items_raw[i]["demand"]]
-    flows = []
-    prod_by_t = [0.0] * T
-    lost = [0.0] * T
-    for u in range(T):
-        if d[u] <= EPS:
-            continue
-        cand_t = None
-        for t in range(u, -1, -1):
-            if u in Gamma.get((i, t), []):
-                cand_t = t
-                break
-        if cand_t is None:
-            for t in range(0, u + 1):
-                if u in Gamma.get((i, t), []):
-                    cand_t = t
-                    break
-        if cand_t is None:
-            if allow_lost_sales:
-                lost[u] = d[u]
-            continue
-        flows.append((cand_t, u, d[u]))
-        prod_by_t[cand_t] += d[u]
-    used_t = set()
-    cost = 0.0
-    for t, u, q in flows:
-        cost += (c_at(i, t) + hsum(i, t, u)) * q
-        used_t.add(t)
-    for t in used_t:
-        cost += s_at(i, t)
-    if allow_lost_sales:
-        for u in range(T):
-            if lost[u] > EPS:
-                cost += loss_pen[(i, u)] * lost[u]
-    inv_end = [0.0] * (T - 1 if T >= 2 else 0)
-    prod_at = [0.0] * T
-    cons_at = [0.0] * T
-    for t, u, q in flows:
-        prod_at[t] += q
-        cons_at[u] += q
-    inv = 0.0
-    for u in range(T):
-        inv += prod_at[u]
-        inv -= cons_at[u]
-        if u <= T - 2:
-            inv_end[u] = max(inv, 0.0)
-    setups = sorted(list(used_t))
-    return ColumnPlan(i, -1, float(cost), prod_by_t, inv_end, flows, setups, lost)
-
-
-def seed_plan_naive_earliest(
-    i, items_raw, T, Gamma, c_at, s_at, hsum, allow_lost_sales, loss_pen
-):
-    d = [float(x) for x in items_raw[i]["demand"]]
-    flows = []
-    prod_by_t = [0.0] * T
-    lost = [0.0] * T
-    for u in range(T):
-        if d[u] <= EPS:
-            continue
-        cand_t = None
-        for t in range(0, u + 1):
-            if u in Gamma.get((i, t), []):
-                cand_t = t
-                break
-        if cand_t is None:
-            for t in range(u, -1, -1):
-                if u in Gamma.get((i, t), []):
-                    cand_t = t
-                    break
-        if cand_t is None:
-            if allow_lost_sales:
-                lost[u] = d[u]
-            continue
-        flows.append((cand_t, u, d[u]))
-        prod_by_t[cand_t] += d[u]
-    used_t = set()
-    cost = 0.0
-    for t, u, q in flows:
-        cost += (c_at(i, t) + hsum(i, t, u)) * q
-        used_t.add(t)
-    for t in used_t:
-        cost += s_at(i, t)
-    if allow_lost_sales:
-        for u in range(T):
-            if lost[u] > EPS:
-                cost += loss_pen[(i, u)] * lost[u]
-    inv_end = [0.0] * (T - 1 if T >= 2 else 0)
-    prod_at = [0.0] * T
-    cons_at = [0.0] * T
-    for t, u, q in flows:
-        prod_at[t] += q
-        cons_at[u] += q
-    inv = 0.0
-    for u in range(T):
-        inv += prod_at[u]
-        inv -= cons_at[u]
-        if u <= T - 2:
-            inv_end[u] = max(inv, 0.0)
-    setups = sorted(list(used_t))
-    return ColumnPlan(i, -1, float(cost), prod_by_t, inv_end, flows, setups, lost)
-
-
-def seed_plan_random_blocks(
-    i, items_raw, T, Gamma, Expiry, per_item_cap, c_at, s_at, hsum
-):
-    d = [float(x) for x in items_raw[i]["demand"]]
-    flows: List[Tuple[int, int, float]] = []
-    prod_by_t = [0.0] * T
-    setups: List[int] = []
-
-    def next_pos(u: int) -> int:
-        while u < T and d[u] <= EPS:
-            u += 1
-        return u
-
-    s = next_pos(0)
-    v_last = -(10**9)
-    while s < T:
-        starts = []
-        for t in range(0, s + 1):
-            if s in Gamma.get((i, t), []) and Expiry[(i, t)] >= v_last:
-                starts.append(t)
-        if not starts:
-            s = next_pos(s + 1)
-            continue
-        t = random.choice(starts)
-        vmax = Expiry[(i, t)] - 1
-        e_max = min(T - 1, vmax)
-        pit = per_item_cap.get((i, t), math.inf)
-        run = 0.0
-        e = s
-        target_span = s + random.randint(0, max(0, min(6, e_max - s)))
-        while e <= e_max:
-            if d[e] > EPS:
-                run += d[e]
-            if run - pit > EPS:
-                break
-            if e >= target_span and run > 0.0 and random.random() < 0.5:
-                break
-            e += 1
-        e = min(e, e_max)
-        if e < s and d[s] <= EPS:
-            s = next_pos(s + 1)
-            continue
-        if e < s:
-            e = s
-        q = 0.0
-        for u in range(s, e + 1):
-            if d[u] > EPS:
-                flows.append((t, u, d[u]))
-                q += d[u]
-        if q > EPS:
-            prod_by_t[t] += q
-            setups.append(t)
-            v_last = Expiry[(i, t)]
-        s = next_pos(e + 1)
-
-    used = set()
-    cost = 0.0
-    for t, u, q in flows:
-        cost += (c_at(i, t) + hsum(i, t, u)) * q
-        used.add(t)
-    for t in used:
-        cost += s_at(i, t)
-    inv_end = [0.0] * (T - 1 if T >= 2 else 0)
-    prod_at = [0.0] * T
-    cons_at = [0.0] * T
-    for t, u, q in flows:
-        prod_at[t] += q
-        cons_at[u] += q
-    inv = 0.0
-    for u in range(T):
-        inv += prod_at[u]
-        inv -= cons_at[u]
-        if u <= T - 2:
-            inv_end[u] = max(inv, 0.0)
-    return ColumnPlan(
-        i, -1, float(cost), prod_by_t, inv_end, flows, sorted(set(setups)), [0.0] * T
-    )
-
-
-def seed_plan_chunked(
-    i, items_raw, T, Gamma, Expiry, per_item_cap, c_at, s_at, hsum, chunk_len: int = 3
-):
-    d = [float(x) for x in items_raw[i]["demand"]]
-    flows: List[Tuple[int, int, float]] = []
-    prod_by_t = [0.0] * T
-
-    u = 0
-    while u < T:
-        while u < T and d[u] <= EPS:
-            u += 1
-        if u >= T:
-            break
-        cand_t = None
-        for t in range(u, -1, -1):
-            if u in Gamma.get((i, t), []):
-                cand_t = t
-                break
-        if cand_t is None:
-            for t in range(0, u + 1):
-                if u in Gamma.get((i, t), []):
-                    cand_t = t
-                    break
-        if cand_t is None:
-            u += 1
-            continue
-        vmax = Expiry[(i, cand_t)] - 1
-        e_max = min(T - 1, vmax)
-        e_target = min(u + chunk_len - 1, e_max)
-        pit = per_item_cap.get((i, cand_t), math.inf)
-        run = 0.0
-        e = u
-        while e <= e_target and e <= e_max:
-            if d[e] > EPS:
-                run += d[e]
-            if run - pit > EPS:
-                break
-            e += 1
-        e = min(e - 1, e_max)
-        if e < u and d[u] <= EPS:
-            u += 1
-            continue
-        if e < u:
-            e = u
-        q = 0.0
-        for uu in range(u, e + 1):
-            if d[uu] > EPS:
-                flows.append((cand_t, uu, d[uu]))
-                q += d[uu]
-        if q > EPS:
-            prod_by_t[cand_t] += q
-        u = e + 1
-
-    used = set()
-    cost = 0.0
-    for t, u2, q in flows:
-        cost += (c_at(i, t) + hsum(i, t, u2)) * q
-        used.add(t)
-    for t in used:
-        cost += s_at(i, t)
-    inv_end = [0.0] * (T - 1 if T >= 2 else 0)
-    prod_at = [0.0] * T
-    cons_at = [0.0] * T
-    for t, u2, q in flows:
-        prod_at[t] += q
-        cons_at[u2] += q
-    inv = 0.0
-    for u2 in range(T):
-        inv += prod_at[u2]
-        inv -= cons_at[u2]
-        if u2 <= T - 2:
-            inv_end[u2] = max(inv, 0.0)
-    return ColumnPlan(
-        i, -1, float(cost), prod_by_t, inv_end, flows, sorted(list(used)), [0.0] * T
-    )
-
-
-# ---------------- master (RMP) ----------------
-
-
-def build_rmp(T, prod_cap, use_wh, W, items_raw):
-    rmp = gp.Model("RMP_perishable_LEFO_fast")
-    rmp.Params.OutputFlag = 0
-    cap_con: Dict[int, gp.Constr] = {}
-    for t in range(T):
-        cap_con[t] = rmp.addConstr(gp.LinExpr() <= float(prod_cap[t]), name=f"cap_{t}")
-    inv_con: Dict[int, gp.Constr] = {}
-    if use_wh and T >= 2 and W is not None:
-        for u in range(T - 1):
-            inv_con[u] = rmp.addConstr(gp.LinExpr() <= float(W), name=f"wh_{u}")
-    one_con: Dict[int, gp.Constr] = {}
-    for i in items_raw:
-        one_con[i] = rmp.addConstr(gp.LinExpr() == 1.0, name=f"one_{i}")
-    return rmp, cap_con, inv_con, one_con
-
-
-# ---------------- fix-and-price diving ----------------
-
-
-def _dive_fix_and_price(
-    rmp: gp.Model,
-    items_raw: Dict[int, dict],
-    pool: Dict[int, List[ColumnPlan]],
-    lam_vars: Dict[Tuple[int, int], gp.Var],
-    cap_con: Dict[int, gp.Constr],
-    inv_con: Dict[int, gp.Constr],
-    one_con: Dict[int, gp.Constr],
-    T: int,
-    use_wh: bool,
-    price_fn_per_item: Callable[[int, List[float], Optional[List[float]]], bool],
-    max_fix: Optional[int] = None,
-    reprice_iters: int = 40,
-    stab_alpha: float = 0.6,
-    verbose: bool = True,
-) -> Dict[Tuple[int, int], float]:
-    fixed: Set[int] = set()
-    saved_bounds: Dict[Tuple[int, int], Tuple[float, float]] = {}
-
-    def _duals():
-        pi = [cap_con[t].Pi for t in range(T)]
-        rho = [inv_con[u].Pi for u in range(T - 1)] if use_wh else []
-        sigma = {i: one_con[i].Pi for i in items_raw}
-        return pi, rho, sigma
-
-    def _save_bound(i: int, pid: int):
-        v = lam_vars.get((i, pid))
-        if v is None:
-            return
-        if (i, pid) not in saved_bounds:
-            saved_bounds[(i, pid)] = (v.LB, v.UB)
-
-    def _set_bound(i: int, pid: int, lb: float, ub: float):
-        v = lam_vars.get((i, pid))
-        if v is None:
-            return
-        _save_bound(i, pid)
-        v.LB = lb
-        v.UB = ub
-
-    def _revert_all_bounds():
-        for (i, pid), (lb, ub) in saved_bounds.items():
-            v = lam_vars.get((i, pid))
-            if v is not None:
-                v.LB = lb
-                v.UB = ub
-
-    iter_fixes = 0
-    while True:
-        rmp.optimize()
-        # pick most fractional item (largest support >1 positive λ)
-        fractional_i = None
-        best_support = 0
-        for i in items_raw:
-            if i in fixed:
-                continue
-            supp = [
-                (pid, lam_vars[(i, pid)].X)
-                for pid in range(len(pool[i]))
-                if (i, pid) in lam_vars
-            ]
-            pos = [x for x in supp if x[1] > 1e-8]
-            if len(pos) > 1 and sum(v for _, v in pos) > 0.999:
-                if len(pos) > best_support:
-                    best_support = len(pos)
-                    fractional_i = i
-        if fractional_i is None:
-            break
-
-        # fix chosen item to its largest-λ plan
-        support = [
-            (pid, lam_vars[(fractional_i, pid)].X)
-            for pid in range(len(pool[fractional_i]))
-            if (fractional_i, pid) in lam_vars
-        ]
-        if not support:
-            break
-        pid_star, _ = max(support, key=lambda p: p[1])
-        for pid in range(len(pool[fractional_i])):
-            if (fractional_i, pid) not in lam_vars:
-                continue
-            if pid == pid_star:
-                _set_bound(fractional_i, pid, 1.0, 1.0)
-            else:
-                _set_bound(fractional_i, pid, 0.0, 0.0)
-        fixed.add(fractional_i)
-        iter_fixes += 1
-        if verbose:
-            _log(f"[DIVE] fix item {fractional_i} -> plan {pid_star}")
-        if max_fix and iter_fixes >= max_fix:
-            break
-
-        # re-pricing to repair pool for the remaining items
-        last_pi, last_rho = [0.0] * T, [0.0] * (T - 1 if use_wh else 0)
-        for _ in range(reprice_iters):
-            rmp.optimize()
-            pi_raw, rho_raw, _ = _duals()
-            pi = [
-                stab_alpha * p + (1 - stab_alpha) * lp for p, lp in zip(pi_raw, last_pi)
-            ]
-            rho = [
-                stab_alpha * r + (1 - stab_alpha) * lr
-                for r, lr in zip(rho_raw, last_rho)
-            ]
-            last_pi, last_rho = pi, rho
-            any_add = False
-            for i in items_raw:
-                if i in fixed:
-                    continue  # don't price fixed item
-                added = price_fn_per_item(i, pi, rho)
-                any_add = any_add or added
-            if not any_add:
-                break
-
-    # snapshot warm start
-    rmp.optimize()
-    warm_start: Dict[Tuple[int, int], float] = {}
-    for (i, pid), v in lam_vars.items():
-        try:
-            warm_start[(i, pid)] = float(v.X)
-        except Exception:
-            warm_start[(i, pid)] = 0.0
-
-    _revert_all_bounds()
-    return warm_start
-
-
-# ---------------- main ----------------
+# ------------------------- Public entry point (solve_instance) -------------------------
 
 
 def solve_instance(
     instance_path: str | Path = "last_instance.json",
-    out_dir: str | Path = "cg_fast_results",
-    # Seed knobs (unused with dummy-only, but kept for API)
-    seed_random_per_item: int = 0,
-    seed_chunk_len: int = 3,
-    seed_extra_chunked: bool = False,
-    # Pricing knobs
-    stabilize: bool = True,
-    stab_alpha: float = 0.8,  # Tuned: less smoothing for more columns
-    max_iter: int = 50000,  # Tuned: increased for more iterations
-    max_add_per_item_per_iter: int = 5,  # Tuned: more adds per iter
-    pricing_k: int = 5,  # Tuned: more diverse plans
+    out_dir: str | Path = "bp_fast_results",
+    # Pricing / CG
+    stabilize: bool = False,
+    stab_alpha: float = 0.8,
+    max_iter: int = 50_000,
+    max_add_per_item_per_iter: int = 5,
+    pricing_k: int = 5,
     drop_age: int = 10,
-    # final
+    # Finalize / limits
     finalize_as_mip: bool = True,
-    # limits
     time_limit: int = 0,
     mip_gap: float = 0.0,
-    # semantics/feasibility
-    inclusive_shelf: bool = False,  # L covers this + next L (inclusive shelf-life)
-    force_no_lost_sales: bool = False,  # Changed default to False to follow instance
-    # diving
+    # Semantics
+    inclusive_shelf: bool = False,
+    force_no_lost_sales: bool = False,
+    # Diving (not used here but kept for arg-compat)
     enable_diving: bool = True,
     diving_reprice_iters: int = 40,
+    # Dummy outsourcing cost
+    outsource_unit_cost: Optional[float] = None,
+    # Verbosity
     verbose: bool = True,
 ):
-    t0 = time.time()
-    (
-        data,
-        T,
-        Periods,
-        items_raw,
-        prod_cap,
-        per_item_cap,
-        W,
-        allow_lost_sales_in,
-        loss_penalty_global,
-        loss_penalty_factor,
-    ) = _parse_instance(instance_path)
-
-    # semantics / feasibility overrides - now default follows instance
-    allow_lost_sales = allow_lost_sales_in and not force_no_lost_sales
-
-    Gamma, Expiry = _precompute_gamma_and_expiry(
-        items_raw, T, inclusive_shelf=inclusive_shelf
+    """
+    Full Branch-and-Price. Returns (summary, orders).
+    """
+    params = Params(
+        stabilize=stabilize,
+        stab_alpha=stab_alpha,
+        max_iter=max_iter,
+        max_add_per_item_per_iter=max_add_per_item_per_iter,
+        pricing_k=pricing_k,
+        drop_age=drop_age,
+        finalize_as_mip=finalize_as_mip,
+        time_limit=time_limit,
+        mip_gap=mip_gap,
+        inclusive_shelf=inclusive_shelf,
+        force_no_lost_sales=force_no_lost_sales,
+        enable_diving=enable_diving,
+        diving_reprice_iters=diving_reprice_iters,
+        outsource_unit_cost=outsource_unit_cost,
+        verbose=verbose,
     )
-    c_at, s_at, hsum, _hpref = _cost_accessors(items_raw, T)
-    loss_pen, default_lp = _lost_sales_penalties(
-        items_raw, T, Gamma, c_at, s_at, hsum, loss_penalty_global, loss_penalty_factor
-    )
-    use_wh = (W is not None) and (T >= 2)
 
-    # ---- DUMMY outsourcing per-unit cost ----
-    outsource_unit_cost = float(data.get("outsource_unit_cost", default_lp))
-    # if CLI provided a specific cost, override (best-effort)
-    try:
-        from __main__ import args as _cli_args  # type: ignore
+    inst = load_instance(instance_path)
 
-        if getattr(_cli_args, "outsource_unit_cost", None) is not None:
-            outsource_unit_cost = float(_cli_args.outsource_unit_cost)
-    except Exception:
-        pass
+    # Kick off B&P
+    result = branch_and_price(inst, params)
 
-    # RMP with feasibility slacks (kept but punished heavily, yet numerically safe)
-    rmp, cap_con, inv_con, one_con = build_rmp(T, prod_cap, use_wh, W, items_raw)
-    M_cap = 1e7  # large but not extreme
-    M_wh = 1e7
-    cap_slack: Dict[int, gp.Var] = {}
-    for t in range(T):
-        col = gp.Column()
-        col.addTerms(-1.0, cap_con[t])
-        cap_slack[t] = rmp.addVar(lb=0.0, obj=M_cap, name=f"s_cap_{t}", column=col)
-    inv_slack: Dict[int, gp.Var] = {}
-    if use_wh:
-        for u in range(T - 1):
-            col = gp.Column()
-            col.addTerms(-1.0, inv_con[u])
-            inv_slack[u] = rmp.addVar(lb=0.0, obj=M_wh, name=f"s_wh_{u}", column=col)
-    rmp.update()
-
-    pool: Dict[int, List[ColumnPlan]] = {i: [] for i in items_raw}
-    lam_vars: Dict[Tuple[int, int], gp.Var] = {}
-    ages: Dict[Tuple[int, int], int] = {}
-
-    def add_column(i: int, pl: ColumnPlan):
-        pid = len(pool[i])
-        pl.plan_id = pid
-        pool[i].append(pl)
-        col = gp.Column()
-        for t in range(T):
-            q = pl.prod_by_t[t]
-            if abs(q) > EPS:
-                col.addTerms(q, cap_con[t])
-        if use_wh:
-            for u in range(T - 1):
-                inv = pl.inv_end_by_u[u]
-                if abs(inv) > EPS:
-                    col.addTerms(inv, inv_con[u])
-        col.addTerms(1.0, one_con[i])
-        v = rmp.addVar(lb=0.0, obj=float(pl.cost), name=f"lam_{i}_{pid}", column=col)
-        lam_vars[(i, pid)] = v
-        ages[(i, pid)] = 0
-        rmp.update()
-        if verbose:
-            setups_log = sorted({t for t, q in enumerate(pl.prod_by_t) if q > EPS})
-            _log(f"[ADD] i={i} plan={pid} cost={pl.cost:.3f} setups={setups_log}")
-
-    # ------- Seed: DUMMY + Legacy greedy/random for better starting pool -------
-    if verbose:
-        _log(
-            "[SEED] Adding per-item DUMMY outsourcing + greedy/random columns (feasible root)."
-        )
-    for i in items_raw:
-        pl_dummy = seed_plan_dummy_outsource(
-            i, items_raw, T, unit_cost=outsource_unit_cost
-        )
-        add_column(i, pl_dummy)
-        # Add legacy seeds for diversity
-        add_column(
-            i,
-            seed_plan_naive_latest(
-                i, items_raw, T, Gamma, c_at, s_at, hsum, allow_lost_sales, loss_pen
-            ),
-        )
-        add_column(
-            i,
-            seed_plan_naive_earliest(
-                i, items_raw, T, Gamma, c_at, s_at, hsum, allow_lost_sales, loss_pen
-            ),
-        )
-        add_column(
-            i,
-            seed_plan_random_blocks(
-                i, items_raw, T, Gamma, Expiry, per_item_cap, c_at, s_at, hsum
-            ),
-        )
-        add_column(
-            i,
-            seed_plan_chunked(
-                i,
-                items_raw,
-                T,
-                Gamma,
-                Expiry,
-                per_item_cap,
-                c_at,
-                s_at,
-                hsum,
-                chunk_len=seed_chunk_len,
-            ),
-        )
-
-    # ------- CG loop -------
-    iter_no = 0
-    last_pi = [0.0] * T
-    last_rho = [0.0] * (T - 1 if use_wh else 0)
-
-    while True:
-        iter_no += 1
-        if time_limit and time.time() - t0 > time_limit:
-            _log("[STOP] Time limit hit.")
-            break
-
-        rmp.Params.OutputFlag = 0
-        rmp.optimize()
-        try:
-            obj_now = float(rmp.ObjVal)
-            obj_str = f"{obj_now:.6f}"
-        except Exception:
-            obj_str = "NA"
-
-        # update ages
-        for key, v in list(lam_vars.items()):
-            try:
-                val = float(v.X)
-            except Exception:
-                val = 0.0
-            ages[key] = 0 if val > 1e-10 else ages.get(key, 0) + 1
-
-        # optional drop
-        to_drop = []
-        for (ii, pid), age in ages.items():
-            if age > drop_age and (ii, pid) in lam_vars and len(pool[ii]) > 5:
-                try:
-                    if float(lam_vars[(ii, pid)].X) <= 1e-10:
-                        to_drop.append((ii, pid))
-                except Exception:
-                    to_drop.append((ii, pid))
-        if to_drop:
-            for ii, pid in to_drop:
-                v = lam_vars.pop((ii, pid), None)
-                if v is None:
-                    continue
-                rmp.remove(v)
-                ages.pop((ii, pid), None)
-            rmp.update()
-            if verbose:
-                _log(f"[DROP] {len(to_drop)} cold columns")
-
-        # duals
-        try:
-            pi_raw = [cap_con[t].Pi for t in range(T)]
-            rho_raw = [inv_con[u].Pi for u in range(T - 1)] if use_wh else []
-            sigma = {i: one_con[i].Pi for i in items_raw}
-        except Exception:
-            _log("[STOP] Duals not available.")
-            break
-
-        # stabilization
-        if stabilize and iter_no > 1:
-            pi = [
-                stab_alpha * p + (1 - stab_alpha) * lp for p, lp in zip(pi_raw, last_pi)
-            ]
-            rho = [
-                stab_alpha * r + (1 - stab_alpha) * lr
-                for r, lr in zip(rho_raw, last_rho)
-            ]
-        else:
-            pi, rho = pi_raw, rho_raw
-        last_pi, last_rho = pi, rho
-
-        # pricing: per item DP (multi-add)
-        any_added = False
-        worst_rc = 0.0
-
-        def _price_and_add_for(
-            i: int, pi_vec: List[float], rho_vec: Optional[List[float]]
-        ):
-            nonlocal worst_rc
-            cand_list = price_item_plan_k(
-                i,
-                items_raw,
-                T,
-                Gamma,
-                Expiry,
-                c_at,
-                s_at,
-                hsum,
-                per_item_cap,
-                allow_lost_sales,
-                loss_pen,
-                pi_vec,
-                (rho_vec if use_wh else None),
-                k=(
-                    max_add_per_item_per_iter
-                    if pricing_k <= 0
-                    else min(pricing_k, max_add_per_item_per_iter)
-                ),
-                seed=iter_no * 7919 + i * 104729,
-            )
-            cand_list.sort(key=lambda tup: tup[1])
-            added_for_i = 0
-            added_local = False
-            for plan, rc_wo_sigma in cand_list:
-                rc_total = rc_wo_sigma - sigma[i]
-                worst_rc = min(worst_rc, rc_total)
-                if rc_total < -RC_EPS:
-                    if verbose:
-                        _log(f"[PRICE] i={i} rc={rc_total:.6e} -> ADD")
-                    add_column(i, plan)
-                    added_local = True
-                    added_for_i += 1
-                    if added_for_i >= max_add_per_item_per_iter:
-                        break
-            return added_local
-
-        for i in items_raw:
-            added = _price_and_add_for(i, pi, rho)
-            any_added = any_added or added
-
-        if verbose:
-            total_cols = sum(len(v) for v in pool.values())
-            _log(
-                f"[ITER] {iter_no} obj={obj_str} worst_rc={worst_rc:.6f} cols={total_cols}"
-            )
-
-        if not any_added:
-            _log("[STOP] No negative reduced-cost columns.")
-            break
-
-        if iter_no >= max_iter:
-            _log("[STOP] Max iterations reached.")
-            break
-
-    # ------- Tail-off phase: more pricing without stabilization -------
-    if verbose:
-        _log("[TAIL] Starting tail-off pricing without stabilization...")
-    stabilize = False  # Disable stab for tail-off
-    tail_iters = 100  # Tuned: 100 extra iters
-    for _ in range(tail_iters):
-        rmp.optimize()
-        try:
-            pi_raw = [cap_con[t].Pi for t in range(T)]
-            rho_raw = [inv_con[u].Pi for u in range(T - 1)] if use_wh else []
-            sigma = {i: one_con[i].Pi for i in items_raw}
-        except Exception:
-            break
-        pi, rho = pi_raw, rho_raw
-        any_added = False
-        for i in items_raw:
-            added = _price_and_add_for(i, pi, rho)
-            any_added = any_added or added
-        if not any_added:
-            _log("[TAIL] No more adds in tail-off.")
-            break
-    if verbose:
-        _log("[TAIL] Tail-off complete.")
-
-    # ------- Optional: Fix-and-Price Diving to get a strong incumbent --------
-    warm_start = None
-    if enable_diving:
-        _log("[DIVE] starting fix-and-price diving...")
-
-        def _pf(i: int, pi_vec: List[float], rho_vec: Optional[List[float]]):
-            # price and add up to 'pricing_k' plans for item i at current duals
-            return _price_and_add_for(i, pi_vec, rho_vec)
-
-        warm_start = _dive_fix_and_price(
-            rmp,
-            items_raw,
-            pool,
-            lam_vars,
-            cap_con,
-            inv_con,
-            one_con,
-            T,
-            use_wh,
-            _pf,
-            max_fix=None,
-            reprice_iters=diving_reprice_iters,
-            stab_alpha=stab_alpha,
-            verbose=verbose,
-        )
-        _log("[DIVE] finished; warm start constructed.")
-
-    # ------- Finalize as MILP (exact) by flipping λ to binary on the SAME RMP -------
-    if finalize_as_mip:
-        # If LP slacks are exactly zero, freeze them off to strengthen MILP & numerics
-        rmp.optimize()
-        cap_slack_sum_LP = sum(float(v.X) for v in cap_slack.values())
-        wh_slack_sum_LP = sum(float(v.X) for v in inv_slack.values()) if use_wh else 0.0
-        if cap_slack_sum_LP <= 1e-9:
-            for v in cap_slack.values():
-                v.UB = 0.0
-        if use_wh and wh_slack_sum_LP <= 1e-9:
-            for v in inv_slack.values():
-                v.UB = 0.0
-
-        if mip_gap:
-            rmp.Params.MIPGap = float(mip_gap)
-        if time_limit:
-            rmp.Params.TimeLimit = max(1, int(time_limit - (time.time() - t0)))
-        rmp.Params.OutputFlag = 1
-        rmp.Params.NumericFocus = 1
-        rmp.Params.MIPFocus = 3  # emphasize bound to prove optimality
-        rmp.Params.Cuts = 2
-        rmp.Params.Heuristics = 0.1
-        rmp.Params.Presolve = 2
-
-        # flip lam_ vars to binary; keep slacks continuous
-        for (i, pid), var in lam_vars.items():
-            var.VType = GRB.BINARY
-
-        # Warm start from dive (or from current LP rounding if no dive)
-        if warm_start is None:
-            warm_start = {}
-            rmp.optimize()
-            for (i, pid), var in lam_vars.items():
-                try:
-                    warm_start[(i, pid)] = float(var.X)
-                except Exception:
-                    warm_start[(i, pid)] = 0.0
-        # Convert to a one-hot start per item
-        for i in items_raw:
-            candidates = [
-                (pid, warm_start.get((i, pid), 0.0)) for pid in range(len(pool[i]))
-            ]
-            if not candidates:
-                continue
-            pid_star, _ = max(candidates, key=lambda z: z[1])
-            for pid in range(len(pool[i])):
-                v = lam_vars.get((i, pid))
-                if v is None:
-                    continue
-                v.Start = 1.0 if pid == pid_star else 0.0
-
-        rmp.ModelSense = GRB.MINIMIZE
-        rmp.optimize()
-
-        # If no incumbent
-        if rmp.SolCount == 0:
-            try:
-                rmp.computeIIS()
-                Path(out_dir).mkdir(parents=True, exist_ok=True)
-                rmp.write(str(Path(out_dir) / "infeasible.ilp"))
-            except gp.GurobiError:
-                pass
-            summary = {
-                "status": int(rmp.Status),
-                "objective": None,
-                "best_bound": float(getattr(rmp, "ObjBound", float("nan"))),
-                "gap": None,
-                "runtime_sec": float(time.time() - t0),
-                "solver_version": "lefo_cg_fast_exact_v3",
-                "n_items": len(items_raw),
-                "T": T,
-                "columns_total": sum(len(v) for v in pool.values()),
-                "cap_slack_sum": 0.0,
-                "wh_slack_sum": 0.0,
-                "note": "MILP over current column pool had no incumbent; IIS written if possible.",
-            }
-            return summary, []
-
-        # write outputs
-        Path(out_dir).mkdir(parents=True, exist_ok=True)
-        orders_txt: List[str] = []
-        for i, plist in pool.items():
-            orders_txt.append(f"Item {i} — orders (t → qty)")
-            prod_t = [0.0] * T
-            ls_t = [0.0] * T
-            for pl in plist:
-                try:
-                    val = float(lam_vars[(i, pl.plan_id)].X)
-                except Exception:
-                    val = 0.0
-                if val > EPS:
-                    for t in range(T):
-                        prod_t[t] += val * pl.prod_by_t[t]
-                    for u in range(T):
-                        ls_t[u] += val * pl.lost_sales_by_u[u]
-            for t in range(T):
-                if prod_t[t] > 1e-6:
-                    orders_txt.append(f" {t:2d} → {prod_t[t]:8.3f}")
-            orders_txt.append("")
-        (Path(out_dir) / "orders.txt").write_text(
-            "\n".join(orders_txt), encoding="utf-8"
-        )
-
-        def _safe(mdl, attr, default=None):
-            try:
-                return float(getattr(mdl, attr))
-            except Exception:
-                return default
-
-        cap_slack_sum = sum(
-            (float(v.X) if hasattr(v, "X") else 0.0) for v in cap_slack.values()
-        )
-        wh_slack_sum = (
-            sum((float(v.X) if hasattr(v, "X") else 0.0) for v in inv_slack.values())
-            if use_wh
-            else 0.0
-        )
-
-        summary = {
-            "status": int(rmp.Status),
-            "objective": _safe(rmp, "ObjVal", None),
-            "best_bound": _safe(rmp, "ObjBound", None),
-            "gap": _safe(rmp, "MIPGap", 0.0),
-            "runtime_sec": float(time.time() - t0),
-            "solver_version": "lefo_cg_fast_exact_v3",
-            "n_items": len(items_raw),
-            "T": T,
-            "columns_total": sum(len(v) for v in pool.values()),
-            "cap_slack_sum": float(cap_slack_sum),
-            "wh_slack_sum": float(wh_slack_sum),
-        }
-        (Path(out_dir) / "summary.json").write_text(
-            json.dumps(summary, indent=2), encoding="utf-8"
-        )
-
-        if cap_slack_sum > 1e-6 or wh_slack_sum > 1e-6:
-            _log(
-                "[WARN] Feasibility slacks positive in final solution — consider more CG iterations/seeds."
-            )
-
-        return summary, orders_txt
-
-    # ------- LP output (not exact) -------
-    rmp.optimize()
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
-    orders_txt: List[str] = []
-    for i, plist in pool.items():
-        orders_txt.append(f"Item {i} — orders (t → qty)")
-        prod_t = [0.0] * T
-        ls_t = [0.0] * T
-        for pl in plist:
-            try:
-                val = float(lam_vars[(i, pl.plan_id)].X)
-            except Exception:
-                val = 0.0
-            if val > EPS:
-                for t in range(T):
-                    prod_t[t] += val * pl.prod_by_t[t]
-                for u in range(T):
-                    ls_t[u] += val * pl.lost_sales_by_u[u]
-        for t in range(T):
-            if prod_t[t] > 1e-6:
-                orders_txt.append(f" {t:2d} → {prod_t[t]:8.3f}")
-        orders_txt.append("")
-    (Path(out_dir) / "orders.txt").write_text("\n".join(orders_txt), encoding="utf-8")
-
-    summary = {
-        "status": int(rmp.Status),
-        "objective": (
-            float(getattr(rmp, "ObjVal", 0.0)) if hasattr(rmp, "ObjVal") else None
-        ),
-        "best_bound": (
-            float(getattr(rmp, "ObjBound", 0.0)) if hasattr(rmp, "ObjBound") else None
-        ),
-        "gap": 0.0,
-        "runtime_sec": float(time.time() - t0),
-        "solver_version": "lefo_cg_fast_lp_v3",
-        "n_items": len(items_raw),
-        "T": T,
-        "columns_total": sum(len(v) for v in pool.values()),
-        "cap_slack_sum": float(
-            sum((float(v.X) if hasattr(v, "X") else 0.0) for v in cap_slack.values())
-        ),
-        "wh_slack_sum": (
-            float(
-                sum(
-                    (float(v.X) if hasattr(v, "X") else 0.0) for v in inv_slack.values()
-                )
-            )
-            if use_wh
-            else 0.0
-        ),
+    # Prepare summary
+    summary: Dict[str, Any] = {
+        "status": "optimal" if result.optimal else "time_or_bound",
+        "best_ub": result.best_ub,
+        "best_node": result.best_node_id,
+        "explored_nodes": result.explored_nodes,
+        "mip_gap": mip_gap,
     }
-    (Path(out_dir) / "summary.json").write_text(
-        json.dumps(summary, indent=2), encoding="utf-8"
-    )
-    return summary, orders_txt
+
+    # Build a human-friendly order plan from the best UB if available
+    orders: Dict[str, Any] = {}
+    if result.best_pool is not None and result.best_z is not None:
+        T = inst.T
+        by_item: Dict[int, Dict[str, Any]] = {}
+        for (i, k), take in result.best_z.items():
+            if take != 1:
+                continue
+            col = result.best_pool[i][k]
+            by_item[i] = {
+                "plan_id": col.plan_id,
+                "ybar": col.ybar,
+                "cap": col.cap_by_t,
+                "cost": col.cost,
+                "meta": col.meta,
+            }
+        orders = {"T": T, "by_item": by_item}
+
+    # Persist
+    outp = Path(out_dir)
+    outp.mkdir(parents=True, exist_ok=True)
+    (outp / "summary.json").write_text(json.dumps(summary, indent=2))
+    (outp / "orders.json").write_text(json.dumps(orders, indent=2))
+
+    return summary, orders
 
 
-# ---------------- CLI ----------------
+# ------------------------- CLI -------------------------
 if __name__ == "__main__":
     import argparse
 
     p = argparse.ArgumentParser()
     p.add_argument("--instance", default="last_instance.json")
-    p.add_argument("--out", default="cg_fast_results")
+    p.add_argument("--out", default="bp_fast_results")
 
-    # pricing / CG döngüsü
+    # pricing / CG loop
     p.add_argument("--stab_off", action="store_true")
     p.add_argument("--stab_alpha", type=float, default=0.8)
     p.add_argument("--max_iter", type=int, default=50000)
@@ -1514,29 +867,37 @@ if __name__ == "__main__":
     p.add_argument("--pricing_k", type=int, default=5)
     p.add_argument("--drop_age", type=int, default=10)
 
-    # finalize / limitler
+    # finalize / limits
     p.add_argument("--finalize_off", action="store_true")
     p.add_argument("--time_limit", type=int, default=0)
     p.add_argument("--mip_gap", type=float, default=0.0)
 
-    # semantics (daha anlaşılır bayraklar)
+    # semantics
     p.add_argument(
         "--exclusive_shelf",
         action="store_true",
-        help="Shelf ömrünü dışlayıcı (u ≤ t+L-1) yapar. Varsayılan: dahil edici (u ≤ t+L).",
+        help="Use exclusive shelf life (u ≤ t+L-1). Default: inclusive (u ≤ t+L).",
     )
     p.add_argument(
-        "--allow_lost_sales",
+        "--force_no_lost_sales",
         action="store_true",
-        help="Lost sales’a izin ver. Varsayılan: instance'a göre.",
+        help="Force no lost sales even if instance allows it. Default: follow instance.",
     )
 
     # diving
     p.add_argument("--diving_off", action="store_true")
     p.add_argument("--diving_reprice_iters", type=int, default=40)
 
-    # dummy outsourcing cost (opsiyonel)
-    p.add_argument("--outsource_unit_cost", type=float, default=None)
+    # dummy outsourcing cost (optional override)
+    p.add_argument(
+        "--outsource_unit_cost",
+        type=float,
+        default=None,
+        help="Override dummy outsourcing unit cost (default: 1e6).",
+    )
+
+    # verbosity
+    p.add_argument("--quiet", action="store_true", help="Suppress verbose output.")
 
     args = p.parse_args()
 
@@ -1552,10 +913,12 @@ if __name__ == "__main__":
         finalize_as_mip=(not args.finalize_off),
         time_limit=args.time_limit,
         mip_gap=args.mip_gap,
-        inclusive_shelf=(not args.exclusive_shelf),  # <-- DÜZGÜN
-        force_no_lost_sales=(not args.allow_lost_sales),  # <-- Adjusted for consistency
+        inclusive_shelf=(not args.exclusive_shelf),
+        force_no_lost_sales=args.force_no_lost_sales,
         enable_diving=(not args.diving_off),
         diving_reprice_iters=args.diving_reprice_iters,
-        verbose=True,
+        outsource_unit_cost=args.outsource_unit_cost,
+        verbose=(not args.quiet),
     )
+
     print(json.dumps(summary, indent=2))

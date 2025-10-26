@@ -10,12 +10,6 @@
 # I/O same as other solvers: returns (summary, orders).
 # CLI unchanged, with extra optional flag: --outsource_unit_cost
 #
-# Improvements applied:
-# A) Add master-side binary Ȳ_{i,t} with linking constraints sum_p y_{i,p,t} λ_{i,p} = Ȳ_{i,t}
-#    and columns contribute to those rows. Pricing reduced costs now include -γ_{i,t}·Y_{i,t}.
-# B) Keep λ continuous in the MIP phase (incumbent search) — integrality is carried by Ȳ.
-# C) Branch directly on Ȳ_{i,t}; optional no-good cuts support (disabled by default).
-# D)branch-on-set variant (pair equality vs XOR) when two fractional Ȳ exist.
 # --------------------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -1037,11 +1031,14 @@ def solve_instance(
     enable_diving: bool = True,
     diving_reprice_iters: int = 40,
     verbose: bool = True,
-    # === NEW switches ===
-    lambda_binary: bool = False,  # B) keep λ continuous by default
-    rf_branching: bool = True,  # D) enable Ryan–Foster branching when possible
-    enable_nogood_cuts: bool = False,  # C) optional no-good cuts (off by default)
 ):
+    """
+    Branch-and-Price solver with CONTINUOUS LAMBDA ONLY.
+    - λ variables are ALWAYS continuous [0,1] (convex combinations allowed)
+    - Y-bar variables are binary (setup decisions)
+    - Branches on fractional Y-bar using simple Y=0 vs Y=1 branching
+    - DFS tree search until all nodes fathomed or time limit
+    """
     t0 = time.time()
     (
         data,
@@ -1118,13 +1115,21 @@ def solve_instance(
                     col.addTerms(inv, inv_con[u])
         # per-item selection
         col.addTerms(1.0, one_con[i])
-        # === NEW: contribute Y-bits to linking rows
+        # Y-linkage: Σ_k λ_{i,k} * y_{k,t} = Y_{i,t}
         for t in range(T):
             yt = float(pl.y_values[t])
             if abs(yt) > EPS:
                 col.addTerms(yt, ylink[(i, t)])
 
-        v = rmp.addVar(lb=0.0, obj=float(pl.cost), name=f"lam_{i}_{pid}", column=col)
+        # === CRITICAL: λ is ALWAYS continuous (never binary) ===
+        v = rmp.addVar(
+            lb=0.0,
+            ub=1.0,
+            vtype=GRB.CONTINUOUS,  # Explicit continuous
+            obj=float(pl.cost),
+            name=f"lam_{i}_{pid}",
+            column=col,
+        )
         lam_vars[(i, pid)] = v
         ages[(i, pid)] = 0
         rmp.update()
@@ -1384,8 +1389,8 @@ def solve_instance(
         )
         _log("[ROOT DIVE] finished; warm start constructed.")
 
-    # ------- Solve root MIP over pool for initial UB -------
-    # Keep Ybar continuous here so root_lp and fractional Y can be read from LP
+    # ------- Solve root LP for lower bound -------
+    # Keep Ybar continuous here so root_lp is valid LP bound
     rmp.optimize()
     root_lp = float(rmp.ObjVal) if rmp.Status == GRB.OPTIMAL else float("inf")
     best_lb = root_lp
@@ -1416,14 +1421,7 @@ def solve_instance(
     rmp.Params.Heuristics = 0.1
     rmp.Params.Presolve = 2
 
-    # === B) Keep λ continuous by default (no flip to binary).
-    # Optional: allow binary λ if user requests.
-    var_types = {}
-    if lambda_binary:
-        for key, var in lam_vars.items():
-            var_types[key] = var.VType
-            var.VType = GRB.BINARY
-
+    # === λ stays CONTINUOUS - only Y-bar becomes binary for MIP ===
     # warm start
     if warm_start is None:
         warm_start = {}
@@ -1441,7 +1439,7 @@ def solve_instance(
             if v:
                 v.Start = 1.0 if pid == pid_star else 0.0
 
-    # Before final MIP solve at root, set Ybar variables to binary so we get integer UB
+    # Set Ybar variables to binary for MIP solve
     for yvar in Ybin.values():
         yvar.VType = GRB.BINARY
     rmp.update()
@@ -1471,11 +1469,6 @@ def solve_instance(
             sum(float(v.X) for v in inv_slack.values()) if use_wh else 0.0
         )
 
-    # revert VType if we flipped
-    if lambda_binary:
-        for key, vtype in var_types.items():
-            lam_vars[key].VType = vtype
-
     if abs(best_ub - root_lp) < 1e-5:
         _log("[ROOT] Optimal at root.")
         summary = {
@@ -1484,7 +1477,7 @@ def solve_instance(
             "best_bound": root_lp,
             "gap": 0.0,
             "runtime_sec": float(time.time() - t0),
-            "solver_version": "lefo_bp_fast_ybar_v2",
+            "solver_version": "lefo_bp_continuous_lambda_only",
             "n_items": len(items_raw),
             "T": T,
             "columns_total": sum(len(v) for v in pool.values()),
@@ -1500,12 +1493,12 @@ def solve_instance(
         )
         return summary, best_orders
 
-    # ------- Branch-and-Price tree -------
+    # ------- Branch-and-Price tree (DFS) -------
     if verbose:
-        _log("[BP] Starting branch-and-price tree...")
+        _log("[BP] Starting branch-and-price tree with DFS...")
     stack: List[Node] = []
     node_id = 1
-    root_node = Node(0, None, {}, rf_rules=[])
+    root_node = Node(0, None, {})
     root_node.lp_bound = root_lp
 
     # helper to collect fractional Ybar candidates
@@ -1522,47 +1515,29 @@ def solve_instance(
     rmp.optimize()
     frac_map = _collect_fractional_Y()
     if frac_map:
-        # D) try RF branching if possible
-        if rf_branching and any(len(v) >= 2 for v in frac_map.values()):
-            # pick the item with two most fractional Y's (closest to 0.5)
-            ii = max(
-                frac_map.items(),
-                key=lambda kv: sum(
-                    0.5 - abs(x[1] - 0.5)
-                    for x in sorted(kv[1], key=lambda x: abs(x[1] - 0.5))[:2]
-                ),
-            )[0]
-            twos = sorted(frac_map[ii], key=lambda x: abs(x[1] - 0.5))[:2]
-            t1, _ = twos[0]
-            t2, _ = twos[1]
-            # child A: equality Y_{i,t1} == Y_{i,t2}
-            childA = Node(node_id, root_node, {}, rf_rules=[("eq", ii, t1, t2)])
-            node_id += 1
-            stack.append(childA)
-            # child B: XOR Y_{i,t1} + Y_{i,t2} == 1
-            childB = Node(node_id, root_node, {}, rf_rules=[("xor", ii, t1, t2)])
-            node_id += 1
-            stack.append(childB)
-        else:
-            # fallback: single Y branching on the most fractional
-            ii, lst = max(
-                frac_map.items(),
-                key=lambda kv: max(0.5 - abs(y - 0.5) for _, y in kv[1]),
-            )
-            tt, _ = sorted(lst, key=lambda x: abs(x[1] - 0.5))[0]
-            branches0 = {ii: {tt: 0}}
-            child0 = Node(node_id, root_node, branches0, rf_rules=[])
-            node_id += 1
-            stack.append(child0)
-            branches1 = {ii: {tt: 1}}
-            child1 = Node(node_id, root_node, branches1, rf_rules=[])
-            node_id += 1
-            stack.append(child1)
+        # === Simple single-variable branching: Y_{i,t} = 0 vs Y_{i,t} = 1 ===
+        # Pick the item with the most fractional Y (closest to 0.5)
+        ii, lst = max(
+            frac_map.items(),
+            key=lambda kv: max(0.5 - abs(y - 0.5) for _, y in kv[1]),
+        )
+        tt, _ = sorted(lst, key=lambda x: abs(x[1] - 0.5))[0]
+
+        # Branch 0: Y_{i,t} = 0
+        branches0 = {ii: {tt: 0}}
+        child0 = Node(node_id, root_node, branches0)
+        node_id += 1
+        stack.append(child0)
+
+        # Branch 1: Y_{i,t} = 1
+        branches1 = {ii: {tt: 1}}
+        child1 = Node(node_id, root_node, branches1)
+        node_id += 1
+        stack.append(child1)
     else:
         _log("[BP] Root LP integer on Ybar, but not pruned earlier?")
 
     processed_nodes = 1  # root
-    nogood_id_counter = 0
 
     while stack:
         current_time = time.time() - t0
@@ -1570,18 +1545,16 @@ def solve_instance(
             _log("[BP STOP] Time limit hit.")
             break
 
-        node = stack.pop()
+        node = stack.pop()  # DFS
         processed_nodes += 1
         if verbose:
-            depth = sum(len(fixes) for fixes in node.branches.values()) + (
-                len(node.rf_rules) if node.rf_rules else 0
-            )
+            depth = sum(len(fixes) for fixes in node.branches.values())
             _log(
                 f"[BP] Node {node.id}, depth {depth}, stack {len(stack)}, processed {processed_nodes}"
             )
 
         # set bounds/constraints for node: kill columns inconsistent with fixed_y;
-        # also add temporary equalities Ybar==val and RF cuts
+        # also add temporary equalities Ybar==val
         saved_bounds: Dict[Tuple[int, int], Tuple[float, float]] = {}
         temp_node_constrs: List[gp.Constr] = []
 
@@ -1593,7 +1566,7 @@ def solve_instance(
                     Ybin[(ii, tt)] == int(val), name=f"fixY_node{node.id}_{ii}_{tt}"
                 )
                 temp_node_constrs.append(c)
-            # column pruning
+            # column pruning: disable columns with inconsistent y-values
             for pid in range(len(pool.get(ii, []))):
                 key = (ii, pid)
                 v = lam_vars.get(key)
@@ -1609,21 +1582,6 @@ def solve_instance(
                         break
                 if violate:
                     v.UB = 0.0
-
-        # Apply RF rules (eq/xor) at this node
-        if node.rf_rules:
-            for rtype, ii, t1, t2 in node.rf_rules:
-                if rtype == "eq":
-                    c = rmp.addConstr(
-                        Ybin[(ii, t1)] - Ybin[(ii, t2)] == 0,
-                        name=f"rf_eq_{node.id}_{ii}_{t1}_{t2}",
-                    )
-                else:  # xor
-                    c = rmp.addConstr(
-                        Ybin[(ii, t1)] + Ybin[(ii, t2)] == 1,
-                        name=f"rf_xor_{node.id}_{ii}_{t1}_{t2}",
-                    )
-                temp_node_constrs.append(c)
 
         # Ensure Ybar variables are continuous during node CG so γ duals are available
         for yvar in Ybin.values():
@@ -1744,12 +1702,7 @@ def solve_instance(
             yvar.VType = GRB.BINARY
         rmp.update()
 
-        # solve MIP at node for possible better UB
-        var_types = {}
-        if lambda_binary:
-            for key, var in lam_vars.items():
-                var_types[key] = var.VType
-                var.VType = GRB.BINARY
+        # === λ stays CONTINUOUS - solve MIP with binary Y-bar only ===
         remaining_time_node = (
             max(1, int(time_limit - (time.time() - t0))) if time_limit else 0
         )
@@ -1791,10 +1744,7 @@ def solve_instance(
 
             if abs(mip_val - node_lp) < 1e-5:
                 _log(f"[BP NODE {node.id}] Pruned by optimality at node")
-                # revert types and bounds
-                if lambda_binary:
-                    for key, vtype in var_types.items():
-                        lam_vars[key].VType = vtype
+                # revert bounds
                 for key, (lb, ub) in saved_bounds.items():
                     lam_vars[key].LB = lb
                     lam_vars[key].UB = ub
@@ -1802,20 +1752,7 @@ def solve_instance(
                 for c in temp_node_constrs:
                     rmp.remove(c)
                 rmp.update()
-                # Optional: add nogood on Y patterns (disabled by default)
-                if enable_nogood_cuts:
-                    for ii in items_raw:
-                        patt = [int(round(float(Ybin[(ii, t)].X))) for t in range(T)]
-                        add_no_good_cut_for_pattern(
-                            rmp, Ybin, ii, patt, T, nogood_id_counter
-                        )
-                        nogood_id_counter += 1
                 continue
-
-        # revert λ types if flipped
-        if lambda_binary:
-            for key, vtype in var_types.items():
-                lam_vars[key].VType = vtype
 
         # Branch if not pruned - frac_map was collected before MIP
         if not frac_map:
@@ -1829,70 +1766,37 @@ def solve_instance(
             rmp.update()
             continue
 
-        # D) RF branching if possible: pick an item with >=2 fractional Y's
-        if rf_branching and any(len(v) >= 2 for v in frac_map.values()):
-            ii = max(
-                frac_map.items(),
-                key=lambda kv: sum(
-                    0.5 - abs(x[1] - 0.5)
-                    for x in sorted(kv[1], key=lambda x: abs(x[1] - 0.5))[:2]
-                ),
-            )[0]
-            twos = sorted(frac_map[ii], key=lambda x: abs(x[1] - 0.5))[:2]
-            t1, _ = twos[0]
-            t2, _ = twos[1]
-            # create RF children inheriting node's constraints
-            childA = Node(
-                node_id,
-                node,
-                {k: v.copy() for k, v in node.branches.items()},
-                rf_rules=(node.rf_rules[:] if node.rf_rules else [])
-                + [("eq", ii, t1, t2)],
+        # === Simple single-variable branching on most fractional Y ===
+        # Pick item with most fractional Y (closest to 0.5)
+        ii, lst = max(
+            frac_map.items(),
+            key=lambda kv: max(0.5 - abs(y - 0.5) for _, y in kv[1]),
+        )
+        tt, _ = sorted(lst, key=lambda x: abs(x[1] - 0.5))[0]
+
+        # Create two children: Y_{i,t} = 0 and Y_{i,t} = 1
+        # Branch 0: Y_{i,t} = 0
+        branches0 = {key: val.copy() for key, val in node.branches.items()}
+        if ii not in branches0:
+            branches0[ii] = {}
+        branches0[ii][tt] = 0
+        child0 = Node(node_id, node, branches0)
+        node_id += 1
+        stack.append(child0)
+
+        # Branch 1: Y_{i,t} = 1
+        branches1 = {key: val.copy() for key, val in node.branches.items()}
+        if ii not in branches1:
+            branches1[ii] = {}
+        branches1[ii][tt] = 1
+        child1 = Node(node_id, node, branches1)
+        node_id += 1
+        stack.append(child1)
+
+        if verbose:
+            _log(
+                f"[BP NODE {node.id}] Branching on Y[{ii},{tt}]: created nodes {child0.id} and {child1.id}"
             )
-            node_id += 1
-            stack.append(childA)
-            childB = Node(
-                node_id,
-                node,
-                {k: v.copy() for k, v in node.branches.items()},
-                rf_rules=(node.rf_rules[:] if node.rf_rules else [])
-                + [("xor", ii, t1, t2)],
-            )
-            node_id += 1
-            stack.append(childB)
-        else:
-            # fallback: branch on single most fractional Y_{i,t}
-            ii, lst = max(
-                frac_map.items(),
-                key=lambda kv: max(0.5 - abs(y - 0.5) for _, y in kv[1]),
-            )
-            tt, _ = sorted(lst, key=lambda x: abs(x[1] - 0.5))[0]
-            # 0 branch
-            branches0 = {key: val.copy() for key, val in node.branches.items()}
-            if ii not in branches0:
-                branches0[ii] = {}
-            branches0[ii][tt] = 0
-            child0 = Node(
-                node_id,
-                node,
-                branches0,
-                rf_rules=(node.rf_rules[:] if node.rf_rules else []),
-            )
-            node_id += 1
-            stack.append(child0)
-            # 1 branch
-            branches1 = {key: val.copy() for key, val in node.branches.items()}
-            if ii not in branches1:
-                branches1[ii] = {}
-            branches1[ii][tt] = 1
-            child1 = Node(
-                node_id,
-                node,
-                branches1,
-                rf_rules=(node.rf_rules[:] if node.rf_rules else []),
-            )
-            node_id += 1
-            stack.append(child1)
 
         # revert bounds and remove temp constraints
         for key, (lb, ub) in saved_bounds.items():
@@ -1931,7 +1835,7 @@ def solve_instance(
         "best_bound": root_lp,
         "gap": gap,
         "runtime_sec": float(time.time() - t0),
-        "solver_version": "lefo_bp_fast_ybar_v2",
+        "solver_version": "lefo_bp_continuous_lambda_only",
         "n_items": len(items_raw),
         "T": T,
         "columns_total": sum(len(v) for v in pool.values()),
@@ -1944,6 +1848,15 @@ def solve_instance(
     )
     if best_ub >= float("inf"):
         summary["note"] = "No incumbent found."
+
+    if verbose:
+        _log(
+            f"[FINAL] Status: {status}, Objective: {best_ub:.2f}, Gap: {gap if gap else 'N/A'}"
+        )
+        _log(
+            f"[FINAL] Nodes processed: {processed_nodes}, Runtime: {time.time()-t0:.2f}s"
+        )
+
     return summary, best_orders
 
 
@@ -1987,23 +1900,6 @@ if __name__ == "__main__":
     # dummy outsourcing cost (opsiyonel)
     p.add_argument("--outsource_unit_cost", type=float, default=None)
 
-    # === NEW flags ===
-    p.add_argument(
-        "--lambda_binary",
-        action="store_true",
-        help="If set, flip λ to binary in pool MIP; default keeps λ continuous.",
-    )
-    p.add_argument(
-        "--rf_branching_off",
-        action="store_true",
-        help="Disable Ryan–Foster branching (use single Y branching only).",
-    )
-    p.add_argument(
-        "--nogood_on",
-        action="store_true",
-        help="Enable no-good cuts on discovered Y patterns (use with care; off by default).",
-    )
-
     args = p.parse_args()
 
     summary, orders = solve_instance(
@@ -2023,8 +1919,5 @@ if __name__ == "__main__":
         enable_diving=(not args.diving_off),
         diving_reprice_iters=args.diving_reprice_iters,
         verbose=True,
-        lambda_binary=args.lambda_binary,  # B)
-        rf_branching=(not args.rf_branching_off),  # D)
-        enable_nogood_cuts=args.nogood_on,  # C) (optional)
     )
     print(json.dumps(summary, indent=2))

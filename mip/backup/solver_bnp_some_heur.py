@@ -15,7 +15,7 @@
 #    and columns contribute to those rows. Pricing reduced costs now include -γ_{i,t}·Y_{i,t}.
 # B) Keep λ continuous in the MIP phase (incumbent search) — integrality is carried by Ȳ.
 # C) Branch directly on Ȳ_{i,t}; optional no-good cuts support (disabled by default).
-# D) Ryan–Foster branch-on-set variant (pair equality vs XOR) when two fractional Ȳ exist.
+# D)branch-on-set variant (pair equality vs XOR) when two fractional Ȳ exist.
 # --------------------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -862,6 +862,7 @@ def add_no_good_cut_for_pattern(
 
 def _dive_fix_and_price(
     rmp: gp.Model,
+    Ybin: Dict[Tuple[int, int], gp.Var],
     items_raw: Dict[int, dict],
     pool: Dict[int, List[ColumnPlan]],
     lam_vars: Dict[Tuple[int, int], gp.Var],
@@ -915,6 +916,10 @@ def _dive_fix_and_price(
                 v.UB = ub
 
     iter_fixes = 0
+    # Ensure Ybar variables are continuous during diving so γ duals are available
+    for yvar in Ybin.values():
+        yvar.VType = GRB.CONTINUOUS
+    rmp.update()
     while True:
         rmp.optimize()
         # pick most fractional item (largest support >1 positive λ)
@@ -996,6 +1001,10 @@ def _dive_fix_and_price(
             warm_start[(i, pid)] = 0.0
 
     _revert_all_bounds()
+    # Restore Ybar variable types (binary) before returning
+    for yvar in Ybin.values():
+        yvar.VType = GRB.BINARY
+    rmp.update()
     return warm_start
 
 
@@ -1010,7 +1019,7 @@ def solve_instance(
     seed_chunk_len: int = 3,
     seed_extra_chunked: bool = False,
     # Pricing knobs
-    stabilize: bool = True,
+    stabilize: bool = False,
     stab_alpha: float = 0.8,  # Tuned: less smoothing for more columns
     max_iter: int = 50000,  # Tuned: increased for more iterations
     max_add_per_item_per_iter: int = 5,  # Tuned: more adds per iter
@@ -1169,6 +1178,11 @@ def solve_instance(
         )
 
     # ------- CG loop (root node) -------
+    # Ensure Ybar variables are continuous during CG so duals (γ) are available.
+    for yvar in Ybin.values():
+        yvar.VType = GRB.CONTINUOUS
+    rmp.update()
+
     iter_no = 0
     last_pi = [0.0] * T
     last_rho = [0.0] * (T - 1 if use_wh else 0)
@@ -1313,7 +1327,7 @@ def solve_instance(
     if verbose:
         _log("[ROOT TAIL] Starting tail-off pricing without stabilization...")
     stabilize = False  # Disable stab for tail-off
-    tail_iters = 100  # Tuned: 100 extra iters
+    tail_iters = 10  # Tuned: 10 extra iters
     for _ in range(tail_iters):
         if time_limit and time.time() - t0 > time_limit:
             break
@@ -1352,6 +1366,7 @@ def solve_instance(
 
         warm_start = _dive_fix_and_price(
             rmp,
+            Ybin,
             items_raw,
             pool,
             lam_vars,
@@ -1370,6 +1385,7 @@ def solve_instance(
         _log("[ROOT DIVE] finished; warm start constructed.")
 
     # ------- Solve root MIP over pool for initial UB -------
+    # Keep Ybar continuous here so root_lp and fractional Y can be read from LP
     rmp.optimize()
     root_lp = float(rmp.ObjVal) if rmp.Status == GRB.OPTIMAL else float("inf")
     best_lb = root_lp
@@ -1425,6 +1441,10 @@ def solve_instance(
             if v:
                 v.Start = 1.0 if pid == pid_star else 0.0
 
+    # Before final MIP solve at root, set Ybar variables to binary so we get integer UB
+    for yvar in Ybin.values():
+        yvar.VType = GRB.BINARY
+    rmp.update()
     rmp.optimize()
 
     if rmp.SolCount > 0 and rmp.Status in (GRB.OPTIMAL, GRB.TIME_LIMIT, GRB.SUBOPTIMAL):
@@ -1605,6 +1625,11 @@ def solve_instance(
                     )
                 temp_node_constrs.append(c)
 
+        # Ensure Ybar variables are continuous during node CG so γ duals are available
+        for yvar in Ybin.values():
+            yvar.VType = GRB.CONTINUOUS
+        rmp.update()
+
         # CG at node
         iter_no = 0
         last_pi = [0.0] * T
@@ -1700,6 +1725,25 @@ def solve_instance(
             rmp.update()
             continue
 
+        # Before solving MIP: collect fractional Ybar from LP to decide branching
+        rmp.optimize()  # ensure LP solution available
+        frac_map = {}
+        for ii in items_raw:
+            yfr = []
+            for tt in range(T):
+                yv = float(Ybin[(ii, tt)].X)
+                if EPS < yv < 1 - EPS:
+                    if ii in node.branches and tt in node.branches[ii]:
+                        continue
+                    yfr.append((tt, yv))
+            if yfr:
+                frac_map[ii] = yfr
+
+        # Before solving node MIP: set Ybar variables to binary
+        for yvar in Ybin.values():
+            yvar.VType = GRB.BINARY
+        rmp.update()
+
         # solve MIP at node for possible better UB
         var_types = {}
         if lambda_binary:
@@ -1773,23 +1817,7 @@ def solve_instance(
             for key, vtype in var_types.items():
                 lam_vars[key].VType = vtype
 
-        # Branch if not pruned
-        rmp.optimize()  # ensure LP sol
-        # collect fractional Ybar
-        frac_map = {}
-        for ii in items_raw:
-            # skip if already fully fixed via branches that cover all t
-            yfr = []
-            for tt in range(T):
-                yv = float(Ybin[(ii, tt)].X)
-                if EPS < yv < 1 - EPS:
-                    # do not branch on already fixed positions
-                    if ii in node.branches and tt in node.branches[ii]:
-                        continue
-                    yfr.append((tt, yv))
-            if yfr:
-                frac_map[ii] = yfr
-
+        # Branch if not pruned - frac_map was collected before MIP
         if not frac_map:
             _log(f"[BP NODE {node.id}] No fractional Ybar, but not pruned?")
             # revert bounds and remove temp constraints
