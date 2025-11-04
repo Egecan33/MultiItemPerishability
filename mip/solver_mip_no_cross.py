@@ -272,10 +272,12 @@ def solve_instance(
         summary["best_bound"] = float(m.ObjBound)
     except:
         pass
+
     try:
         summary["gap"] = float(m.MIPGap)
     except:
         pass
+
     orders_txt: List[str] = []
     if m.SolCount and status not in (GRB.INFEASIBLE, GRB.INF_OR_UNBD, GRB.UNBOUNDED):
         out_dir = Path(out_dir)
