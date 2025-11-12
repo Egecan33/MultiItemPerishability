@@ -59,7 +59,7 @@ class BranchAndPriceVisualizer:
     def __init__(self):
         self.fig = plt.figure(figsize=(22, 12))
         self.fig.suptitle(
-            "Branch-and-Price with DP Pricing (BFS + Aggressive Fathoming)",
+            "Branch-and-Price with DP Pricing (BFS)",
             fontsize=18,
             fontweight="bold",
             color="darkblue",
