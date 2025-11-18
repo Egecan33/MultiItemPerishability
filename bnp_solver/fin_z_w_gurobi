@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Branch-and-Price with DP-based Column Generation (with O(1) block-cost precomputation)
+# Branch-and-Price with MIP-based Column Generation (block-based SILSP pricing)
 
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Set
@@ -8,6 +8,9 @@ import gurobipy as gurobi
 from gurobipy import GRB
 from collections import deque
 import time
+
+
+# Data classes
 
 
 @dataclass
@@ -125,34 +128,48 @@ class SearchStatistics:
         print("=" * 70)
 
 
+# Helpers
+
+
 def node_signature(node: BranchNode) -> str:
     sig_parts = []
     for item_id in sorted(node.theta_0_by_item.keys()):
         arcs = sorted(node.theta_0_by_item[item_id])
         if arcs:
-            sig_parts.append(f"I{item_id}_0:{','.join(f'{t}-{u}' for t,u in arcs)}")
+            sig_parts.append(f"I{item_id}_0:{','.join(f'{t}-{u}' for t, u in arcs)}")
     for item_id in sorted(node.theta_1_by_item.keys()):
         arcs = sorted(node.theta_1_by_item[item_id])
         if arcs:
-            sig_parts.append(f"I{item_id}_1:{','.join(f'{t}-{u}' for t,u in arcs)}")
+            sig_parts.append(f"I{item_id}_1:{','.join(f'{t}-{u}' for t, u in arcs)}")
     return "|".join(sig_parts)
 
 
-def dp_pricing_for_single_item(
+# MIP-based pricing for a single item
+
+
+def mip_pricing_for_single_item(
     production_item: ProductionItem,
     capacity_dual_prices: List[float],
     convexity_dual_price: float,
-    theta_0: Set[Tuple[int, int]],  # Forbidden arcs
-    theta_1: Set[Tuple[int, int]],  # Forced arcs
+    theta_0: Set[Tuple[int, int]],
+    theta_1: Set[Tuple[int, int]],
+    arc_dual_prices: Optional[Dict[Tuple[int, int], float]] = None,
     epsilon_tolerance: float = 1e-9,
 ) -> Tuple[float, Optional[ProductionPlanColumn]]:
     """
-    DP-based pricing for zero-inventory-ordering lot-sizing with perishability.
+    MIP-based pricing for the single-item SILSP with ZIO structure.
 
-    State:
-        F[u] = minimum cost to satisfy periods [0..u-1]
-        pred[u] = (t, e) block chosen to reach u (e == u-1), (-2,-2) = skip if demand[u-1]==0
+    - Uses block variables B_{t,e} for 0 <= t <= e < T.
+    - Each block (t,e) corresponds to a batch produced at t serving demands t..e.
+    - Enforces:
+        * shelf life: e <= E_t,
+        * branching constraints (θ_0: forbidden arcs, θ_1: forced arcs),
+        * coverage: every positive-demand period u is covered by exactly one block.
+    - Objective minimizes the reduced cost directly:
+        sum_{blocks} B_{t,e} * [setup + unit * Q_{t,e} + H_{t,e} - π_t * Q_{t,e} - τ-part]
+        - μ_i.
     """
+
     T = production_item.number_of_periods
     demand = production_item.demand_quantity_by_period
     setup_cost = production_item.setup_cost_by_period
@@ -160,17 +177,17 @@ def dp_pricing_for_single_item(
     holding_cost = production_item.holding_unit_cost_by_period
     expiry_abs = (
         production_item.perishability_horizon_by_start_period
-    )  # E_t = t + L_t (inclusive)
+    )  # E_t (inclusive)
 
     INF = 1e10
 
-    # --- PRECOMPUTATION: O(1) block-demand & block-holding-cost ---
+    # ---- Prefix sums for O(1) block demand and holding cost ----
     # Dpref[k] = sum_{j=0}^{k-1} d_j
     Dpref = [0.0] * (T + 1)
     for k in range(1, T + 1):
         Dpref[k] = Dpref[k - 1] + demand[k - 1]
 
-    # Hpref[k] = sum_{tau=0}^{k-1} h_tau
+    # Hpref[k] = sum_{τ=0}^{k-1} h_τ
     Hpref = [0.0] * (T + 1)
     for k in range(1, T + 1):
         Hpref[k] = Hpref[k - 1] + holding_cost[k - 1]
@@ -180,137 +197,155 @@ def dp_pricing_for_single_item(
     for k in range(1, T + 1):
         DHpref[k] = DHpref[k - 1] + demand[k - 1] * Hpref[k - 1]
 
-    def block_demand_excl(t: int, u_excl: int) -> float:
-        """Sum of demand j in [t, u_excl-1]"""
-        return Dpref[u_excl] - Dpref[t]
+    def block_demand(t: int, e: int) -> float:
+        """Q_{t,e} = sum_{j=t}^e d_j"""
+        return Dpref[e + 1] - Dpref[t]
 
-    def block_holding_cost_excl(t: int, u_excl: int) -> float:
+    def block_holding_cost(t: int, e: int) -> float:
         """
-        sum_{tau=t}^{u-2} h_tau * sum_{j=tau+1}^{u-1} d_j
-        = (sum_{j=t+1}^{u-1} d_j * Hpref[j]) - Hpref[t] * (sum_{j=t+1}^{u-1} d_j)
+        H_{t,e} = sum_{τ=t}^{e-1} h_τ * sum_{j=τ+1}^e d_j
+        Implemented via prefix sums in O(1), using u_excl = e+1:
+        sum_{τ=t}^{u_excl-2} h_τ * sum_{j=τ+1}^{u_excl-1} d_j
         """
+        u_excl = e + 1
         if u_excl <= t + 1:
             return 0.0
         return (DHpref[u_excl] - DHpref[t + 1]) - Hpref[t] * (
             Dpref[u_excl] - Dpref[t + 1]
         )
 
-    # --- DP arrays ---
-    F = [INF] * (T + 1)  # F[u] = min cost to cover [0..u-1]
-    F[0] = 0.0
-    pred: List[Tuple[int, int]] = [(-1, -1)] * (T + 1)  # store (t,e) or (-2,-2)
+    # ---- Build feasible blocks and their costs ----
+    blocks: List[Tuple[Tuple[int, int], float, float, float, float]] = (
+        []
+    )  # ((t,e), Q, H, physical_cost, reduced_block_cost)
 
-    # iterate end position u (exclusive)
-    for u_excl in range(1, T + 1):
-        # Option 1: skip if demand[u-1] == 0
-        if demand[u_excl - 1] == 0 and F[u_excl - 1] < INF:
-            F[u_excl] = F[u_excl - 1]
-            pred[u_excl] = (-2, -2)
-
-        # Option 2: choose a block (t, e = u_excl-1)
-        for t in range(u_excl):
-            # Shelf-life: absolute expiry E_t must satisfy E_t >= e = u_excl-1
-            E_t = expiry_abs[t]  # inclusive last usable period
-            if E_t < (u_excl - 1):
+    for t in range(T):
+        for e in range(t, T):
+            # Shelf-life: E_t >= e
+            if expiry_abs[t] < e:
                 continue
 
-            # Branching constraints
+            q = block_demand(t, e)
+            if q <= 0.0:
+                continue  # no point in a block that serves no demand
+
+            # Check branching constraints (θ_0, θ_1) for this block:
             violates = False
-            # Forbidden arcs in the block
-            for period in range(t, u_excl):
-                if demand[period] > 0 and (t, period) in theta_0:
+
+            # 1) Forbidden arcs: if (t,u) in θ_0 for some u in [t,e] with positive demand
+            for u in range(t, e + 1):
+                if demand[u] <= 0:
+                    continue
+                if (t, u) in theta_0:
                     violates = True
                     break
             if violates:
                 continue
 
-            # Forced arcs consistency: if any u_f in [t, u_excl-1] has forced (t_f, u_f) with t_f != t, reject
-            for period in range(t, u_excl):
-                if demand[period] > 0:
-                    for t_f, u_f in theta_1:
-                        if u_f == period and t_f != t:
-                            violates = True
-                            break
+            # 2) Forced arcs: if any forced arc (t_f, u_f) has t_f != t but u_f in [t,e],
+            #    then this block would steal u_f from the required t_f.
+            if theta_1:
+                for t_f, u_f in theta_1:
+                    if t <= u_f <= e and t_f != t:
+                        violates = True
+                        break
                 if violates:
-                    break
-            if violates:
-                continue
+                    continue
 
-            # O(1) block totals
-            q = block_demand_excl(t, u_excl)
-            if q <= 0.0:
-                continue
+            # Physical block cost
+            H_te = block_holding_cost(t, e)
+            physical_cost = setup_cost[t] + prod_cost[t] * q + H_te
 
-            hold_cost = block_holding_cost_excl(t, u_excl)
-            cost = setup_cost[t] + prod_cost[t] * q + hold_cost
-            cost -= capacity_dual_prices[t] * q  # dual adjustment
+            # Reduced block cost: subtract capacity dual, and optionally arc duals (τ)
+            reduced_cost_block = physical_cost - capacity_dual_prices[t] * q
 
-            if F[t] + cost < F[u_excl]:
-                F[u_excl] = F[t] + cost
-                pred[u_excl] = (t, u_excl - 1)
+            if arc_dual_prices:
+                tau_sum = 0.0
+                for u in range(t, e + 1):
+                    if demand[u] > 0:
+                        tau_sum += arc_dual_prices.get((t, u), 0.0)
+                reduced_cost_block -= tau_sum
 
-    if F[T] >= INF:
-        return INF, None  # no feasible improving plan
+            blocks.append(((t, e), q, H_te, physical_cost, reduced_cost_block))
 
-    # Reconstruct block list
-    blocks: List[Tuple[int, int]] = []
-    u = T
-    while u > 0:
-        if pred[u] == (-2, -2):
-            u -= 1
-            continue
-        t, e = pred[u]
-        if t < 0:
-            break
-        blocks.append((t, e))
-        u = t
     if not blocks:
+        # No feasible block under branching; subproblem infeasible
         return INF, None
-    blocks.reverse()
 
-    # Build column contents + true cost (NO duals)
+    # ---- Build and solve MIP ----
+    model = gurobi.Model(f"pricing_item_{production_item.item_id}")
+    model.Params.OutputFlag = 0
+
+    # Block variables B_{t,e} ∈ {0,1}
+    b_vars: Dict[Tuple[int, int], gurobi.Var] = {}
+    for (t, e), q, H_te, phys_cost, red_cost in blocks:
+        b_vars[(t, e)] = model.addVar(vtype=GRB.BINARY, name=f"b_{t}_{e}")
+
+    # Coverage constraints: for each period u with positive demand,
+    # exactly one block that covers u must be chosen.
+    for u in range(T):
+        if demand[u] <= 0:
+            continue
+        expr = gurobi.LinExpr()
+        for (t, e), q, H_te, phys_cost, red_cost in blocks:
+            if t <= u <= e:
+                expr += b_vars[(t, e)]
+        model.addConstr(expr == 1.0, name=f"cover_{u}")
+
+    # Objective: sum_{blocks} B_{t,e} * reduced_cost_block - μ_i
+    obj = gurobi.LinExpr()
+    for (t, e), q, H_te, phys_cost, red_cost in blocks:
+        obj += red_cost * b_vars[(t, e)]
+    obj += -convexity_dual_price
+    model.setObjective(obj, GRB.MINIMIZE)
+
+    model.optimize()
+    if model.Status != GRB.OPTIMAL:
+        # Treat as no feasible improving column from the DP/MIP viewpoint
+        return INF, None
+
+    rc = model.ObjVal  # reduced cost of best block plan for this item
+
+    if rc >= -epsilon_tolerance:
+        # No improving column
+        return rc, None
+
+    # ---- Reconstruct a column (physical plan) from chosen blocks ----
     cap_usage = [0.0] * T
     setup_usage = [0.0] * T
     arc_usage: Dict[Tuple[int, int], float] = {}
     total_cost = 0.0
 
-    for t, e in blocks:
-        u_excl = e + 1
-        q = Dpref[u_excl] - Dpref[t]
-        if q <= 0.0:
-            continue
+    for (t, e), q, H_te, phys_cost, red_cost in blocks:
+        if b_vars[(t, e)].X > 0.5:
+            total_cost += phys_cost
+            cap_usage[t] += q
+            setup_usage[t] = 1.0
+            # arcs (t,u) for u=t..e serving positive demand
+            for u in range(t, e + 1):
+                if demand[u] > 0:
+                    arc_usage[(t, u)] = 1.0
 
-        cap_usage[t] += q
-        setup_usage[t] = 1.0
+    return rc, ProductionPlanColumn(
+        item_id=production_item.item_id,
+        total_plan_cost=total_cost,
+        capacity_usage_by_period=cap_usage,
+        setup_open_fraction_by_period=setup_usage,
+        lost_demand_quantity_by_period=[0.0] * T,
+        arc_usage=arc_usage,
+    )
 
-        for j in range(t, e + 1):
-            if demand[j] > 0:
-                arc_usage[(t, j)] = 1.0
 
-        hold_cost = block_holding_cost_excl(t, u_excl)
-        total_cost += setup_cost[t] + prod_cost[t] * q + hold_cost
-
-    # Reduced cost = true cost - mu_i - sum_t pi_t * cap_usage_t
-    rc = total_cost - convexity_dual_price
-    for t in range(T):
-        if cap_usage[t] != 0.0:
-            rc -= capacity_dual_prices[t] * cap_usage[t]
-
-    if rc < -epsilon_tolerance:
-        return rc, ProductionPlanColumn(
-            item_id=production_item.item_id,
-            total_plan_cost=total_cost,
-            capacity_usage_by_period=cap_usage,
-            setup_open_fraction_by_period=setup_usage,
-            lost_demand_quantity_by_period=[0.0] * T,
-            arc_usage=arc_usage,
-        )
-    else:
-        return rc, None
+# Restricted Master Problem
 
 
 class RestrictedMasterProblem:
-    def __init__(self, items: List[ProductionItem], capacity: List[float]):
+    def __init__(
+        self,
+        items: List[ProductionItem],
+        capacity: List[float],
+        arc_rows_spec: Optional[Dict[int, Dict[Tuple[int, int], float]]] = None,
+    ):
         self.items = items
         self.T = len(capacity)
         self.capacity = capacity
@@ -379,6 +414,9 @@ class RestrictedMasterProblem:
         return self.model.ObjVal, mu, pi
 
 
+# Column generation at a node (uses MIP pricing now)
+
+
 def solve_node_with_column_generation(
     items: List[ProductionItem],
     capacity: List[float],
@@ -420,9 +458,17 @@ def solve_node_with_column_generation(
             theta_0 = node.theta_0_by_item.get(item.item_id, set())
             theta_1 = node.theta_1_by_item.get(item.item_id, set())
 
-            rc, col = dp_pricing_for_single_item(
-                item, pi, mu[item.item_id], theta_0, theta_1, eps
+            # MIP-based pricing instead of DP
+            rc, col = mip_pricing_for_single_item(
+                item,
+                capacity_dual_prices=pi,
+                convexity_dual_price=mu[item.item_id],
+                theta_0=theta_0,
+                theta_1=theta_1,
+                arc_dual_prices=None,  # no τ rows yet
+                epsilon_tolerance=eps,
             )
+
             if col is not None and rc < -eps:
                 rmp.add_column(col)
                 any_added = True
@@ -438,6 +484,9 @@ def solve_node_with_column_generation(
     if verbose:
         print(f"LB={lb:.2f} (max iter)")
     return lb, rmp, False, z_vals
+
+
+# Z-value extraction, branching, and B&P driver
 
 
 def extract_z_values(
@@ -495,7 +544,7 @@ def solve_branch_and_price(
     items, capacity, max_nodes=5000, eps=1e-6, print_frequency=50
 ):
     print("\n" + "=" * 70)
-    print(" " * 20 + "BRANCH-AND-PRICE WITH DP PRICING (BFS)")
+    print(" " * 20 + "BRANCH-AND-PRICE WITH MIP PRICING (BFS)")
     print("=" * 70)
 
     stats = SearchStatistics()
@@ -540,6 +589,10 @@ def solve_branch_and_price(
     print(f"\n{'='*70}")
     print("BREADTH-FIRST SEARCH")
     print(f"{'='*70}\n")
+
+    opt_node = root
+    opt_z = z_vals
+    opt_rmp = None
 
     while queue and nodes_explored < max_nodes:
         node, parent_z = queue.popleft()
@@ -605,6 +658,8 @@ def solve_branch_and_price(
                     stats.node_explored(
                         node, incumbent_improved=True, num_fathomed=num_fathomed
                     )
+                    opt_node = node
+                    opt_z = z_vals
                 else:
                     print()
                     if queue:
@@ -681,21 +736,18 @@ def solve_branch_and_price(
         if children > 0:
             print(f"  Branch Z[{item_id},{t_br},{u_br}]={z_val:.3f}")
 
-    if not queue and best_ub is not None:
-        best_lb = best_ub
-        # --- Save RMP & z_vals from the incumbent node ---
-
-    opt_node = None
-    opt_rmp = None
-    opt_z = None
+    # After search: try to recover RMP for the incumbent node
     if best_ub is not None:
-        # The incumbent node is the last one that improved best_ub
-        opt_node = node
-        opt_z = z_vals
-        # Re-solve this node fully to get its final RMP
-        _, opt_rmp, _, _ = solve_node_with_column_generation(items, capacity, node)
+        best_lb = best_ub
+        _, opt_rmp, _, _ = solve_node_with_column_generation(items, capacity, opt_node)
+    else:
+        opt_rmp = None
+
     stats.print_summary(best_lb, best_ub, eps)
     return best_lb, best_ub, nodes_explored, opt_node, opt_z, opt_rmp
+
+
+# Example instance and main
 
 
 def build_small_example_instance():
@@ -709,7 +761,7 @@ def build_small_example_instance():
                 [3.0, 3.0, 3.3, 3.3, 3.6, 3.6, 3.8, 3.8],
                 [22.0] * T,
                 [1.0] * T,
-                # expiry_abs[t] = t + L_t  (inclusive)
+                # expiry_abs[t] = t + L_t (inclusive)
                 [t + l for t, l in enumerate([3, 3, 2, 2, 2, 2, 2, 2])],
                 5000.0,
             ),
@@ -768,18 +820,21 @@ if __name__ == "__main__":
                     f"  Produce in period {t+1:>2d} → satisfies demand of period {u+1:>2d}"
                 )
 
-    print("\n" + "=" * 70)
-    print(" " * 30 + "FINAL RMP VARIABLE VALUES")
-    print("=" * 70)
+    if opt_rmp is not None:
+        print("\n" + "=" * 70)
+        print(" " * 30 + "FINAL RMP VARIABLE VALUES")
+        print("=" * 70)
 
-    for (item_id, idx), lam in opt_rmp.lambdas.items():
-        lam_val = lam.X
-        if lam_val < 1e-6:
-            continue
-        col = opt_rmp.columns[item_id][idx]
-        print(f"\nλ[{item_id},{idx}] = {lam_val:.4f}, cost = {col.total_plan_cost:.2f}")
+        for (item_id, idx), lam in opt_rmp.lambdas.items():
+            lam_val = lam.X
+            if lam_val < 1e-6:
+                continue
+            col = opt_rmp.columns[item_id][idx]
+            print(
+                f"\nλ[{item_id},{idx}] = {lam_val:.4f}, cost = {col.total_plan_cost:.2f}"
+            )
 
-        x = col.capacity_usage_by_period
-        y = col.setup_open_fraction_by_period
-        print("  x_it:", ["{:.2f}".format(v) for v in x])
-        print("  y_it:", ["{:.2f}".format(v) for v in y])
+            x = col.capacity_usage_by_period
+            y = col.setup_open_fraction_by_period
+            print("  x_it:", ["{:.2f}".format(v) for v in x])
+            print("  y_it:", ["{:.2f}".format(v) for v in y])

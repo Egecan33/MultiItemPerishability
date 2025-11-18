@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Branch-and-Price with DP-based Column Generation - Modified with MIP I/O compatibility
+# Branch-and-Price with DP-based Column Generation (with O(1) block-cost precomputation)
 
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Set
@@ -8,8 +8,6 @@ import gurobipy as gurobi
 from gurobipy import GRB
 from collections import deque
 import time
-import json
-from pathlib import Path
 
 
 @dataclass
@@ -125,7 +123,6 @@ class SearchStatistics:
         else:
             print(f"  Best upper bound:   Not found")
         print("=" * 70)
-        return elapsed
 
 
 def node_signature(node: BranchNode) -> str:
@@ -145,8 +142,9 @@ def dp_pricing_for_single_item(
     production_item: ProductionItem,
     capacity_dual_prices: List[float],
     convexity_dual_price: float,
-    theta_0: Set[Tuple[int, int]],  # Forbidden arcs
-    theta_1: Set[Tuple[int, int]],  # Forced arcs
+    theta_0: Set[Tuple[int, int]],
+    theta_1: Set[Tuple[int, int]],
+    arc_dual_prices: Optional[Dict[Tuple[int, int], float]] = None,  # NEW
     epsilon_tolerance: float = 1e-9,
 ) -> Tuple[float, Optional[ProductionPlanColumn]]:
     """
@@ -214,7 +212,7 @@ def dp_pricing_for_single_item(
         for t in range(u_excl):
             # Shelf-life: absolute expiry E_t must satisfy E_t >= e = u_excl-1
             E_t = expiry_abs[t]  # inclusive last usable period
-            if E_t <= (u_excl - 1):
+            if E_t < (u_excl - 1):
                 continue
 
             # Branching constraints
@@ -247,6 +245,14 @@ def dp_pricing_for_single_item(
             hold_cost = block_holding_cost_excl(t, u_excl)
             cost = setup_cost[t] + prod_cost[t] * q + hold_cost
             cost -= capacity_dual_prices[t] * q  # dual adjustment
+
+            # τ adjustment only if provided (non-root)
+            if arc_dual_prices:
+                tau_sum = 0.0
+                for u in range(t, u_excl):
+                    if demand[u] > 0:
+                        tau_sum += arc_dual_prices.get((t, u), 0.0)
+                cost -= tau_sum
 
             if F[t] + cost < F[u_excl]:
                 F[u_excl] = F[t] + cost
@@ -313,7 +319,12 @@ def dp_pricing_for_single_item(
 
 
 class RestrictedMasterProblem:
-    def __init__(self, items: List[ProductionItem], capacity: List[float]):
+    def __init__(
+        self,
+        items: List[ProductionItem],
+        capacity: List[float],
+        arc_rows_spec: Optional[Dict[int, Dict[Tuple[int, int], float]]] = None,  # NEW
+    ):
         self.items = items
         self.T = len(capacity)
         self.capacity = capacity
@@ -424,8 +435,15 @@ def solve_node_with_column_generation(
             theta_1 = node.theta_1_by_item.get(item.item_id, set())
 
             rc, col = dp_pricing_for_single_item(
-                item, pi, mu[item.item_id], theta_0, theta_1, eps
+                item,
+                capacity_dual_prices=pi,
+                convexity_dual_price=mu[item.item_id],
+                theta_0=theta_0,
+                theta_1=theta_1,
+                arc_dual_prices=None,  # root / no τ
+                epsilon_tolerance=eps,
             )
+
             if col is not None and rc < -eps:
                 rmp.add_column(col)
                 any_added = True
@@ -495,12 +513,11 @@ def fathom_queue_by_incumbent(queue: deque, incumbent: float, eps: float) -> int
 
 
 def solve_branch_and_price(
-    items, capacity, max_nodes=5000, eps=1e-6, print_frequency=50, verbose=True
+    items, capacity, max_nodes=5000, eps=1e-6, print_frequency=50
 ):
-    if verbose:
-        print("\n" + "=" * 70)
-        print(" " * 20 + "BRANCH-AND-PRICE WITH DP PRICING (BFS)")
-        print("=" * 70)
+    print("\n" + "=" * 70)
+    print(" " * 20 + "BRANCH-AND-PRICE WITH DP PRICING (BFS)")
+    print("=" * 70)
 
     stats = SearchStatistics()
 
@@ -508,21 +525,18 @@ def solve_branch_and_price(
         0, None, 0, {i.item_id: set() for i in items}, {i.item_id: set() for i in items}
     )
 
-    if verbose:
-        print("\n>>> ROOT NODE <<<")
+    print("\n>>> ROOT NODE <<<")
     root_lb, _, _, z_vals = solve_node_with_column_generation(
-        items, capacity, root, verbose=verbose
+        items, capacity, root, verbose=True
     )
 
     if not math.isfinite(root_lb):
-        if verbose:
-            print("\n✗ Root infeasible!")
-        return math.inf, None, 1, None, None, None, stats
+        print("\n✗ Root infeasible!")
+        return math.inf, None, 1
 
     root.lp_bound = root_lb
-    if verbose:
-        print(f"  Root LB:  {root_lb:.4f}")
-        print(f"  Integer?  {is_integer(z_vals, eps)}")
+    print(f"  Root LB:  {root_lb:.4f}")
+    print(f"  Integer?  {is_integer(z_vals, eps)}")
 
     best_lb = root_lb
     best_ub: Optional[float] = None
@@ -538,28 +552,21 @@ def solve_branch_and_price(
         best_lb = root_lb
         root.is_integer = True
         stats.node_explored(root, incumbent_improved=True)
-        if verbose:
-            print("\n✓ Root is INTEGER - OPTIMAL!")
-            elapsed = stats.print_summary(best_lb, best_ub, eps)
-        else:
-            elapsed = time.time() - stats.start_time
-        return root_lb, root_lb, 1, root, z_vals, None, stats
+        print("\n✓ Root is INTEGER - OPTIMAL!")
+        stats.print_summary(best_lb, best_ub, eps)
+        return root_lb, root_lb, 1
 
     stats.node_explored(root)
 
-    if verbose:
-        print(f"\n{'='*70}")
-        print("BREADTH-FIRST SEARCH")
-        print(f"{'='*70}\n")
-
-    opt_node = None
-    opt_z = None
+    print(f"\n{'='*70}")
+    print("BREADTH-FIRST SEARCH")
+    print(f"{'='*70}\n")
 
     while queue and nodes_explored < max_nodes:
         node, parent_z = queue.popleft()
 
         if node.node_id != 0:
-            if verbose and nodes_explored % print_frequency == 0:
+            if nodes_explored % print_frequency == 0:
                 gap_str = "N/A"
                 if best_ub is not None:
                     gap = best_ub - best_lb
@@ -570,18 +577,16 @@ def solve_branch_and_price(
                     f"LB={best_lb:.2f}, UB={best_ub if best_ub is not None else 'N/A'}, Gap={gap_str}]"
                 )
 
-            if verbose:
-                print(f"N{node.node_id:4d} D{node.depth:2d}", end="", flush=True)
+            print(f"N{node.node_id:4d} D{node.depth:2d}", end="", flush=True)
 
             lb, _, _, z_vals = solve_node_with_column_generation(
-                items, capacity, node, verbose=verbose
+                items, capacity, node, verbose=True
             )
             nodes_explored += 1
             node.lp_bound = lb
 
             if not math.isfinite(lb):
-                if verbose:
-                    print("  FATHOMED: Infeasible")
+                print("  FATHOMED: Infeasible")
                 node.is_pruned = True
                 node.prune_reason = "infeasible"
                 stats.node_explored(node)
@@ -597,8 +602,7 @@ def solve_branch_and_price(
                 best_lb = lb
 
             if best_ub is not None and lb >= best_ub - eps:
-                if verbose:
-                    print(f"  FATHOMED: {lb:.2f} ≥ {best_ub:.2f}")
+                print(f"  FATHOMED: {lb:.2f} ≥ {best_ub:.2f}")
                 node.is_pruned = True
                 node.prune_reason = "bound"
                 stats.node_explored(node)
@@ -609,15 +613,11 @@ def solve_branch_and_price(
                 continue
 
             if is_integer(z_vals, eps):
-                if verbose:
-                    print(f"  INTEGER: {lb:.2f}", end="")
+                print(f"  INTEGER: {lb:.2f}", end="")
                 node.is_integer = True
                 if best_ub is None or lb < best_ub - eps:
                     best_ub = lb
-                    opt_node = node
-                    opt_z = z_vals
-                    if verbose:
-                        print(" ★ NEW INCUMBENT!")
+                    print(" ★ NEW INCUMBENT!")
                     num_fathomed = fathom_queue_by_incumbent(queue, best_ub, eps)
                     if queue:
                         best_lb = min(n.lp_bound for n, _ in queue)
@@ -627,8 +627,7 @@ def solve_branch_and_price(
                         node, incumbent_improved=True, num_fathomed=num_fathomed
                     )
                 else:
-                    if verbose:
-                        print()
+                    print()
                     if queue:
                         best_lb = min(n.lp_bound for n, _ in queue)
                     else:
@@ -643,8 +642,7 @@ def solve_branch_and_price(
 
         branch_var = find_most_fractional(z_vals, node, eps)
         if branch_var is None:
-            if verbose:
-                print("  No fractional variable")
+            print("  No fractional variable")
             node.is_pruned = True
             if queue:
                 best_lb = min(n.lp_bound for n, _ in queue)
@@ -656,8 +654,7 @@ def solve_branch_and_price(
         can_be_zero = (t_br, u_br) not in node.theta_1_by_item[item_id]
         can_be_one = (t_br, u_br) not in node.theta_0_by_item[item_id]
         if not can_be_zero and not can_be_one:
-            if verbose:
-                print("  Conflict")
+            print("  Conflict")
             continue
 
         children = 0
@@ -681,7 +678,6 @@ def solve_branch_and_price(
                 node_counter += 1
                 queue.append((left, z_vals))
                 children += 1
-                stats.node_created()
 
         # Z=1 branch
         if can_be_one:
@@ -702,302 +698,27 @@ def solve_branch_and_price(
                 node_counter += 1
                 queue.append((right, z_vals))
                 children += 1
-                stats.node_created()
 
-        if children > 0 and verbose:
+        if children > 0:
             print(f"  Branch Z[{item_id},{t_br},{u_br}]={z_val:.3f}")
 
     if not queue and best_ub is not None:
         best_lb = best_ub
+        # --- Save RMP & z_vals from the incumbent node ---
 
+    opt_node = None
     opt_rmp = None
-    if best_ub is not None and opt_node is not None:
+    opt_z = None
+    if best_ub is not None:
+        # The incumbent node is the last one that improved best_ub
+        opt_node = node
+        opt_z = z_vals
         # Re-solve this node fully to get its final RMP
-        _, opt_rmp, _, _ = solve_node_with_column_generation(items, capacity, opt_node)
-
-    if verbose:
-        elapsed = stats.print_summary(best_lb, best_ub, eps)
-    else:
-        elapsed = time.time() - stats.start_time
-
-    return best_lb, best_ub, nodes_explored, opt_node, opt_z, opt_rmp, stats
+        _, opt_rmp, _, _ = solve_node_with_column_generation(items, capacity, node)
+    stats.print_summary(best_lb, best_ub, eps)
+    return best_lb, best_ub, nodes_explored, opt_node, opt_z, opt_rmp
 
 
-# ---------------- I/O Compatibility Layer ----------------
-
-
-def _as_len_T_vector(val, T: int) -> List[float]:
-    """Convert scalar or list to length-T vector"""
-    if val is None:
-        return []
-    if isinstance(val, (int, float)):
-        return [float(val)] * T
-    if isinstance(val, list):
-        if len(val) != T:
-            raise ValueError(f"Expected length-{T} list, got {len(val)}")
-        return [float(x) for x in val]
-    raise TypeError("Value must be a number or a list")
-
-
-def _cap_global_from_dem(items: Dict[int, dict], T: int) -> List[int]:
-    """Generate capacity from demand if not specified"""
-    cap_raw = [0] * T
-    for it in items.values():
-        dem = it["demand"]
-        for t in range(T):
-            cap_raw[t] += dem[t]
-    buf = max(5, int(0.2 * max(cap_raw) if cap_raw else 0))
-    return [c + buf for c in cap_raw]
-
-
-def convert_json_to_items(
-    data: dict,
-) -> Tuple[List[ProductionItem], List[float], bool, float]:
-    """Convert JSON data to ProductionItem format"""
-    T = int(data["period"])
-    items_raw: Dict[int, dict] = {int(k): v for k, v in data["items"].items()}
-
-    # Get global production capacity
-    prod_cap = data.get("production_capacity") or data.get("manual_capacity")
-    prod_cap = (
-        _as_len_T_vector(prod_cap, T)
-        if prod_cap is not None
-        else _cap_global_from_dem(items_raw, T)
-    )
-
-    # Lost sales settings
-    allow_lost_sales = bool(
-        data.get("allow_unmet_demand", False) or data.get("allow_lost_sales", False)
-    )
-    loss_penalty_global = data.get("lost_sales_penalty", None)
-    loss_penalty_factor = float(data.get("lost_sales_penalty_factor", 200.0))
-
-    # Calculate default penalty if needed (similar to MIP solver)
-    if allow_lost_sales:
-        max_unit_cost = 0.0
-        for it in items_raw.values():
-            c = it["c_var"]
-            if isinstance(c, list):
-                max_unit_cost = max(max_unit_cost, max(map(float, c)))
-            else:
-                max_unit_cost = max(max_unit_cost, float(c))
-
-            h = it["h"]
-            if isinstance(h, list):
-                max_unit_cost += max(map(float, h))
-            else:
-                max_unit_cost += float(h)
-
-        if max_unit_cost <= 0.0:
-            max_unit_cost = 1.0
-
-        default_loss_penalty = loss_penalty_global
-        if default_loss_penalty is None:
-            default_loss_penalty = loss_penalty_factor * max_unit_cost * 10
-    else:
-        default_loss_penalty = 5000.0  # Default high value
-
-    # Convert items
-    items = []
-    for i, it in items_raw.items():
-        # Convert shelf_seq (relative) to absolute expiry
-        shelf_seq = list(it["shelf_seq"])
-        if len(shelf_seq) != T:
-            raise ValueError(f"items[{i}]['shelf_seq'] must have length {T}")
-
-        # Convert to absolute expiry: E_t = t + L_t (inclusive)
-        expiry_abs = [t + int(shelf_seq[t]) - 1 for t in range(T)]
-
-        # Get costs (handle scalar or list)
-        c_var = _as_len_T_vector(it["c_var"], T)
-        setup = _as_len_T_vector(it["setup"], T)
-        h = _as_len_T_vector(it["h"], T)
-
-        # Lost sales penalty (item-specific or global)
-        lp = it.get("lost_sales_penalty", default_loss_penalty)
-        if isinstance(lp, (list, tuple)):
-            # For BnP, we'll use the average as a single value
-            lp = sum(lp) / len(lp)
-
-        item = ProductionItem(
-            item_id=i,
-            number_of_periods=T,
-            demand_quantity_by_period=list(map(float, it["demand"])),
-            production_unit_cost_by_period=c_var,
-            setup_cost_by_period=setup,
-            holding_unit_cost_by_period=h,
-            perishability_horizon_by_start_period=expiry_abs,
-            lost_sales_penalty_per_unit=float(lp) if allow_lost_sales else 5000.0,
-        )
-        items.append(item)
-
-    return items, prod_cap, allow_lost_sales, default_loss_penalty
-
-
-def generate_output(
-    best_lb: float,
-    best_ub: Optional[float],
-    opt_z: Optional[dict],
-    items: List[ProductionItem],
-    runtime: float,
-    status: int,
-    out_dir: Path,
-) -> Tuple[dict, List[str]]:
-    """Generate output matching MIP solver format"""
-    summary = {
-        "status": status,
-        "objective": best_ub if best_ub is not None else None,
-        "best_bound": best_lb if math.isfinite(best_lb) else None,
-        "gap": None,
-        "runtime_sec": runtime,
-        "solver_version": "bnp_dp_v1",
-        "n_items": len(items),
-        "T": items[0].number_of_periods if items else 0,
-    }
-
-    if best_ub is not None and math.isfinite(best_lb):
-        gap = best_ub - best_lb
-        if best_ub != 0:
-            summary["gap"] = gap / abs(best_ub)
-        else:
-            summary["gap"] = 0.0 if gap < 1e-6 else 1.0
-
-    orders_txt = []
-
-    if opt_z is not None and best_ub is not None:
-        # Generate orders text
-        for item in items:
-            i = item.item_id
-            orders_txt.append(f"Item {i} — orders (t → qty)")
-
-            # Calculate quantities from z values
-            arcs = opt_z.get(i, {})
-            production_by_period = {}
-            for (t, u), val in arcs.items():
-                if val > 0.9:  # Consider as 1 if close enough
-                    if t not in production_by_period:
-                        production_by_period[t] = 0.0
-                    production_by_period[t] += item.demand_quantity_by_period[u]
-
-            # Output production quantities
-            for t in sorted(production_by_period.keys()):
-                qty = production_by_period[t]
-                if qty > 1e-6:
-                    orders_txt.append(f" {t:2d} → {qty:8.3f}")
-
-            orders_txt.append("")
-
-    return summary, orders_txt
-
-
-def solve_instance(
-    instance_path: str | Path = "last_instance.json",
-    time_limit: int = 0,
-    mip_gap: float = 0.0,
-    out_dir: str | Path = "bnp_results",
-    verbose: bool = True,
-):
-    """Main entry point matching MIP solver interface"""
-
-    # Load and parse data
-    data = json.loads(Path(instance_path).read_text())
-
-    # Convert to BnP format
-    items, capacity, allow_lost_sales, _ = convert_json_to_items(data)
-
-    if verbose:
-        print("\n╔" + "═" * 68 + "╗")
-        print(f"║ {'CAPACITATED LOT SIZING WITH PERISHABILITY (BnP)':^66s} ║")
-        print("╠" + "═" * 68 + "╣")
-        print(f"║  Items:    {len(items):<57d} ║")
-        print(f"║  Periods:  {len(capacity):<57d} ║")
-        print(f"║  Lost Sales: {'Yes' if allow_lost_sales else 'No':<55s} ║")
-        print("╚" + "═" * 68 + "╝")
-
-    # Determine max nodes based on time limit (rough approximation)
-    if time_limit > 0:
-        # Estimate: ~10 nodes per second for small instances, adjust as needed
-        max_nodes = max(100, time_limit * 10)
-    else:
-        max_nodes = 5000
-
-    # Set gap tolerance
-    eps = max(mip_gap, 1e-6) if mip_gap > 0 else 1e-6
-
-    # Solve using Branch-and-Price
-    start_time = time.time()
-    try:
-        best_lb, best_ub, nodes_explored, opt_node, opt_z, opt_rmp, stats = (
-            solve_branch_and_price(
-                items,
-                capacity,
-                max_nodes=max_nodes,
-                eps=eps,
-                print_frequency=50,
-                verbose=verbose,
-            )
-        )
-        runtime = time.time() - start_time
-
-        # Check time limit
-        if time_limit > 0 and runtime > time_limit:
-            status = 9  # TIME_LIMIT in Gurobi
-        elif best_ub is not None and abs(best_ub - best_lb) < eps:
-            status = 2  # OPTIMAL in Gurobi
-        elif best_ub is not None:
-            status = 9  # Suboptimal but feasible
-        elif not math.isfinite(best_lb):
-            status = 3  # INFEASIBLE in Gurobi
-        else:
-            status = 12  # No solution found
-    except Exception as e:
-        print(f"Error during solve: {e}")
-        runtime = time.time() - start_time
-        status = 11  # Error
-        best_lb = None
-        best_ub = None
-        opt_z = None
-        opt_node = None
-
-    # Generate output
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    summary, orders_txt = generate_output(
-        best_lb, best_ub, opt_z, items, runtime, status, out_dir
-    )
-
-    # Save output files
-    if orders_txt:
-        (out_dir / "orders.txt").write_text("\n".join(orders_txt), encoding="utf-8")
-
-    (out_dir / "summary.json").write_text(
-        json.dumps(summary, indent=2), encoding="utf-8"
-    )
-
-    # Additional BnP-specific output
-    if opt_node and verbose:
-        print("\n" + "=" * 70)
-        print(" " * 25 + "OPTIMAL NODE ORDER POLICY")
-        print("=" * 70)
-
-        for item in items:
-            print(f"\nItem {item.item_id}:")
-            print("-" * 25)
-            arcs = opt_z.get(item.item_id, {}) if opt_z else {}
-            if not arcs:
-                print("  No production (lost sales only).")
-                continue
-            for (t, u), val in sorted(arcs.items()):
-                if val > 0.9:
-                    print(
-                        f"  Produce in period {t+1:>2d} → satisfies demand of period {u+1:>2d}"
-                    )
-
-    return summary, orders_txt
-
-
-# For testing with the old interface
 def build_small_example_instance():
     T = 8
     return (
@@ -1039,46 +760,47 @@ def build_small_example_instance():
 
 
 if __name__ == "__main__":
-    import sys
+    items, cap = build_small_example_instance()
+    print("\n╔" + "═" * 68 + "╗")
+    print(f"║ {'CAPACITATED LOT SIZING WITH PERISHABILITY':^66s} ║")
+    print("╠" + "═" * 68 + "╣")
+    print(f"║  Items:    {len(items):<57d} ║")
+    print(f"║  Periods:  {len(cap):<57d} ║")
+    print("╚" + "═" * 68 + "╝")
 
-    # Check if instance file is provided as argument
-    if len(sys.argv) > 1:
-        # Use the new I/O interface
-        instance_file = sys.argv[1]
-        time_limit = int(sys.argv[2]) if len(sys.argv) > 2 else 0
-        mip_gap = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
-        out_dir = sys.argv[4] if len(sys.argv) > 4 else "bnp_results"
+    lb, ub, nodes, opt_node, opt_z, opt_rmp = solve_branch_and_price(
+        items, cap, max_nodes=10000, print_frequency=50
+    )
 
-        solve_instance(instance_file, time_limit, mip_gap, out_dir)
-    else:
-        # Use the old test interface
-        items, cap = build_small_example_instance()
-        print("\n╔" + "═" * 68 + "╗")
-        print(f"║ {'CAPACITATED LOT SIZING WITH PERISHABILITY':^66s} ║")
-        print("╠" + "═" * 68 + "╣")
-        print(f"║  Items:    {len(items):<57d} ║")
-        print(f"║  Periods:  {len(cap):<57d} ║")
-        print("╚" + "═" * 68 + "╝")
+    print("\n" + "=" * 70)
+    print(" " * 25 + "OPTIMAL NODE ORDER POLICY")
+    print("=" * 70)
 
-        lb, ub, nodes, opt_node, opt_z, opt_rmp, stats = solve_branch_and_price(
-            items, cap, max_nodes=10000, print_frequency=50
-        )
-
-        if opt_rmp:
-            print("\n" + "=" * 70)
-            print(" " * 30 + "FINAL RMP VARIABLE VALUES")
-            print("=" * 70)
-
-            for (item_id, idx), lam in opt_rmp.lambdas.items():
-                lam_val = lam.X
-                if lam_val < 1e-6:
-                    continue
-                col = opt_rmp.columns[item_id][idx]
+    for item in items:
+        print(f"\nItem {item.item_id}:")
+        print("-" * 25)
+        arcs = opt_z[item.item_id]
+        if not arcs:
+            print("  No production (lost sales only).")
+            continue
+        for (t, u), val in sorted(arcs.items()):
+            if val > 0.9:
                 print(
-                    f"\nλ[{item_id},{idx}] = {lam_val:.4f}, cost = {col.total_plan_cost:.2f}"
+                    f"  Produce in period {t+1:>2d} → satisfies demand of period {u+1:>2d}"
                 )
 
-                x = col.capacity_usage_by_period
-                y = col.setup_open_fraction_by_period
-                print("  x_it:", ["{:.2f}".format(v) for v in x])
-                print("  y_it:", ["{:.2f}".format(v) for v in y])
+    print("\n" + "=" * 70)
+    print(" " * 30 + "FINAL RMP VARIABLE VALUES")
+    print("=" * 70)
+
+    for (item_id, idx), lam in opt_rmp.lambdas.items():
+        lam_val = lam.X
+        if lam_val < 1e-6:
+            continue
+        col = opt_rmp.columns[item_id][idx]
+        print(f"\nλ[{item_id},{idx}] = {lam_val:.4f}, cost = {col.total_plan_cost:.2f}")
+
+        x = col.capacity_usage_by_period
+        y = col.setup_open_fraction_by_period
+        print("  x_it:", ["{:.2f}".format(v) for v in x])
+        print("  y_it:", ["{:.2f}".format(v) for v in y])

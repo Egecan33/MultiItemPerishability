@@ -48,11 +48,6 @@ class BranchNode:
     branch_direction: Optional[str] = None
 
 
-# ============================================================================
-# VISUALIZATION SYSTEM (ADDED)
-# ============================================================================
-
-
 class BranchAndPriceVisualizer:
     """Real-time visualization of Branch-and-Price algorithm"""
 
@@ -538,11 +533,6 @@ class BranchAndPriceVisualizer:
                 linewidth=2,
             ),
         )
-
-
-# ============================================================================
-# CORE ALGORITHM (EXACT FROM DOCUMENT 2 - NO CHANGES)
-# ============================================================================
 
 
 class SearchStatistics:
