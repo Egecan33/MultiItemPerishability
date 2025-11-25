@@ -237,7 +237,32 @@ def solve_instance(
         Ciu = float(items_raw[i]["demand"][u])
         m.addConstr(X[i, t, u] <= Ciu * Z[i, t, u], name=f"arc_on_{i}_{t}_{u}")
 
-    # (C5) No--crossing (LEFO)
+    # # (C5) LEFO (no-crossing):
+    # # For any two active arcs (t1,u1), (t2,u2) of the same item i:
+    # for i in items_raw:
+    #     prods = [t for t in Periods if Gamma.get((i, t))]
+    #     for t1 in prods:
+    #         v1 = Expiry[(i, t1)]
+    #         for t2 in prods:
+    #             if t1 == t2:
+    #                 continue
+    #             v2 = Expiry[(i, t2)]
+
+    #             # only pairs where t1 has LATER expiry than t2
+    #             if v1 <= v2:
+    #                 continue
+
+    #             for u1 in Gamma.get((i, t1), []):
+    #                 for u2 in Gamma.get((i, t2), []):
+    #                     # forbidden pattern for LEFO:
+    #                     # later expiry used at a LATER demand than the earlier expiry should be constrained
+    #                     if u1 > u2:
+    #                         m.addConstr(
+    #                             Z[i, t1, u1] + Z[i, t2, u2] <= 1,
+    #                             name=f"nocross_LEFO_{i}_{t1}_{u1}_{t2}_{u2}",
+    #                         )
+
+    # # (C5) No--crossing (LEFO)
     for i in items_raw:
         prods = [t for t in Periods if Gamma.get((i, t))]
         prods.sort(key=lambda t: Expiry[(i, t)])  # ascending by v_{it}
@@ -247,7 +272,7 @@ def solve_instance(
             for b in range(a + 1, len(prods)):
                 t2 = prods[b]
                 v2 = Expiry[(i, t2)]
-                if v1 >= v2:
+                if v1 >= v2:  # we only care about v1 < v2
                     continue
                 for up in Gamma[(i, t2)]:  # u' for t_2
                     for u in [

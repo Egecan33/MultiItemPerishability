@@ -33,7 +33,7 @@ except Exception:
     _solve_nocross_v1 = None  # optional backend
 
 try:
-    from mip.solver_column_generation import (
+    from mip.backup.solver_column_generation import (
         solve_instance as _solve_column_generation_v1,
     )
 except Exception:

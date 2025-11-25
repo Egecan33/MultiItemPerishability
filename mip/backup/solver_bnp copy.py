@@ -158,7 +158,7 @@ def solve_pricing_subproblem(
     upsilon_0: Set[int],
     upsilon_1: Set[int],
     eps: float = 1e-9,
-    use_mip: bool = False,  # Kept for compatibility but Y,Z always binary
+    use_mip: bool = False,
 ) -> Tuple[float, Optional[ProductionPlanColumn]]:
     """
     Solve the pricing subproblem for a single item.
@@ -169,10 +169,6 @@ def solve_pricing_subproblem(
     - Arc activation constraints
     - LEFO no-crossing constraints
     - Branching constraints (theta_0/theta_1 for arcs, upsilon_0/upsilon_1 for setups)
-
-    IMPORTANT: Each column represents a concrete production plan, so Y (setup) and Z (arc)
-    variables are ALWAYS binary. Only X (quantity) variables are continuous.
-    The master problem combines these integer plans with fractional weights (λ).
 
     Args:
         item_id: Item identifier
@@ -187,7 +183,7 @@ def solve_pricing_subproblem(
         upsilon_0: Set of forbidden setup periods
         upsilon_1: Set of forced setup periods
         eps: Tolerance for reduced cost
-        use_mip: Deprecated - Y and Z are always binary (kept for compatibility)
+        use_mip: If True, solve as MIP; if False, solve as LP relaxation
 
     Returns:
         (reduced_cost, column) where column is None if no improving column found
@@ -233,17 +229,18 @@ def solve_pricing_subproblem(
     model.Params.OutputFlag = 0
 
     # Decision variables
-    # Y and Z must ALWAYS be binary because each column represents a concrete production plan
-    # X can be continuous (production quantities)
+    vtype_z = GRB.BINARY if use_mip else GRB.CONTINUOUS
+    vtype_y = GRB.BINARY if use_mip else GRB.CONTINUOUS
+
     X: Dict[Tuple[int, int], gp.Var] = {}
     Z: Dict[Tuple[int, int], gp.Var] = {}
     for t, u in Triples:
         X[t, u] = model.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name=f"X_{t}_{u}")
-        Z[t, u] = model.addVar(lb=0.0, ub=1.0, vtype=GRB.BINARY, name=f"Z_{t}_{u}")
+        Z[t, u] = model.addVar(lb=0.0, ub=1.0, vtype=vtype_z, name=f"Z_{t}_{u}")
 
     Y: Dict[int, gp.Var] = {}
     for t in range(T):
-        Y[t] = model.addVar(lb=0.0, ub=1.0, vtype=GRB.BINARY, name=f"Y_{t}")
+        Y[t] = model.addVar(lb=0.0, ub=1.0, vtype=vtype_y, name=f"Y_{t}")
 
     model.update()
 
@@ -504,7 +501,7 @@ def solve_node_with_column_generation(
     max_iter: int = 500,
     eps: float = 1e-9,
     verbose: bool = False,
-    use_mip_pricing: bool = True,  # Kept for compatibility; Y,Z always binary
+    use_mip_pricing: bool = True,
 ) -> Tuple[
     float,
     Optional[RestrictedMasterProblem],
@@ -516,15 +513,8 @@ def solve_node_with_column_generation(
     """
     Solve a branch node using column generation.
 
-    Each generated column represents a concrete production plan with binary Y and Z values.
-    The master problem combines these plans with fractional weights (λ variables).
-
-    Args:
-        use_mip_pricing: Deprecated - Y and Z are always binary in pricing subproblems
-
     Returns:
         (lb, rmp, converged, z_vals, y_vals, x_vals)
-        Note: z_vals and y_vals are aggregated from columns and can be fractional
     """
     rmp = RestrictedMasterProblem(items, T, capacity, Gamma_by_item)
 
@@ -800,7 +790,6 @@ def solve_instance(
     max_time = int(time_limit) if time_limit > 0 else 600
     max_nodes = 1000000  # Large default
     print_frequency = 50
-    # Note: Y and Z are always binary in pricing (each column is a concrete plan)
     use_mip_pricing = True
 
     print("\n" + "╔" + "═" * 68 + "╗")
@@ -808,7 +797,7 @@ def solve_instance(
     print("╠" + "═" * 68 + "╣")
     print(f"║  Items:    {len(items):<57d} ║")
     print(f"║  Periods:  {T:<57d} ║")
-    print(f"║  Pricing:  {'Integer Plans' if use_mip_pricing else 'LP':<57s} ║")
+    print(f"║  Pricing:  {'MIP' if use_mip_pricing else 'LP':<57s} ║")
     print("╚" + "═" * 68 + "╝")
 
     # Build Gamma and Expiry for each item
