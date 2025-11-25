@@ -14,18 +14,13 @@ pip install -r requirements.txt
 
 # ensure Gurobi is installed and licensed on this machine
 streamlit run streamlit_app.py
-caffeinate -idm streamlit run streamlit_app.py
+
+# windows
 
 
-(.venv) (base) egecanaktan@192 MultiItemPerishability % python parse_demands_and_insert.py \
-  --demand-lib-root /Users/egecanaktan/github_repositories/MultiItemPerishability/demands_lib \
-  --create-all \
-  --instances-per-class 5 \
-  --L-list "1,2,3,4,5,6,7,8,9,10,11,12" \
-  --synth-variants-per-bucket 15 \
-  --pick first \
-  -y
+cd C:\Users\ea024922\Documents\GitHub\MultiItemPerishability
+python -m pip install --upgrade pip
+pip install -r requirements.txt   # yoksa en azından:
+pip install streamlit
 
-
-
-python report.py --csv /Users/egecanaktan/github_repositories/MultiItemPerishability/batch11.csv --out out --xlsx
+python -m streamlit run .\streamlit_app.py
