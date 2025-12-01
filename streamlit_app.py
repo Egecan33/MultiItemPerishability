@@ -33,16 +33,12 @@ except Exception:
     _solve_nocross_v1 = None  # optional backend
 
 try:
-    from mip.backup.solver_column_generation import (
-        solve_instance as _solve_column_generation_v1,
-    )
-except Exception:
-    _solve_column_generation_v1 = None  # optional backend
-
-try:
     from mip.solver_bnp import solve_instance as _solve_bnp
 except Exception:
     _solve_bnp = None  # optional backend
+
+try:
+    from mip. import SOLVER_VERSION as SOLVER_VERSION_LEFO_V2
 
 SOLVER_REGISTRY = {
     "No-Crossing (no shelf) v1": {
@@ -59,11 +55,6 @@ SOLVER_REGISTRY = {
         "fn": _solve_nocross_v1,
         "tag": "lefo_mip_v1",
         "desc": "No-crossing model (v1).",
-    },
-    "Solve Column Generation v1": {
-        "fn": _solve_column_generation_v1,
-        "tag": "lefo_cg_v1",
-        "desc": "cg1",
     },
     "BNP": {
         "fn": _solve_bnp,

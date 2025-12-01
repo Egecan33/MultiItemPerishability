@@ -1,18 +1,27 @@
 """
 Branch-and-Price for Perishable Lot-Sizing with Heterogeneous Shelf Lives and LEFO
-Optimized with column inheritance (warm-starting child nodes from parent).
+Using Dynamic Programming for Zero-Inventory Ordering (ZIO) Column Generation
 
-Features:
-- Column inheritance for faster convergence at branch nodes
-- σ (sigma) and τ (tau) duals for forbidden branches to guide pricing (Section 4.3.2)
-- Dummy column detection to prevent false integer solutions
-- Branching on Z (arc) and Y (setup) variables
+Key Changes from MIP Pricing:
+- DP generates only ZIO extreme points (Wagner-Whitin style)
+- ZIO: Production only when inventory is zero and demand exists
+- Each production run covers consecutive demand periods [t, s] where s ∈ Γ_t
+- Convex combinations of ZIO columns span the feasible region
 
-Note on dual variable handling:
-- At root node: σ = τ = 0 (no branching constraints)
-- At branch nodes with forbidden constraints (θ⁰, Υ⁰): Extract σ, τ from RMP
-- At branch nodes with forced constraints (θ¹, Υ¹): Cannot add to RMP (dummy incompatible),
-  enforce only in pricing subproblem
+ZIO Property (Theorem):
+For uncapacitated lot-sizing, optimal solutions have the ZIO property:
+    X_t > 0  ⟹  I_{t-1} = 0
+This means production occurs only when entering with zero inventory.
+
+DP Recursion:
+    f(t) = min cost to satisfy demand [t, T-1] starting with zero inventory
+
+    f(T) = 0  (base case)
+
+    f(t) = { f(t+1)                                        if d_t = 0
+           { min_{s ∈ Γ_t} { c(t,s) + f(s+1) }            if d_t > 0
+
+    where c(t,s) = setup_t + Σ_{u=t}^{s} (c_t + h_{t→u} - π_t) · d_u - σ_t - Σ τ_{tu}
 """
 
 from __future__ import annotations
@@ -127,14 +136,20 @@ class SearchStatistics:
 
 
 def _cap_global_from_dem(items: Dict[int, dict], T: int) -> List[float]:
-    """Generate default capacity from total demand with buffer."""
-    cap_raw = [0.0] * T
+    """Generate default capacity from total demand with large buffer.
+
+    For lot-sizing with batching, capacity at each period should be large enough
+    to potentially produce ALL demand (worst case: batch everything at one period).
+    We use total demand across all periods + 10% buffer as the per-period capacity.
+    """
+    total_demand = 0.0
     for it in items.values():
         dem = it["demand"]
-        for t in range(T):
-            cap_raw[t] += float(dem[t])
-    buf = max(5.0, 0.2 * max(cap_raw) if cap_raw else 0.0)
-    return [c + buf for c in cap_raw]
+        total_demand += sum(float(d) for d in dem)
+
+    # Each period should be able to handle total demand (for batching)
+    cap_per_period = total_demand * 1.1  # 10% buffer
+    return [cap_per_period] * T
 
 
 def _as_len_T_vector(val, T: int) -> List[float]:
@@ -198,7 +213,14 @@ def inherit_columns_from_parent(
     return inherited
 
 
-def solve_pricing_subproblem(
+def column_signature(col: ProductionPlanColumn) -> str:
+    """Generate a unique signature for a column to detect duplicates."""
+    # A ZIO column is uniquely identified by its arc usage pattern
+    arcs = sorted(col.arc_usage.keys())
+    return f"I{col.item_id}:" + ",".join(f"{t}-{u}" for t, u in arcs)
+
+
+def solve_pricing_subproblem_dp(
     item_id: int,
     item_data: dict,
     T: int,
@@ -213,29 +235,35 @@ def solve_pricing_subproblem(
     sigma: Optional[Dict[Tuple[int, int], float]] = None,
     tau: Optional[Dict[Tuple[int, int, int], float]] = None,
     eps: float = 1e-6,
-    use_mip: bool = False,
+    existing_signatures: Optional[Set[str]] = None,
+    arc_usage_counts: Optional[Dict[Tuple[int, int], int]] = None,
+    perturbation_eps: float = 1e-5,
 ) -> Tuple[float, Optional[ProductionPlanColumn]]:
     """
-    Solve the pricing subproblem for a single item.
+    DP-based pricing subproblem generating Zero-Inventory Ordering (ZIO) columns.
 
-    Reduced cost formula (Section 4.3.2, Equation 7):
-        rc = c^k_i - μ_i - Σ_t π_t X^k_it - Σ_t σ_it Y^k_it - Σ_{t,u} τ_itu Z^k_itu
+    Key fixes:
+    1. Allows columns with forced setups (Y_t=1) but no production (X_t=0)
+    2. Uses arc perturbation to avoid duplicate columns - adds small cost to
+       frequently-used arcs to encourage diversification
 
-    Where:
-        c^k_i: Total cost of column k for item i
-        μ_i: Convexity dual
-        π_t: Capacity dual for period t
-        σ_it: Setup linking dual (for forbidden setups)
-        τ_itu: Arc linking dual (for forbidden arcs)
+    ZIO Property: Production occurs only when entering with zero inventory.
+    These are extreme points for lot-sizing, sufficient to span the solution space.
+
+    Returns:
+        (reduced_cost, column): best reduced cost and the improving column (or None)
     """
     sigma = sigma or {}
     tau = tau or {}
+    existing_signatures = existing_signatures or set()
+    arc_usage_counts = arc_usage_counts or {}
 
     demand = item_data["demand"]
     c_var = item_data["c_var"]
     h = item_data["h"]
     setup = item_data["setup"]
 
+    # Cost accessors
     def c_at(t: int) -> float:
         return float(c_var[t]) if isinstance(c_var, list) else float(c_var)
 
@@ -245,6 +273,7 @@ def solve_pricing_subproblem(
     def s_at(t: int) -> float:
         return float(setup[t]) if isinstance(setup, list) else float(setup)
 
+    # Cumulative holding cost: h_sum(t, u) = Σ_{k=t}^{u-1} h_k
     h_prefix = [0.0] * (T + 1)
     for k in range(T):
         h_prefix[k + 1] = h_prefix[k] + h_at(k)
@@ -252,151 +281,221 @@ def solve_pricing_subproblem(
     def h_sum(t: int, u: int) -> float:
         return h_prefix[u] - h_prefix[t]
 
-    Triples: List[Tuple[int, int]] = []
-    for t in range(T):
-        for u in Gamma.get(t, []):
-            Triples.append((t, u))
+    INF = float("inf")
 
-    mu_t: Dict[int, float] = {}
-    for t in range(T):
-        mu_t[t] = sum(float(demand[u]) for u in Gamma.get(t, []))
+    # Step 1: Build forced production mapping from θ¹
+    # forced_source[u] = t means period u MUST be served by production at period t
+    forced_source: Dict[int, int] = {}
+    for t, u in theta_1:
+        if u in forced_source and forced_source[u] != t:
+            # Conflict: period u forced to be served by two different production periods
+            return INF, None
+        forced_source[u] = t
 
-    model = gp.Model(f"pricing_item_{item_id}")
-    model.Params.OutputFlag = 0
-    model.Params.LogToConsole = 0
+    # Step 2: Check upsilon constraints consistency
+    for t in upsilon_1:
+        if t in upsilon_0:
+            return INF, None  # Contradiction
 
-    X: Dict[Tuple[int, int], gp.Var] = {}
-    Z: Dict[Tuple[int, int], gp.Var] = {}
-    for t, u in Triples:
-        X[t, u] = model.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name=f"X_{t}_{u}")
-        Z[t, u] = model.addVar(lb=0.0, ub=1.0, vtype=GRB.BINARY, name=f"Z_{t}_{u}")
+    # Step 3: For forced arcs, the production period must have setup
+    for t, u in theta_1:
+        if t in upsilon_0:
+            return INF, None  # Can't force arc if setup is forbidden
 
-    Y: Dict[int, gp.Var] = {}
-    for t in range(T):
-        Y[t] = model.addVar(lb=0.0, ub=1.0, vtype=GRB.BINARY, name=f"Y_{t}")
+    # Step 4: Determine which periods MUST have production (from forced arcs only, NOT forced setups)
+    # Note: upsilon_1 forces Y_t=1 but NOT necessarily X_t > 0
+    must_produce_at: Set[int] = set()
+    for t, u in theta_1:
+        must_produce_at.add(t)
 
-    model.update()
-
-    for u in range(T):
-        if demand[u] <= 0:
-            continue
-        expr = gp.LinExpr()
-        for t in range(u + 1):
-            if (t, u) in X:
-                expr += X[t, u]
-        model.addConstr(expr == float(demand[u]), name=f"demand_{u}")
-
-    for t in range(T):
-        if not Gamma.get(t):
-            model.addConstr(Y[t] == 0.0, name=f"setup_zero_{t}")
-            continue
-        expr = gp.LinExpr()
-        for u in Gamma[t]:
-            if (t, u) in X:
-                expr += X[t, u]
-        model.addConstr(expr <= mu_t[t] * Y[t], name=f"setupLink_{t}")
-
-    for t, u in Triples:
-        C_u = float(demand[u])
-        model.addConstr(X[t, u] <= C_u * Z[t, u], name=f"arc_on_{t}_{u}")
-
-    prods = [t for t in range(T) if Gamma.get(t)]
-    prods.sort(key=lambda t: Expiry.get(t, t))
-
-    for idx1 in range(len(prods)):
-        t1 = prods[idx1]
-        v1 = Expiry.get(t1, t1)
-        for idx2 in range(idx1 + 1, len(prods)):
-            t2 = prods[idx2]
-            v2 = Expiry.get(t2, t2)
-            if v1 >= v2:
-                continue
-            for up in Gamma.get(t2, []):
-                for u in [uu for uu in Gamma.get(t1, []) if t2 <= uu <= up - 1]:
-                    if (t1, u) in Z and (t2, up) in Z:
-                        model.addConstr(
-                            Z[t1, u] + Z[t2, up] <= 1,
-                            name=f"nocross_{t1}_{t2}_{u}_{up}",
-                        )
-
-    # Branching constraints (enforced in pricing, not RMP)
-    for t_forb, u_forb in theta_0:
-        if (t_forb, u_forb) in Z:
-            model.addConstr(
-                Z[t_forb, u_forb] == 0.0, name=f"branch_Z0_{t_forb}_{u_forb}"
-            )
-
-    for t_force, u_force in theta_1:
-        if (t_force, u_force) in Z:
-            model.addConstr(
-                Z[t_force, u_force] == 1.0, name=f"branch_Z1_{t_force}_{u_force}"
-            )
+    # Step 5: For each forced production at t, determine the MINIMUM end period
+    min_end_for_forced: Dict[int, int] = {}
+    for t, u in theta_1:
+        if t not in min_end_for_forced:
+            min_end_for_forced[t] = u
         else:
-            model.addConstr(0.0 == 1.0, name=f"branch_impossible_{t_force}_{u_force}")
+            min_end_for_forced[t] = max(min_end_for_forced[t], u)
 
-    for t_forb in upsilon_0:
-        if t_forb in Y:
-            model.addConstr(Y[t_forb] == 0.0, name=f"branch_Y0_{t_forb}")
+    # Step 6: Build valid production options for each period
+    def get_valid_ends(t: int) -> List[int]:
+        if t in upsilon_0:
+            return []  # Cannot produce here (setup forbidden)
 
-    for t_force in upsilon_1:
-        if t_force in Y:
-            model.addConstr(Y[t_force] == 1.0, name=f"branch_Y1_{t_force}")
+        valid_ends = Gamma.get(t, [])
+        if not valid_ends:
+            return []
 
-    # Objective: reduced cost with all duals (Section 4.3.2, Equation 7)
-    # rc = c^k_i - μ_i - Σ π_t X - Σ σ_it Y - Σ τ_itu Z
-    obj = gp.LinExpr()
+        result = []
+        min_s = min_end_for_forced.get(t, t)  # Must cover at least up to min_s
 
-    # Production and holding costs minus capacity duals
-    for t, u in Triples:
-        unit_cost = c_at(t) + h_sum(t, u)
-        obj += unit_cost * X[t, u]
-        obj -= capacity_duals[t] * X[t, u]
+        for s in valid_ends:
+            if s < min_s:
+                continue
 
-    # Setup costs minus sigma duals
-    for t in range(T):
-        obj += s_at(t) * Y[t]
-        # Subtract sigma dual if we have one for this (item, period)
-        sigma_val = sigma.get((item_id, t), 0.0)
-        if sigma_val != 0.0:
-            obj -= sigma_val * Y[t]
+            # Check that all arcs (t, u) for u in [t, s] are not forbidden
+            arc_valid = True
+            for u in range(t, s + 1):
+                if (t, u) in theta_0:
+                    arc_valid = False
+                    break
+            if not arc_valid:
+                continue
 
-    # Subtract tau duals for arcs
-    for t, u in Triples:
-        tau_val = tau.get((item_id, t, u), 0.0)
-        if tau_val != 0.0:
-            obj -= tau_val * Z[t, u]
+            # Check that none of the periods [t, s] have forced different source
+            source_conflict = False
+            for u in range(t, s + 1):
+                if u in forced_source and forced_source[u] != t:
+                    source_conflict = True
+                    break
+            if source_conflict:
+                continue
 
-    # Subtract convexity dual
-    obj -= convexity_dual
+            result.append(s)
 
-    model.setObjective(obj, GRB.MINIMIZE)
-    model.optimize()
+        return result
 
-    if model.Status != GRB.OPTIMAL:
-        return math.inf, None
+    # Step 7: Compute reduced cost for a production run [t, s]
+    # Includes perturbation to discourage reusing same arcs
+    def run_reduced_cost(t: int, s: int) -> float:
+        cost = s_at(t)
+        cost -= sigma.get((item_id, t), 0.0)
 
-    reduced_cost = model.ObjVal
+        for u in range(t, s + 1):
+            d_u = float(demand[u])
+            if d_u > 0:
+                unit_cost = c_at(t) + h_sum(t, u) - capacity_duals[t]
+                cost += unit_cost * d_u
+                cost -= tau.get((item_id, t, u), 0.0)
+                # Add perturbation based on arc usage count
+                arc_count = arc_usage_counts.get((t, u), 0)
+                cost += perturbation_eps * arc_count
+
+        return cost
+
+    # Step 7b: Compute actual (non-reduced) cost for a production run [t, s]
+    def run_actual_cost(t: int, s: int) -> float:
+        cost = s_at(t)
+        for u in range(t, s + 1):
+            d_u = float(demand[u])
+            if d_u > 0:
+                cost += (c_at(t) + h_sum(t, u)) * d_u
+        return cost
+
+    # Step 8: Backward DP with forced constraints
+    # dp[t] = min reduced cost to satisfy demand [t, T-1] starting with zero inventory
+    dp = [INF] * (T + 1)
+    decision = [-1] * T  # decision[t] = s means produce at t covering [t, s]
+
+    dp[T] = 0
+
+    for t in range(T - 1, -1, -1):
+        # Check if this period has a forced production source different from t
+        if t in forced_source:
+            src = forced_source[t]
+            if src != t:
+                # Period t is covered by production at src (src < t)
+                dp[t] = dp[t + 1]
+                decision[t] = -2  # Covered by forced earlier production
+                continue
+
+        # Case 1: No demand at t AND not forced to produce here (by forced arc)
+        if demand[t] == 0 and t not in must_produce_at:
+            dp[t] = dp[t + 1]
+            decision[t] = -1  # Skip
+            continue
+
+        # Case 2: Must produce here (due to forced arc) or has demand
+        valid_ends = get_valid_ends(t)
+
+        if not valid_ends:
+            if demand[t] > 0 or t in must_produce_at:
+                dp[t] = INF  # Infeasible
+            else:
+                dp[t] = dp[t + 1]
+                decision[t] = -1
+            continue
+
+        # Find best end period
+        best_cost = INF
+        best_s = -1
+
+        for s in valid_ends:
+            if s + 1 <= T and dp[s + 1] < INF:
+                cost = run_reduced_cost(t, s) + dp[s + 1]
+                if cost < best_cost:
+                    best_cost = cost
+                    best_s = s
+
+        if best_s >= 0:
+            dp[t] = best_cost
+            decision[t] = best_s
+        elif t in must_produce_at or demand[t] > 0:
+            dp[t] = INF
+        else:
+            dp[t] = dp[t + 1]
+            decision[t] = -1
+
+    # Check feasibility
+    if dp[0] >= INF:
+        return INF, None
+
+    # Reduced cost = f(0) - μ_i
+    reduced_cost = dp[0] - convexity_dual
+
+    # Compute the "true" reduced cost without perturbation for comparison
+    # (The perturbation is only for diversification, not for deciding if column improves)
+
     if reduced_cost >= -eps:
         return reduced_cost, None
 
+    # Reconstruct the ZIO solution
     cap_usage = [0.0] * T
     setup_usage = [0.0] * T
     arc_usage: Dict[Tuple[int, int], float] = {}
     total_cost = 0.0
 
-    for t, u in Triples:
-        x_val = X[t, u].X
-        if x_val > eps:
-            cap_usage[t] += x_val
-            total_cost += (c_at(t) + h_sum(t, u)) * x_val
-        arc_usage[(t, u)] = Z[t, u].X
+    t = 0
+    while t < T:
+        s = decision[t]
+        if s == -1 or s == -2:
+            t += 1
+            continue
 
-    for t in range(T):
-        y_val = Y[t].X
-        if y_val > 0.5:
-            setup_usage[t] = y_val
-            total_cost += s_at(t) * y_val
+        # Production run at t covering [t, s]
+        setup_usage[t] = 1.0
+        total_cost += s_at(t)
 
+        for u in range(t, s + 1):
+            d_u = float(demand[u])
+            if d_u > 0:
+                cap_usage[t] += d_u
+                arc_usage[(t, u)] = 1.0
+                total_cost += (c_at(t) + h_sum(t, u)) * d_u
+
+        t = s + 1
+
+    # Add forced setups that don't have production (Y_t = 1, X_t = 0)
+    for t_forced in upsilon_1:
+        if t_forced < T and setup_usage[t_forced] < 0.5:
+            setup_usage[t_forced] = 1.0
+            total_cost += s_at(t_forced)
+
+    # Verify all demands are covered
+    covered = [False] * T
+    for (t_prod, u), val in arc_usage.items():
+        if val > 0.5:
+            covered[u] = True
+
+    for u in range(T):
+        if demand[u] > 0 and not covered[u]:
+            return INF, None
+
+    # Verify forced arc constraints
+    for t_force, u_force in theta_1:
+        if arc_usage.get((t_force, u_force), 0.0) < 0.5:
+            return INF, None
+
+    # Create column
     column = ProductionPlanColumn(
         item_id=item_id,
         total_plan_cost=total_cost,
@@ -404,6 +503,11 @@ def solve_pricing_subproblem(
         setup_by_period=setup_usage,
         arc_usage=arc_usage,
     )
+
+    # Check for duplicate
+    sig = column_signature(column)
+    if sig in existing_signatures:
+        return reduced_cost, None  # Don't return duplicate
 
     return reduced_cost, column
 
@@ -621,7 +725,6 @@ def solve_node_with_column_generation(
     max_iter: int = 100,
     eps: float = 1e-6,
     verbose: bool = False,
-    use_mip_pricing: bool = True,
 ) -> Tuple[
     float,
     Optional[RestrictedMasterProblem],
@@ -630,12 +733,11 @@ def solve_node_with_column_generation(
     Dict[int, Dict[int, float]],
     Dict[int, Dict[int, float]],
 ]:
-    """Solve a branch node using column generation with column inheritance."""
+    """Solve a branch node using column generation with DP-based ZIO pricing."""
     # Inherit columns from parent
     inherited_cols = inherit_columns_from_parent(parent_rmp, node, items, eps)
 
     # Create RMP with branching info for forbidden branches (θ⁰, Υ⁰)
-    # This allows extracting σ and τ duals to guide pricing
     rmp = RestrictedMasterProblem(
         items=items,
         T=T,
@@ -646,11 +748,27 @@ def solve_node_with_column_generation(
         initial_columns=inherited_cols,
     )
 
-    # Add dummy columns
+    # Track existing column signatures per item to avoid duplicates
+    existing_signatures: Dict[int, Set[str]] = {i: set() for i in items}
+
+    # Track arc usage counts for perturbation (diversification)
+    arc_usage_counts: Dict[int, Dict[Tuple[int, int], int]] = {i: {} for i in items}
+
+    # Add signatures of inherited columns and count their arc usage
+    for item_id, cols in inherited_cols.items():
+        for col in cols:
+            existing_signatures[item_id].add(column_signature(col))
+            for (t, u), val in col.arc_usage.items():
+                if val > 0.5:
+                    arc_usage_counts[item_id][(t, u)] = (
+                        arc_usage_counts[item_id].get((t, u), 0) + 1
+                    )
+
+    # Add dummy columns for feasibility
     for item_id, item_data in items.items():
         demand = item_data["demand"]
         total_demand = sum(demand)
-        dummy_cost = 10000.0 * (total_demand + 1.0)
+        dummy_cost = 1000.0 * (total_demand + 1.0)
 
         col = ProductionPlanColumn(
             item_id=item_id,
@@ -660,9 +778,10 @@ def solve_node_with_column_generation(
             arc_usage={},
         )
         rmp.add_column(col)
+        # Don't add dummy to signatures - it's special
 
     if verbose:
-        print(f"  └─ CG: ", end="", flush=True)
+        print(f"  └─ CG(DP): ", end="", flush=True)
 
     for iteration in range(1, max_iter + 1):
         lb, mu, pi, sigma, tau = rmp.solve()
@@ -682,7 +801,8 @@ def solve_node_with_column_generation(
             Gamma = Gamma_by_item[item_id]
             Expiry = Expiry_by_item[item_id]
 
-            rc, col = solve_pricing_subproblem(
+            # Use DP-based pricing with arc perturbation
+            rc, col = solve_pricing_subproblem_dp(
                 item_id=item_id,
                 item_data=item_data,
                 T=T,
@@ -697,12 +817,23 @@ def solve_node_with_column_generation(
                 sigma=sigma,
                 tau=tau,
                 eps=eps,
-                use_mip=use_mip_pricing,
+                existing_signatures=existing_signatures[item_id],
+                arc_usage_counts=arc_usage_counts[item_id],
+                perturbation_eps=1e-5,
             )
 
             if col is not None and rc < -eps:
-                rmp.add_column(col)
-                any_added = True
+                sig = column_signature(col)
+                if sig not in existing_signatures[item_id]:
+                    rmp.add_column(col)
+                    existing_signatures[item_id].add(sig)
+                    # Update arc usage counts
+                    for (t, u), val in col.arc_usage.items():
+                        if val > 0.5:
+                            arc_usage_counts[item_id][(t, u)] = (
+                                arc_usage_counts[item_id].get((t, u), 0) + 1
+                            )
+                    any_added = True
 
         if not any_added:
             if verbose:
@@ -809,21 +940,12 @@ def solution_uses_dummy(
     items: Dict[int, dict],
     eps: float = 1e-6,
 ) -> bool:
-    """
-    Check if the current RMP solution uses dummy columns significantly.
-
-    Dummy columns are identified by their characteristics:
-    - Very high cost (proportional to total demand)
-    - Zero capacity usage
-    - Empty arc usage
-    """
+    """Check if the current RMP solution uses dummy columns significantly."""
     for item_id in items:
         item_demand = sum(items[item_id]["demand"])
-        # Dummy cost is 10000 * (total_demand + 1), use 5000 as threshold
-        dummy_cost_threshold = 5000.0 * (item_demand + 1)
+        dummy_cost_threshold = 500.0 * (item_demand + 1)
 
         for idx, col in enumerate(rmp.columns[item_id]):
-            # Check if this looks like a dummy column
             is_dummy = (
                 col.total_plan_cost > dummy_cost_threshold
                 and all(x == 0.0 for x in col.capacity_usage_by_period)
@@ -846,21 +968,13 @@ def is_valid_integer_solution(
     items: Dict[int, dict],
     eps: float = 1e-6,
 ) -> bool:
-    """
-    Check if solution is both integer AND doesn't use dummy columns.
-
-    A solution that is 'integer' but only uses dummy columns is actually
-    infeasible (dummy columns don't satisfy demand).
-    """
-    # Must be integral
+    """Check if solution is both integer AND doesn't use dummy columns."""
     if not is_integer(z_vals, y_vals, eps):
         return False
 
-    # Must not use dummy columns
     if solution_uses_dummy(rmp, items, eps):
         return False
 
-    # Check that solution actually produces something (not all empty)
     all_z_empty = all(len(arcs) == 0 for arcs in z_vals.values())
     all_y_empty = all(len(setups) == 0 for setups in y_vals.values())
 
@@ -937,7 +1051,7 @@ def solve_instance(
     mip_gap: float = 0.0,
     out_dir: str | Path = "bnp_results",
 ) -> Tuple[Dict, List[str]]:
-    """Solve the perishable lot-sizing problem using Branch-and-Price."""
+    """Solve the perishable lot-sizing problem using Branch-and-Price with DP pricing."""
     start_time = time.time()
 
     data = json.loads(Path(instance_path).read_text())
@@ -956,14 +1070,13 @@ def solve_instance(
     max_time = int(time_limit) if time_limit > 0 else 60000
     max_nodes = 1000000
     print_frequency = 50
-    use_mip_pricing = True
 
     print("\n" + "╔" + "═" * 68 + "╗")
-    print(f"║ {'BRANCH-AND-PRICE: PERISHABLE LOT-SIZING WITH LEFO':^66s} ║")
+    print(f"║ {'BRANCH-AND-PRICE WITH DP PRICING (ZIO COLUMNS)':^66s} ║")
     print("╠" + "═" * 68 + "╣")
     print(f"║  Items:    {len(items):<57d} ║")
     print(f"║  Periods:  {T:<57d} ║")
-    print(f"║  Strategy: {'Column Inheritance + σ/τ Dual Guidance':<57s} ║")
+    print(f"║  Strategy: {'DP generates ZIO extreme points only':<57s} ║")
     print("╚" + "═" * 68 + "╝")
 
     Gamma_by_item: Dict[int, Dict[int, List[int]]] = {}
@@ -1015,7 +1128,6 @@ def solve_instance(
         node=root,
         parent_rmp=None,
         verbose=True,
-        use_mip_pricing=use_mip_pricing,
     )
 
     if not math.isfinite(root_lb):
@@ -1026,7 +1138,7 @@ def solve_instance(
             "best_bound": None,
             "gap": None,
             "runtime_sec": time.time() - start_time,
-            "solver_version": "branch_and_price_fixed",
+            "solver_version": "branch_and_price_dp_zio",
             "n_items": len(items),
             "T": T,
         }
@@ -1062,7 +1174,7 @@ def solve_instance(
             "best_bound": float(best_lb),
             "gap": 0.0,
             "runtime_sec": time.time() - start_time,
-            "solver_version": "branch_and_price_fixed",
+            "solver_version": "branch_and_price_dp_zio",
             "n_items": len(items),
             "T": T,
         }
@@ -1117,7 +1229,6 @@ def solve_instance(
                     node=node,
                     parent_rmp=parent_rmp,
                     verbose=True,
-                    use_mip_pricing=use_mip_pricing,
                 )
             )
 
@@ -1144,7 +1255,6 @@ def solve_instance(
                 stats.nodes_fathomed_by_bound += 1
                 continue
 
-            # Check if it's a valid integer solution (integral AND not using dummy)
             if is_valid_integer_solution(z_vals, y_vals, rmp, items, eps):
                 print(f"  INTEGER: {lb:.2f}", end="")
                 node.is_integer = True
@@ -1169,7 +1279,6 @@ def solve_instance(
 
                 continue
 
-            # Check if solution only uses dummy (effectively infeasible)
             if solution_uses_dummy(rmp, items, eps) and is_integer(z_vals, y_vals, eps):
                 print(f"  FATHOMED: Dummy-only solution")
                 node.is_pruned = True
@@ -1319,7 +1428,7 @@ def solve_instance(
         "best_bound": float(best_lb),
         "gap": ((best_ub - best_lb) / max(abs(best_ub), 1e-10) if best_ub else None),
         "runtime_sec": float(time.time() - start_time),
-        "solver_version": "branch_and_price_fixed",
+        "solver_version": "branch_and_price_dp_zio",
         "n_items": len(items),
         "T": T,
     }

@@ -37,3 +37,7 @@ CHOSEN.zip
 /mip/__pycache__
 /runs
 /mip_results_small_example
+/mip_results_no_crossing
+/mip_results_no_crossing
+/dp_zio_results
+tmp_instance_saved.json
