@@ -900,13 +900,12 @@ def is_valid_integer_solution(
     y_vals: Dict[int, Dict[int, float]],
     rmp: RestrictedMasterProblem,
     items: Dict[int, dict],
+    Expiry_by_item: Dict[int, Dict[int, int]],
+    Gamma_by_item: Dict[int, Dict[int, List[int]]],
     eps: float = 1e-6,
 ) -> bool:
     """
-    Check if solution is both integer AND doesn't use dummy columns.
-
-    A solution that is 'integer' but only uses dummy columns is actually
-    infeasible (dummy columns don't satisfy demand).
+    Check if solution is integer, doesn't use dummy columns, AND satisfies LEFO.
     """
     # Must be integral
     if not is_integer(z_vals, y_vals, eps):
@@ -921,6 +920,10 @@ def is_valid_integer_solution(
     all_y_empty = all(len(setups) == 0 for setups in y_vals.values())
 
     if all_z_empty and all_y_empty:
+        return False
+
+    # Check LEFO constraints
+    if not check_lefo_satisfied(z_vals, Expiry_by_item, Gamma_by_item, eps):
         return False
 
     return True
@@ -970,6 +973,90 @@ def find_most_fractional_y(
                 best = (item_id, t, val)
 
     return best
+
+
+def find_lefo_violation(
+    z_vals: Dict[int, Dict[Tuple[int, int], float]],
+    Expiry_by_item: Dict[int, Dict[int, int]],
+    Gamma_by_item: Dict[int, Dict[int, List[int]]],
+    node: BranchNode,
+    eps: float = 1e-6,
+) -> Optional[Tuple[int, int, int, int, int, float, float]]:
+    """
+    Find a LEFO violation in the current solution.
+
+    LEFO violation: Two arcs (t1, u) and (t2, up) where:
+    - v(t1) < v(t2) (t1 expires before t2)
+    - t2 <= u <= up - 1 (t1's arc crosses into t2's range)
+    - Both arcs are active (Z > 0)
+
+    Returns: (item_id, t1, u, t2, up, z1_val, z2_val) or None if no violation
+    """
+    best_violation = None
+    best_score = 0.0  # Score by min(z1, z2) to pick most impactful violation
+
+    for item_id, arcs in z_vals.items():
+        Expiry = Expiry_by_item[item_id]
+        Gamma = Gamma_by_item[item_id]
+
+        theta_0 = node.theta_0_by_item.get(item_id, set())
+        theta_1 = node.theta_1_by_item.get(item_id, set())
+
+        # Get all active arcs (Z > eps)
+        active_arcs = [(t, u, val) for (t, u), val in arcs.items() if val > eps]
+
+        for t1, u, z1_val in active_arcs:
+            if (t1, u) in theta_0 or (t1, u) in theta_1:
+                continue
+
+            v1 = Expiry.get(t1, t1)
+
+            for t2, up, z2_val in active_arcs:
+                if t1 == t2:
+                    continue
+                if (t2, up) in theta_0 or (t2, up) in theta_1:
+                    continue
+
+                v2 = Expiry.get(t2, t2)
+
+                # Check LEFO condition: v1 < v2 and t2 <= u <= up - 1
+                if v1 < v2 and t2 <= u <= up - 1:
+                    # Found a violation!
+                    score = min(z1_val, z2_val)
+                    if score > best_score:
+                        best_score = score
+                        best_violation = (item_id, t1, u, t2, up, z1_val, z2_val)
+
+    return best_violation
+
+
+def check_lefo_satisfied(
+    z_vals: Dict[int, Dict[Tuple[int, int], float]],
+    Expiry_by_item: Dict[int, Dict[int, int]],
+    Gamma_by_item: Dict[int, Dict[int, List[int]]],
+    eps: float = 1e-6,
+) -> bool:
+    """Check if the solution satisfies all LEFO constraints."""
+    for item_id, arcs in z_vals.items():
+        Expiry = Expiry_by_item.get(item_id, {})
+
+        # Get all active arcs (Z > 0.5 for integer)
+        active_arcs = [(t, u) for (t, u), val in arcs.items() if val > 0.5]
+
+        for t1, u in active_arcs:
+            v1 = Expiry.get(t1, t1)
+
+            for t2, up in active_arcs:
+                if t1 == t2:
+                    continue
+
+                v2 = Expiry.get(t2, t2)
+
+                # Check LEFO condition: v1 < v2 and t2 <= u <= up - 1
+                if v1 < v2 and t2 <= u <= up - 1:
+                    return False  # LEFO violation found
+
+    return True
 
 
 def fathom_queue_by_incumbent(queue: deque, incumbent: float, eps: float) -> int:
@@ -1101,7 +1188,9 @@ def solve_instance(
     stats.nodes_created = 1
 
     # Check if root is already a valid integer solution
-    if is_valid_integer_solution(z_vals, y_vals, rmp, items, eps):
+    if is_valid_integer_solution(
+        z_vals, y_vals, rmp, items, Expiry_by_item, Gamma_by_item, eps
+    ):
         best_ub = root_lb
         best_lb = root_lb
         root.is_integer = True
@@ -1200,8 +1289,10 @@ def solve_instance(
                 stats.nodes_fathomed_by_bound += 1
                 continue
 
-            # Check if it's a valid integer solution (integral AND not using dummy)
-            if is_valid_integer_solution(z_vals, y_vals, rmp, items, eps):
+            # Check if it's a valid integer solution (integral AND not using dummy AND satisfies LEFO)
+            if is_valid_integer_solution(
+                z_vals, y_vals, rmp, items, Expiry_by_item, Gamma_by_item, eps
+            ):
                 print(f"  INTEGER: {lb:.2f}", end="")
                 node.is_integer = True
                 stats.nodes_integer += 1
@@ -1241,6 +1332,82 @@ def solve_instance(
             z_vals = parent_z
             y_vals = parent_y
             x_vals = parent_x
+
+        # FIRST: Check for LEFO violations and branch on them
+        lefo_viol = find_lefo_violation(
+            z_vals, Expiry_by_item, Gamma_by_item, node, eps
+        )
+        if lefo_viol is not None:
+            item_id, t1, u, t2, up, z1_val, z2_val = lefo_viol
+
+            # Branch by forbidding one of the violating arcs
+            # Choose the arc with smaller Z value to minimize impact
+            if z1_val <= z2_val:
+                t_br, u_br, z_val = t1, u, z1_val
+            else:
+                t_br, u_br, z_val = t2, up, z2_val
+
+            # Only create Z=0 branch (forbid the arc to break LEFO violation)
+            left = BranchNode(
+                node_id=node_counter,
+                parent_id=node.node_id,
+                depth=node.depth + 1,
+                theta_0_by_item={i: s.copy() for i, s in node.theta_0_by_item.items()},
+                theta_1_by_item={i: s.copy() for i, s in node.theta_1_by_item.items()},
+                upsilon_0_by_item={
+                    i: s.copy() for i, s in node.upsilon_0_by_item.items()
+                },
+                upsilon_1_by_item={
+                    i: s.copy() for i, s in node.upsilon_1_by_item.items()
+                },
+                branch_variable=("LEFO", item_id, t_br, u_br, z_val),
+                branch_direction="Z=0",
+            )
+            left.theta_0_by_item[item_id].add((t_br, u_br))
+            left.lp_bound = node.lp_bound
+
+            sig_left = node_signature(left)
+            if sig_left not in seen_signatures:
+                seen_signatures.add(sig_left)
+                node_counter += 1
+                stats.nodes_created += 1
+                queue.append((left, z_vals, y_vals, x_vals, parent_rmp))
+
+            # Also try forbidding the OTHER arc
+            if z1_val <= z2_val:
+                t_br2, u_br2 = t2, up
+            else:
+                t_br2, u_br2 = t1, u
+
+            right = BranchNode(
+                node_id=node_counter,
+                parent_id=node.node_id,
+                depth=node.depth + 1,
+                theta_0_by_item={i: s.copy() for i, s in node.theta_0_by_item.items()},
+                theta_1_by_item={i: s.copy() for i, s in node.theta_1_by_item.items()},
+                upsilon_0_by_item={
+                    i: s.copy() for i, s in node.upsilon_0_by_item.items()
+                },
+                upsilon_1_by_item={
+                    i: s.copy() for i, s in node.upsilon_1_by_item.items()
+                },
+                branch_variable=("LEFO", item_id, t_br2, u_br2, z_val),
+                branch_direction="Z=0",
+            )
+            right.theta_0_by_item[item_id].add((t_br2, u_br2))
+            right.lp_bound = node.lp_bound
+
+            sig_right = node_signature(right)
+            if sig_right not in seen_signatures:
+                seen_signatures.add(sig_right)
+                node_counter += 1
+                stats.nodes_created += 1
+                queue.append((right, z_vals, y_vals, x_vals, parent_rmp))
+
+            print(
+                f"  Branch LEFO: Z[{item_id},{t1},{u}]={z1_val:.3f} vs Z[{item_id},{t2},{up}]={z2_val:.3f}"
+            )
+            continue
 
         branch_var_z = find_most_fractional_z(z_vals, node, eps)
         if branch_var_z is not None:
