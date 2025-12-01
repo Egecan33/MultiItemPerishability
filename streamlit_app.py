@@ -33,12 +33,14 @@ except Exception:
     _solve_nocross_v1 = None  # optional backend
 
 try:
-    from mip.solver_bnp import solve_instance as _solve_bnp
+    from bnp.solver_bnp import solve_instance as _solve_bnp
 except Exception:
     _solve_bnp = None  # optional backend
 
 try:
-    from mip. import SOLVER_VERSION as SOLVER_VERSION_LEFO_V2
+    from bnp.solver_bnp_dp import solve_instance as _solve_bnp_dp
+except Exception:
+    _solve_bnp_dp = None  # optional backend
 
 SOLVER_REGISTRY = {
     "No-Crossing (no shelf) v1": {
@@ -59,7 +61,12 @@ SOLVER_REGISTRY = {
     "BNP": {
         "fn": _solve_bnp,
         "tag": "bnp_v1",
-        "desc": "BNP (v1).",
+        "desc": "BNP (MIP_based).",
+    },
+    "BNP DP": {
+        "fn": _solve_bnp_dp,
+        "tag": "bnp_dp_v1",
+        "desc": "BNP (DP_based).",
     },
 }
 

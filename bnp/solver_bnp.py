@@ -127,14 +127,20 @@ class SearchStatistics:
 
 
 def _cap_global_from_dem(items: Dict[int, dict], T: int) -> List[float]:
-    """Generate default capacity from total demand with buffer."""
-    cap_raw = [0.0] * T
+    """Generate default capacity from total demand with large buffer.
+
+    For lot-sizing with batching, capacity at each period should be large enough
+    to potentially produce ALL demand (worst case: batch everything at one period).
+    We use total demand across all periods + 10% buffer as the per-period capacity.
+    """
+    total_demand = 0.0
     for it in items.values():
         dem = it["demand"]
-        for t in range(T):
-            cap_raw[t] += float(dem[t])
-    buf = max(5.0, 0.2 * max(cap_raw) if cap_raw else 0.0)
-    return [c + buf for c in cap_raw]
+        total_demand += sum(float(d) for d in dem)
+
+    # Each period should be able to handle total demand (for batching)
+    cap_per_period = total_demand * 1.1  # 10% buffer
+    return [cap_per_period] * T
 
 
 def _as_len_T_vector(val, T: int) -> List[float]:
@@ -170,6 +176,13 @@ def node_signature(node: BranchNode) -> str:
         if periods:
             sig_parts.append(f"I{item_id}_Y1:{','.join(map(str, periods))}")
     return "|".join(sig_parts)
+
+
+def column_signature(col: ProductionPlanColumn) -> str:
+    """Generate a unique signature for a column to detect duplicates."""
+    # A column is uniquely identified by its arc usage pattern
+    arcs = sorted((t, u) for (t, u), val in col.arc_usage.items() if val > 0.5)
+    return f"I{col.item_id}:" + ",".join(f"{t}-{u}" for t, u in arcs)
 
 
 def inherit_columns_from_parent(
@@ -214,6 +227,9 @@ def solve_pricing_subproblem(
     tau: Optional[Dict[Tuple[int, int, int], float]] = None,
     eps: float = 1e-6,
     use_mip: bool = False,
+    existing_signatures: Optional[Set[str]] = None,
+    arc_usage_counts: Optional[Dict[Tuple[int, int], int]] = None,
+    perturbation_eps: float = 1e-5,
 ) -> Tuple[float, Optional[ProductionPlanColumn]]:
     """
     Solve the pricing subproblem for a single item.
@@ -230,6 +246,8 @@ def solve_pricing_subproblem(
     """
     sigma = sigma or {}
     tau = tau or {}
+    existing_signatures = existing_signatures or set()
+    arc_usage_counts = arc_usage_counts or {}
 
     demand = item_data["demand"]
     c_var = item_data["c_var"]
@@ -365,6 +383,10 @@ def solve_pricing_subproblem(
         tau_val = tau.get((item_id, t, u), 0.0)
         if tau_val != 0.0:
             obj -= tau_val * Z[t, u]
+        # Add perturbation based on arc usage count to encourage diversification
+        arc_count = arc_usage_counts.get((t, u), 0)
+        if arc_count > 0:
+            obj += perturbation_eps * arc_count * Z[t, u]
 
     # Subtract convexity dual
     obj -= convexity_dual
@@ -404,6 +426,11 @@ def solve_pricing_subproblem(
         setup_by_period=setup_usage,
         arc_usage=arc_usage,
     )
+
+    # Check for duplicate
+    sig = column_signature(column)
+    if sig in existing_signatures:
+        return reduced_cost, None  # Don't return duplicate
 
     return reduced_cost, column
 
@@ -646,11 +673,27 @@ def solve_node_with_column_generation(
         initial_columns=inherited_cols,
     )
 
+    # Track existing column signatures per item to avoid duplicates
+    existing_signatures: Dict[int, Set[str]] = {i: set() for i in items}
+
+    # Track arc usage counts for perturbation (diversification)
+    arc_usage_counts: Dict[int, Dict[Tuple[int, int], int]] = {i: {} for i in items}
+
+    # Add signatures of inherited columns and count their arc usage
+    for item_id, cols in inherited_cols.items():
+        for col in cols:
+            existing_signatures[item_id].add(column_signature(col))
+            for (t, u), val in col.arc_usage.items():
+                if val > 0.5:
+                    arc_usage_counts[item_id][(t, u)] = (
+                        arc_usage_counts[item_id].get((t, u), 0) + 1
+                    )
+
     # Add dummy columns
     for item_id, item_data in items.items():
         demand = item_data["demand"]
         total_demand = sum(demand)
-        dummy_cost = 10000.0 * (total_demand + 1.0)
+        dummy_cost = 1000.0 * (total_demand + 1.0)
 
         col = ProductionPlanColumn(
             item_id=item_id,
@@ -660,6 +703,7 @@ def solve_node_with_column_generation(
             arc_usage={},
         )
         rmp.add_column(col)
+        # Don't add dummy to signatures - it's special
 
     if verbose:
         print(f"  └─ CG: ", end="", flush=True)
@@ -698,11 +742,23 @@ def solve_node_with_column_generation(
                 tau=tau,
                 eps=eps,
                 use_mip=use_mip_pricing,
+                existing_signatures=existing_signatures[item_id],
+                arc_usage_counts=arc_usage_counts[item_id],
+                perturbation_eps=1e-5,
             )
 
             if col is not None and rc < -eps:
-                rmp.add_column(col)
-                any_added = True
+                sig = column_signature(col)
+                if sig not in existing_signatures[item_id]:
+                    rmp.add_column(col)
+                    existing_signatures[item_id].add(sig)
+                    # Update arc usage counts
+                    for (t, u), val in col.arc_usage.items():
+                        if val > 0.5:
+                            arc_usage_counts[item_id][(t, u)] = (
+                                arc_usage_counts[item_id].get((t, u), 0) + 1
+                            )
+                    any_added = True
 
         if not any_added:
             if verbose:
