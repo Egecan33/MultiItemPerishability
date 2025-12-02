@@ -127,20 +127,14 @@ class SearchStatistics:
 
 
 def _cap_global_from_dem(items: Dict[int, dict], T: int) -> List[float]:
-    """Generate default capacity from total demand with large buffer.
-
-    For lot-sizing with batching, capacity at each period should be large enough
-    to potentially produce ALL demand (worst case: batch everything at one period).
-    We use total demand across all periods + 10% buffer as the per-period capacity.
-    """
-    total_demand = 0.0
+    """Generate default capacity from total demand with buffer."""
+    cap_raw = [0.0] * T
     for it in items.values():
         dem = it["demand"]
-        total_demand += sum(float(d) for d in dem)
-
-    # Each period should be able to handle total demand (for batching)
-    cap_per_period = total_demand * 1.1  # 10% buffer
-    return [cap_per_period] * T
+        for t in range(T):
+            cap_raw[t] += float(dem[t])
+    buf = max(5.0, 0.2 * max(cap_raw) if cap_raw else 0.0)
+    return [c + buf for c in cap_raw]
 
 
 def _as_len_T_vector(val, T: int) -> List[float]:
@@ -176,13 +170,6 @@ def node_signature(node: BranchNode) -> str:
         if periods:
             sig_parts.append(f"I{item_id}_Y1:{','.join(map(str, periods))}")
     return "|".join(sig_parts)
-
-
-def column_signature(col: ProductionPlanColumn) -> str:
-    """Generate a unique signature for a column to detect duplicates."""
-    # A column is uniquely identified by its arc usage pattern
-    arcs = sorted((t, u) for (t, u), val in col.arc_usage.items() if val > 0.5)
-    return f"I{col.item_id}:" + ",".join(f"{t}-{u}" for t, u in arcs)
 
 
 def inherit_columns_from_parent(
@@ -227,9 +214,6 @@ def solve_pricing_subproblem(
     tau: Optional[Dict[Tuple[int, int, int], float]] = None,
     eps: float = 1e-6,
     use_mip: bool = False,
-    existing_signatures: Optional[Set[str]] = None,
-    arc_usage_counts: Optional[Dict[Tuple[int, int], int]] = None,
-    perturbation_eps: float = 1e-5,
 ) -> Tuple[float, Optional[ProductionPlanColumn]]:
     """
     Solve the pricing subproblem for a single item.
@@ -246,8 +230,6 @@ def solve_pricing_subproblem(
     """
     sigma = sigma or {}
     tau = tau or {}
-    existing_signatures = existing_signatures or set()
-    arc_usage_counts = arc_usage_counts or {}
 
     demand = item_data["demand"]
     c_var = item_data["c_var"]
@@ -383,10 +365,6 @@ def solve_pricing_subproblem(
         tau_val = tau.get((item_id, t, u), 0.0)
         if tau_val != 0.0:
             obj -= tau_val * Z[t, u]
-        # Add perturbation based on arc usage count to encourage diversification
-        arc_count = arc_usage_counts.get((t, u), 0)
-        if arc_count > 0:
-            obj += perturbation_eps * arc_count * Z[t, u]
 
     # Subtract convexity dual
     obj -= convexity_dual
@@ -426,11 +404,6 @@ def solve_pricing_subproblem(
         setup_by_period=setup_usage,
         arc_usage=arc_usage,
     )
-
-    # Check for duplicate
-    sig = column_signature(column)
-    if sig in existing_signatures:
-        return reduced_cost, None  # Don't return duplicate
 
     return reduced_cost, column
 
@@ -673,27 +646,11 @@ def solve_node_with_column_generation(
         initial_columns=inherited_cols,
     )
 
-    # Track existing column signatures per item to avoid duplicates
-    existing_signatures: Dict[int, Set[str]] = {i: set() for i in items}
-
-    # Track arc usage counts for perturbation (diversification)
-    arc_usage_counts: Dict[int, Dict[Tuple[int, int], int]] = {i: {} for i in items}
-
-    # Add signatures of inherited columns and count their arc usage
-    for item_id, cols in inherited_cols.items():
-        for col in cols:
-            existing_signatures[item_id].add(column_signature(col))
-            for (t, u), val in col.arc_usage.items():
-                if val > 0.5:
-                    arc_usage_counts[item_id][(t, u)] = (
-                        arc_usage_counts[item_id].get((t, u), 0) + 1
-                    )
-
     # Add dummy columns
     for item_id, item_data in items.items():
         demand = item_data["demand"]
         total_demand = sum(demand)
-        dummy_cost = 1000.0 * (total_demand + 1.0)
+        dummy_cost = 10000.0 * (total_demand + 1.0)
 
         col = ProductionPlanColumn(
             item_id=item_id,
@@ -703,7 +660,6 @@ def solve_node_with_column_generation(
             arc_usage={},
         )
         rmp.add_column(col)
-        # Don't add dummy to signatures - it's special
 
     if verbose:
         print(f"  └─ CG: ", end="", flush=True)
@@ -742,23 +698,11 @@ def solve_node_with_column_generation(
                 tau=tau,
                 eps=eps,
                 use_mip=use_mip_pricing,
-                existing_signatures=existing_signatures[item_id],
-                arc_usage_counts=arc_usage_counts[item_id],
-                perturbation_eps=1e-5,
             )
 
             if col is not None and rc < -eps:
-                sig = column_signature(col)
-                if sig not in existing_signatures[item_id]:
-                    rmp.add_column(col)
-                    existing_signatures[item_id].add(sig)
-                    # Update arc usage counts
-                    for (t, u), val in col.arc_usage.items():
-                        if val > 0.5:
-                            arc_usage_counts[item_id][(t, u)] = (
-                                arc_usage_counts[item_id].get((t, u), 0) + 1
-                            )
-                    any_added = True
+                rmp.add_column(col)
+                any_added = True
 
         if not any_added:
             if verbose:
@@ -900,12 +844,13 @@ def is_valid_integer_solution(
     y_vals: Dict[int, Dict[int, float]],
     rmp: RestrictedMasterProblem,
     items: Dict[int, dict],
-    Expiry_by_item: Dict[int, Dict[int, int]],
-    Gamma_by_item: Dict[int, Dict[int, List[int]]],
     eps: float = 1e-6,
 ) -> bool:
     """
-    Check if solution is integer, doesn't use dummy columns, AND satisfies LEFO.
+    Check if solution is both integer AND doesn't use dummy columns.
+
+    A solution that is 'integer' but only uses dummy columns is actually
+    infeasible (dummy columns don't satisfy demand).
     """
     # Must be integral
     if not is_integer(z_vals, y_vals, eps):
@@ -920,10 +865,6 @@ def is_valid_integer_solution(
     all_y_empty = all(len(setups) == 0 for setups in y_vals.values())
 
     if all_z_empty and all_y_empty:
-        return False
-
-    # Check LEFO constraints
-    if not check_lefo_satisfied(z_vals, Expiry_by_item, Gamma_by_item, eps):
         return False
 
     return True
@@ -973,90 +914,6 @@ def find_most_fractional_y(
                 best = (item_id, t, val)
 
     return best
-
-
-def find_lefo_violation(
-    z_vals: Dict[int, Dict[Tuple[int, int], float]],
-    Expiry_by_item: Dict[int, Dict[int, int]],
-    Gamma_by_item: Dict[int, Dict[int, List[int]]],
-    node: BranchNode,
-    eps: float = 1e-6,
-) -> Optional[Tuple[int, int, int, int, int, float, float]]:
-    """
-    Find a LEFO violation in the current solution.
-
-    LEFO violation: Two arcs (t1, u) and (t2, up) where:
-    - v(t1) < v(t2) (t1 expires before t2)
-    - t2 <= u <= up - 1 (t1's arc crosses into t2's range)
-    - Both arcs are active (Z > 0)
-
-    Returns: (item_id, t1, u, t2, up, z1_val, z2_val) or None if no violation
-    """
-    best_violation = None
-    best_score = 0.0  # Score by min(z1, z2) to pick most impactful violation
-
-    for item_id, arcs in z_vals.items():
-        Expiry = Expiry_by_item[item_id]
-        Gamma = Gamma_by_item[item_id]
-
-        theta_0 = node.theta_0_by_item.get(item_id, set())
-        theta_1 = node.theta_1_by_item.get(item_id, set())
-
-        # Get all active arcs (Z > eps)
-        active_arcs = [(t, u, val) for (t, u), val in arcs.items() if val > eps]
-
-        for t1, u, z1_val in active_arcs:
-            if (t1, u) in theta_0 or (t1, u) in theta_1:
-                continue
-
-            v1 = Expiry.get(t1, t1)
-
-            for t2, up, z2_val in active_arcs:
-                if t1 == t2:
-                    continue
-                if (t2, up) in theta_0 or (t2, up) in theta_1:
-                    continue
-
-                v2 = Expiry.get(t2, t2)
-
-                # Check LEFO condition: v1 < v2 and t2 <= u <= up - 1
-                if v1 < v2 and t2 <= u <= up - 1:
-                    # Found a violation!
-                    score = min(z1_val, z2_val)
-                    if score > best_score:
-                        best_score = score
-                        best_violation = (item_id, t1, u, t2, up, z1_val, z2_val)
-
-    return best_violation
-
-
-def check_lefo_satisfied(
-    z_vals: Dict[int, Dict[Tuple[int, int], float]],
-    Expiry_by_item: Dict[int, Dict[int, int]],
-    Gamma_by_item: Dict[int, Dict[int, List[int]]],
-    eps: float = 1e-6,
-) -> bool:
-    """Check if the solution satisfies all LEFO constraints."""
-    for item_id, arcs in z_vals.items():
-        Expiry = Expiry_by_item.get(item_id, {})
-
-        # Get all active arcs (Z > 0.5 for integer)
-        active_arcs = [(t, u) for (t, u), val in arcs.items() if val > 0.5]
-
-        for t1, u in active_arcs:
-            v1 = Expiry.get(t1, t1)
-
-            for t2, up in active_arcs:
-                if t1 == t2:
-                    continue
-
-                v2 = Expiry.get(t2, t2)
-
-                # Check LEFO condition: v1 < v2 and t2 <= u <= up - 1
-                if v1 < v2 and t2 <= u <= up - 1:
-                    return False  # LEFO violation found
-
-    return True
 
 
 def fathom_queue_by_incumbent(queue: deque, incumbent: float, eps: float) -> int:
@@ -1188,9 +1045,7 @@ def solve_instance(
     stats.nodes_created = 1
 
     # Check if root is already a valid integer solution
-    if is_valid_integer_solution(
-        z_vals, y_vals, rmp, items, Expiry_by_item, Gamma_by_item, eps
-    ):
+    if is_valid_integer_solution(z_vals, y_vals, rmp, items, eps):
         best_ub = root_lb
         best_lb = root_lb
         root.is_integer = True
@@ -1289,10 +1144,8 @@ def solve_instance(
                 stats.nodes_fathomed_by_bound += 1
                 continue
 
-            # Check if it's a valid integer solution (integral AND not using dummy AND satisfies LEFO)
-            if is_valid_integer_solution(
-                z_vals, y_vals, rmp, items, Expiry_by_item, Gamma_by_item, eps
-            ):
+            # Check if it's a valid integer solution (integral AND not using dummy)
+            if is_valid_integer_solution(z_vals, y_vals, rmp, items, eps):
                 print(f"  INTEGER: {lb:.2f}", end="")
                 node.is_integer = True
                 stats.nodes_integer += 1
@@ -1332,82 +1185,6 @@ def solve_instance(
             z_vals = parent_z
             y_vals = parent_y
             x_vals = parent_x
-
-        # FIRST: Check for LEFO violations and branch on them
-        lefo_viol = find_lefo_violation(
-            z_vals, Expiry_by_item, Gamma_by_item, node, eps
-        )
-        if lefo_viol is not None:
-            item_id, t1, u, t2, up, z1_val, z2_val = lefo_viol
-
-            # Branch by forbidding one of the violating arcs
-            # Choose the arc with smaller Z value to minimize impact
-            if z1_val <= z2_val:
-                t_br, u_br, z_val = t1, u, z1_val
-            else:
-                t_br, u_br, z_val = t2, up, z2_val
-
-            # Only create Z=0 branch (forbid the arc to break LEFO violation)
-            left = BranchNode(
-                node_id=node_counter,
-                parent_id=node.node_id,
-                depth=node.depth + 1,
-                theta_0_by_item={i: s.copy() for i, s in node.theta_0_by_item.items()},
-                theta_1_by_item={i: s.copy() for i, s in node.theta_1_by_item.items()},
-                upsilon_0_by_item={
-                    i: s.copy() for i, s in node.upsilon_0_by_item.items()
-                },
-                upsilon_1_by_item={
-                    i: s.copy() for i, s in node.upsilon_1_by_item.items()
-                },
-                branch_variable=("LEFO", item_id, t_br, u_br, z_val),
-                branch_direction="Z=0",
-            )
-            left.theta_0_by_item[item_id].add((t_br, u_br))
-            left.lp_bound = node.lp_bound
-
-            sig_left = node_signature(left)
-            if sig_left not in seen_signatures:
-                seen_signatures.add(sig_left)
-                node_counter += 1
-                stats.nodes_created += 1
-                queue.append((left, z_vals, y_vals, x_vals, parent_rmp))
-
-            # Also try forbidding the OTHER arc
-            if z1_val <= z2_val:
-                t_br2, u_br2 = t2, up
-            else:
-                t_br2, u_br2 = t1, u
-
-            right = BranchNode(
-                node_id=node_counter,
-                parent_id=node.node_id,
-                depth=node.depth + 1,
-                theta_0_by_item={i: s.copy() for i, s in node.theta_0_by_item.items()},
-                theta_1_by_item={i: s.copy() for i, s in node.theta_1_by_item.items()},
-                upsilon_0_by_item={
-                    i: s.copy() for i, s in node.upsilon_0_by_item.items()
-                },
-                upsilon_1_by_item={
-                    i: s.copy() for i, s in node.upsilon_1_by_item.items()
-                },
-                branch_variable=("LEFO", item_id, t_br2, u_br2, z_val),
-                branch_direction="Z=0",
-            )
-            right.theta_0_by_item[item_id].add((t_br2, u_br2))
-            right.lp_bound = node.lp_bound
-
-            sig_right = node_signature(right)
-            if sig_right not in seen_signatures:
-                seen_signatures.add(sig_right)
-                node_counter += 1
-                stats.nodes_created += 1
-                queue.append((right, z_vals, y_vals, x_vals, parent_rmp))
-
-            print(
-                f"  Branch LEFO: Z[{item_id},{t1},{u}]={z1_val:.3f} vs Z[{item_id},{t2},{up}]={z2_val:.3f}"
-            )
-            continue
 
         branch_var_z = find_most_fractional_z(z_vals, node, eps)
         if branch_var_z is not None:

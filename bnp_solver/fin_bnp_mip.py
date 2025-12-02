@@ -1589,22 +1589,29 @@ if __name__ == "__main__":
     # Instance
     # ------------------------------------------------------------------
     instance = {
-        "period": 6,
-        "production_capacity": 30,  # 30 units per period
+        "period": 7,
+        "production_capacity": 35,  # 30 units per period
         "items": {
             "1": {
-                "demand": [10, 12, 8, 15, 10, 9],
+                "demand": [10, 12, 8, 15, 10, 9, 11],
                 "c_var": 5.0,
                 "h": 0.5,
                 "setup": 80.0,
-                "shelf_seq": [2, 2, 3, 1, 2, 2],
+                "shelf_seq": [2, 2, 5, 1, 2, 2, 3],
             },
             "2": {
-                "demand": [5, 7, 6, 8, 9, 7],
+                "demand": [5, 7, 6, 8, 9, 7, 6],
                 "c_var": 8.0,
                 "h": 0.8,
                 "setup": 120.0,
-                "shelf_seq": [5, 4, 5, 5, 4, 5],
+                "shelf_seq": [1, 4, 5, 1, 3, 3, 5],
+            },
+            "3": {
+                "demand": [2, 7, 6, 8, 9, 17, 6],
+                "c_var": 8.5,
+                "h": 0.7,
+                "setup": 110.0,
+                "shelf_seq": [2, 1, 2, 3, 4, 5, 6],
             },
         },
     }

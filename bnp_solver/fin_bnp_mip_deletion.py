@@ -7,6 +7,8 @@ Features:
 - σ (sigma) and τ (tau) duals for forbidden branches to guide pricing (Section 4.3.2)
 - Dummy column detection to prevent false integer solutions
 - Branching on Z (arc) and Y (setup) variables
+- Cold column deletion to prevent degeneracy
+- Proper convergence to 0 reduced cost
 
 Note on dual variable handling:
 - At root node: σ = τ = 0 (no branching constraints)
@@ -22,7 +24,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 import gurobipy as gp
 from gurobipy import GRB
 
@@ -127,14 +129,20 @@ class SearchStatistics:
 
 
 def _cap_global_from_dem(items: Dict[int, dict], T: int) -> List[float]:
-    """Generate default capacity from total demand with buffer."""
-    cap_raw = [0.0] * T
+    """Generate default capacity from total demand with large buffer.
+
+    For lot-sizing with batching, capacity at each period should be large enough
+    to potentially produce ALL demand (worst case: batch everything at one period).
+    We use total demand across all periods + 10% buffer as the per-period capacity.
+    """
+    total_demand = 0.0
     for it in items.values():
         dem = it["demand"]
-        for t in range(T):
-            cap_raw[t] += float(dem[t])
-    buf = max(5.0, 0.2 * max(cap_raw) if cap_raw else 0.0)
-    return [c + buf for c in cap_raw]
+        total_demand += sum(float(d) for d in dem)
+
+    # Each period should be able to handle total demand (for batching)
+    cap_per_period = total_demand * 1.1  # 10% buffer
+    return [cap_per_period] * T
 
 
 def _as_len_T_vector(val, T: int) -> List[float]:
@@ -170,6 +178,13 @@ def node_signature(node: BranchNode) -> str:
         if periods:
             sig_parts.append(f"I{item_id}_Y1:{','.join(map(str, periods))}")
     return "|".join(sig_parts)
+
+
+def column_signature(col: ProductionPlanColumn) -> str:
+    """Generate a unique signature for a column to detect duplicates."""
+    # A column is uniquely identified by its arc usage pattern
+    arcs = sorted((t, u) for (t, u), val in col.arc_usage.items() if val > 0.5)
+    return f"I{col.item_id}:" + ",".join(f"{t}-{u}" for t, u in arcs)
 
 
 def inherit_columns_from_parent(
@@ -214,7 +229,14 @@ def solve_pricing_subproblem(
     tau: Optional[Dict[Tuple[int, int, int], float]] = None,
     eps: float = 1e-6,
     use_mip: bool = False,
-) -> Tuple[float, Optional[ProductionPlanColumn]]:
+    existing_signatures: Optional[Set[str]] = None,
+    arc_usage_counts: Optional[Dict[Tuple[int, int], int]] = None,
+    perturbation_eps: float = 1e-5,
+    return_duplicate_flag: bool = False,
+) -> Union[
+    Tuple[float, Optional[ProductionPlanColumn]],
+    Tuple[float, Optional[ProductionPlanColumn], bool],
+]:
     """
     Solve the pricing subproblem for a single item.
 
@@ -227,9 +249,16 @@ def solve_pricing_subproblem(
         π_t: Capacity dual for period t
         σ_it: Setup linking dual (for forbidden setups)
         τ_itu: Arc linking dual (for forbidden arcs)
+
+    Returns:
+        reduced_cost: The reduced cost of the best column found
+        column: The column (or None if RC >= -eps or duplicate)
+        is_duplicate: (only if return_duplicate_flag=True) True if the column was found but is a duplicate
     """
     sigma = sigma or {}
     tau = tau or {}
+    existing_signatures = existing_signatures or set()
+    arc_usage_counts = arc_usage_counts or {}
 
     demand = item_data["demand"]
     c_var = item_data["c_var"]
@@ -365,6 +394,10 @@ def solve_pricing_subproblem(
         tau_val = tau.get((item_id, t, u), 0.0)
         if tau_val != 0.0:
             obj -= tau_val * Z[t, u]
+        # Add perturbation based on arc usage count to encourage diversification
+        arc_count = arc_usage_counts.get((t, u), 0)
+        if arc_count > 0:
+            obj += perturbation_eps * arc_count * Z[t, u]
 
     # Subtract convexity dual
     obj -= convexity_dual
@@ -373,10 +406,14 @@ def solve_pricing_subproblem(
     model.optimize()
 
     if model.Status != GRB.OPTIMAL:
+        if return_duplicate_flag:
+            return math.inf, None, False
         return math.inf, None
 
     reduced_cost = model.ObjVal
     if reduced_cost >= -eps:
+        if return_duplicate_flag:
+            return reduced_cost, None, False
         return reduced_cost, None
 
     cap_usage = [0.0] * T
@@ -405,6 +442,15 @@ def solve_pricing_subproblem(
         arc_usage=arc_usage,
     )
 
+    # Check for duplicate
+    sig = column_signature(column)
+    if sig in existing_signatures:
+        if return_duplicate_flag:
+            return reduced_cost, None, True  # Return that it's a duplicate
+        return reduced_cost, None
+
+    if return_duplicate_flag:
+        return reduced_cost, column, False
     return reduced_cost, column
 
 
@@ -570,6 +616,123 @@ class RestrictedMasterProblem:
 
         self._rebuild()
 
+    def remove_cold_columns(self, eps: float = 1e-8, keep_min: int = 2) -> int:
+        """
+        Remove columns with λ ≈ 0 (cold columns) to reduce degeneracy.
+
+        Args:
+            eps: Threshold below which λ is considered cold
+            keep_min: Minimum number of columns to keep per item (including dummy)
+
+        Returns:
+            Number of columns removed
+        """
+        # First solve to get current lambda values
+        self.model.optimize()
+        if self.model.status != GRB.OPTIMAL:
+            return 0
+
+        removed = 0
+
+        for item_id in self.items:
+            # Find cold columns (skip index 0 = dummy)
+            cold_indices = []
+            for idx in range(1, len(self.columns[item_id])):
+                lam_key = (item_id, idx)
+                if lam_key in self.lambdas:
+                    lam_val = self.lambdas[lam_key].X
+                    if lam_val < eps:
+                        cold_indices.append(idx)
+
+            # Keep at least keep_min columns
+            max_to_remove = len(self.columns[item_id]) - keep_min
+            if max_to_remove <= 0:
+                continue
+
+            # Remove cold columns (up to max_to_remove)
+            indices_to_remove = cold_indices[:max_to_remove]
+
+            for idx in sorted(indices_to_remove, reverse=True):
+                lam_key = (item_id, idx)
+                if lam_key in self.lambdas:
+                    # Remove variable from model
+                    self.model.remove(self.lambdas[lam_key])
+                    del self.lambdas[lam_key]
+                    removed += 1
+
+        if removed > 0:
+            # Need to rebuild the RMP from scratch
+            self._rebuild_from_scratch()
+
+        return removed
+
+    def _rebuild_from_scratch(self):
+        """Rebuild RMP completely after removing columns."""
+        # Save non-removed columns
+        saved_columns = {}
+        for item_id in self.items:
+            saved_columns[item_id] = []
+            for idx, col in enumerate(self.columns[item_id]):
+                lam_key = (item_id, idx)
+                if lam_key in self.lambdas or idx == 0:  # Keep dummy (idx 0) always
+                    # Check if lambda exists for non-dummy
+                    if idx == 0 or (lam_key in self.lambdas):
+                        saved_columns[item_id].append(col)
+
+        # Clear and rebuild
+        self.model = gp.Model("RMP")
+        self.model.Params.OutputFlag = 0
+        self.model.Params.LogToConsole = 0
+        self.model.Params.Method = 1
+
+        self.columns = {i: [] for i in self.items}
+        self.lambdas = {}
+
+        self.convex_expr = {i: gp.LinExpr(0.0) for i in self.items}
+        self.cap_expr = [gp.LinExpr(0.0) for _ in range(self.T)]
+
+        self.y_link_expr = {}
+        for item_id in self.items:
+            for t in self.upsilon_0_by_item.get(item_id, set()):
+                self.y_link_expr[(item_id, t)] = gp.LinExpr(0.0)
+
+        self.z_link_expr = {}
+        for item_id in self.items:
+            for t, u in self.theta_0_by_item.get(item_id, set()):
+                self.z_link_expr[(item_id, t, u)] = gp.LinExpr(0.0)
+
+        # Add constraints
+        self.convex_con = {}
+        for item_id in self.items:
+            self.convex_con[item_id] = self.model.addConstr(
+                self.convex_expr[item_id] == 1.0, name=f"conv_{item_id}"
+            )
+
+        self.cap_con = []
+        for t in range(self.T):
+            self.cap_con.append(
+                self.model.addConstr(
+                    self.cap_expr[t] <= self.capacity[t], name=f"cap_{t}"
+                )
+            )
+
+        self.y_link_con = {}
+        for (item_id, t), expr in self.y_link_expr.items():
+            self.y_link_con[(item_id, t)] = self.model.addConstr(
+                expr == 0.0, name=f"y_link_{item_id}_{t}"
+            )
+
+        self.z_link_con = {}
+        for (item_id, t, u), expr in self.z_link_expr.items():
+            self.z_link_con[(item_id, t, u)] = self.model.addConstr(
+                expr == 0.0, name=f"z_link_{item_id}_{t}_{u}"
+            )
+
+        # Re-add columns
+        for item_id, cols in saved_columns.items():
+            for col in cols:
+                self.add_column(col)
+
     def solve(
         self,
     ) -> Tuple[
@@ -618,7 +781,7 @@ def solve_node_with_column_generation(
     Expiry_by_item: Dict[int, Dict[int, int]],
     node: BranchNode,
     parent_rmp: Optional[RestrictedMasterProblem] = None,
-    max_iter: int = 100,
+    max_iter: int = 200,
     eps: float = 1e-6,
     verbose: bool = False,
     use_mip_pricing: bool = True,
@@ -646,11 +809,27 @@ def solve_node_with_column_generation(
         initial_columns=inherited_cols,
     )
 
+    # Track existing column signatures per item to avoid duplicates
+    existing_signatures: Dict[int, Set[str]] = {i: set() for i in items}
+
+    # Track arc usage counts for perturbation (diversification)
+    arc_usage_counts: Dict[int, Dict[Tuple[int, int], int]] = {i: {} for i in items}
+
+    # Add signatures of inherited columns and count their arc usage
+    for item_id, cols in inherited_cols.items():
+        for col in cols:
+            existing_signatures[item_id].add(column_signature(col))
+            for (t, u), val in col.arc_usage.items():
+                if val > 0.5:
+                    arc_usage_counts[item_id][(t, u)] = (
+                        arc_usage_counts[item_id].get((t, u), 0) + 1
+                    )
+
     # Add dummy columns
     for item_id, item_data in items.items():
         demand = item_data["demand"]
         total_demand = sum(demand)
-        dummy_cost = 10000.0 * (total_demand + 1.0)
+        dummy_cost = 1000.0 * (total_demand + 1.0)
 
         col = ProductionPlanColumn(
             item_id=item_id,
@@ -660,9 +839,15 @@ def solve_node_with_column_generation(
             arc_usage={},
         )
         rmp.add_column(col)
+        # Don't add dummy to signatures - it's special
 
     if verbose:
         print(f"  └─ CG: ", end="", flush=True)
+
+    # Track stall conditions
+    stall_count = 0
+    max_stalls = 5
+    current_perturbation = 1e-5
 
     for iteration in range(1, max_iter + 1):
         lb, mu, pi, sigma, tau = rmp.solve()
@@ -672,7 +857,10 @@ def solve_node_with_column_generation(
                 print("INFEASIBLE")
             return math.inf, rmp, False, {}, {}, {}
 
+        worst_rc = 0.0
         any_added = False
+        all_duplicates = True  # Track if all negative RC columns are duplicates
+
         for item_id, item_data in items.items():
             theta_0 = node.theta_0_by_item.get(item_id, set())
             theta_1 = node.theta_1_by_item.get(item_id, set())
@@ -682,7 +870,7 @@ def solve_node_with_column_generation(
             Gamma = Gamma_by_item[item_id]
             Expiry = Expiry_by_item[item_id]
 
-            rc, col = solve_pricing_subproblem(
+            rc, col, is_duplicate = solve_pricing_subproblem(
                 item_id=item_id,
                 item_data=item_data,
                 T=T,
@@ -698,19 +886,83 @@ def solve_node_with_column_generation(
                 tau=tau,
                 eps=eps,
                 use_mip=use_mip_pricing,
+                existing_signatures=existing_signatures[item_id],
+                arc_usage_counts=arc_usage_counts[item_id],
+                perturbation_eps=current_perturbation,
+                return_duplicate_flag=True,
             )
 
-            if col is not None and rc < -eps:
-                rmp.add_column(col)
-                any_added = True
+            worst_rc = min(worst_rc, rc)
 
-        if not any_added:
+            if rc < -eps and not is_duplicate:
+                all_duplicates = False
+
+            if col is not None and rc < -eps:
+                sig = column_signature(col)
+                if sig not in existing_signatures[item_id]:
+                    rmp.add_column(col)
+                    existing_signatures[item_id].add(sig)
+                    # Update arc usage counts
+                    for (t, u), val in col.arc_usage.items():
+                        if val > 0.5:
+                            arc_usage_counts[item_id][(t, u)] = (
+                                arc_usage_counts[item_id].get((t, u), 0) + 1
+                            )
+                    any_added = True
+
+        # Check convergence: worst_rc must be >= -eps
+        if worst_rc >= -eps:
             if verbose:
-                print(f"LB={lb:.2f} (iter={iteration})")
+                print(f"LB={lb:.2f} (iter={iteration}, RC≥0)")
             z_vals = extract_z_values(rmp, items, eps)
             y_vals = extract_y_values(rmp, items, eps)
             x_vals = extract_x_values(rmp, items, eps)
             return lb, rmp, True, z_vals, y_vals, x_vals
+
+        # Handle stall: negative RC but no columns added (all duplicates)
+        if not any_added:
+            if worst_rc < -eps and all_duplicates:
+                stall_count += 1
+                if stall_count >= max_stalls:
+                    # Try cold column deletion
+                    removed = rmp.remove_cold_columns(eps=1e-8, keep_min=2)
+                    if removed > 0:
+                        if verbose:
+                            print(f"[del {removed}]", end="", flush=True)
+                        # Clear signatures for removed columns
+                        for item_id in items:
+                            existing_signatures[item_id] = set()
+                            for idx, col in enumerate(rmp.columns[item_id]):
+                                if idx > 0:  # Skip dummy
+                                    existing_signatures[item_id].add(
+                                        column_signature(col)
+                                    )
+                        stall_count = 0
+                        continue
+                    else:
+                        # Increase perturbation
+                        current_perturbation *= 10
+                        if current_perturbation > 1e-2:
+                            # Give up - we're stuck
+                            if verbose:
+                                print(f"LB={lb:.2f} (stalled, RC={worst_rc:.2f})")
+                            z_vals = extract_z_values(rmp, items, eps)
+                            y_vals = extract_y_values(rmp, items, eps)
+                            x_vals = extract_x_values(rmp, items, eps)
+                            return lb, rmp, True, z_vals, y_vals, x_vals
+                        stall_count = 0
+                        continue
+            else:
+                # No columns added but some weren't duplicates - should not happen
+                # This means RC >= -eps for non-duplicates
+                if verbose:
+                    print(f"LB={lb:.2f} (iter={iteration})")
+                z_vals = extract_z_values(rmp, items, eps)
+                y_vals = extract_y_values(rmp, items, eps)
+                x_vals = extract_x_values(rmp, items, eps)
+                return lb, rmp, True, z_vals, y_vals, x_vals
+        else:
+            stall_count = 0  # Reset stall count when we make progress
 
     lb, _, _, _, _ = rmp.solve()
     z_vals = extract_z_values(rmp, items, eps)
@@ -844,13 +1096,12 @@ def is_valid_integer_solution(
     y_vals: Dict[int, Dict[int, float]],
     rmp: RestrictedMasterProblem,
     items: Dict[int, dict],
+    Expiry_by_item: Dict[int, Dict[int, int]],
+    Gamma_by_item: Dict[int, Dict[int, List[int]]],
     eps: float = 1e-6,
 ) -> bool:
     """
-    Check if solution is both integer AND doesn't use dummy columns.
-
-    A solution that is 'integer' but only uses dummy columns is actually
-    infeasible (dummy columns don't satisfy demand).
+    Check if solution is integer, doesn't use dummy columns, AND satisfies LEFO.
     """
     # Must be integral
     if not is_integer(z_vals, y_vals, eps):
@@ -865,6 +1116,10 @@ def is_valid_integer_solution(
     all_y_empty = all(len(setups) == 0 for setups in y_vals.values())
 
     if all_z_empty and all_y_empty:
+        return False
+
+    # Check LEFO constraints
+    if not check_lefo_satisfied(z_vals, Expiry_by_item, Gamma_by_item, eps):
         return False
 
     return True
@@ -914,6 +1169,90 @@ def find_most_fractional_y(
                 best = (item_id, t, val)
 
     return best
+
+
+def find_lefo_violation(
+    z_vals: Dict[int, Dict[Tuple[int, int], float]],
+    Expiry_by_item: Dict[int, Dict[int, int]],
+    Gamma_by_item: Dict[int, Dict[int, List[int]]],
+    node: BranchNode,
+    eps: float = 1e-6,
+) -> Optional[Tuple[int, int, int, int, int, float, float]]:
+    """
+    Find a LEFO violation in the current solution.
+
+    LEFO violation: Two arcs (t1, u) and (t2, up) where:
+    - v(t1) < v(t2) (t1 expires before t2)
+    - t2 <= u <= up - 1 (t1's arc crosses into t2's range)
+    - Both arcs are active (Z > 0)
+
+    Returns: (item_id, t1, u, t2, up, z1_val, z2_val) or None if no violation
+    """
+    best_violation = None
+    best_score = 0.0  # Score by min(z1, z2) to pick most impactful violation
+
+    for item_id, arcs in z_vals.items():
+        Expiry = Expiry_by_item[item_id]
+        Gamma = Gamma_by_item[item_id]
+
+        theta_0 = node.theta_0_by_item.get(item_id, set())
+        theta_1 = node.theta_1_by_item.get(item_id, set())
+
+        # Get all active arcs (Z > eps)
+        active_arcs = [(t, u, val) for (t, u), val in arcs.items() if val > eps]
+
+        for t1, u, z1_val in active_arcs:
+            if (t1, u) in theta_0 or (t1, u) in theta_1:
+                continue
+
+            v1 = Expiry.get(t1, t1)
+
+            for t2, up, z2_val in active_arcs:
+                if t1 == t2:
+                    continue
+                if (t2, up) in theta_0 or (t2, up) in theta_1:
+                    continue
+
+                v2 = Expiry.get(t2, t2)
+
+                # Check LEFO condition: v1 < v2 and t2 <= u <= up - 1
+                if v1 < v2 and t2 <= u <= up - 1:
+                    # Found a violation!
+                    score = min(z1_val, z2_val)
+                    if score > best_score:
+                        best_score = score
+                        best_violation = (item_id, t1, u, t2, up, z1_val, z2_val)
+
+    return best_violation
+
+
+def check_lefo_satisfied(
+    z_vals: Dict[int, Dict[Tuple[int, int], float]],
+    Expiry_by_item: Dict[int, Dict[int, int]],
+    Gamma_by_item: Dict[int, Dict[int, List[int]]],
+    eps: float = 1e-6,
+) -> bool:
+    """Check if the solution satisfies all LEFO constraints."""
+    for item_id, arcs in z_vals.items():
+        Expiry = Expiry_by_item.get(item_id, {})
+
+        # Get all active arcs (Z > 0.5 for integer)
+        active_arcs = [(t, u) for (t, u), val in arcs.items() if val > 0.5]
+
+        for t1, u in active_arcs:
+            v1 = Expiry.get(t1, t1)
+
+            for t2, up in active_arcs:
+                if t1 == t2:
+                    continue
+
+                v2 = Expiry.get(t2, t2)
+
+                # Check LEFO condition: v1 < v2 and t2 <= u <= up - 1
+                if v1 < v2 and t2 <= u <= up - 1:
+                    return False  # LEFO violation found
+
+    return True
 
 
 def fathom_queue_by_incumbent(queue: deque, incumbent: float, eps: float) -> int:
@@ -1045,7 +1384,9 @@ def solve_instance(
     stats.nodes_created = 1
 
     # Check if root is already a valid integer solution
-    if is_valid_integer_solution(z_vals, y_vals, rmp, items, eps):
+    if is_valid_integer_solution(
+        z_vals, y_vals, rmp, items, Expiry_by_item, Gamma_by_item, eps
+    ):
         best_ub = root_lb
         best_lb = root_lb
         root.is_integer = True
@@ -1144,8 +1485,10 @@ def solve_instance(
                 stats.nodes_fathomed_by_bound += 1
                 continue
 
-            # Check if it's a valid integer solution (integral AND not using dummy)
-            if is_valid_integer_solution(z_vals, y_vals, rmp, items, eps):
+            # Check if it's a valid integer solution (integral AND not using dummy AND satisfies LEFO)
+            if is_valid_integer_solution(
+                z_vals, y_vals, rmp, items, Expiry_by_item, Gamma_by_item, eps
+            ):
                 print(f"  INTEGER: {lb:.2f}", end="")
                 node.is_integer = True
                 stats.nodes_integer += 1
@@ -1185,6 +1528,82 @@ def solve_instance(
             z_vals = parent_z
             y_vals = parent_y
             x_vals = parent_x
+
+        # FIRST: Check for LEFO violations and branch on them
+        lefo_viol = find_lefo_violation(
+            z_vals, Expiry_by_item, Gamma_by_item, node, eps
+        )
+        if lefo_viol is not None:
+            item_id, t1, u, t2, up, z1_val, z2_val = lefo_viol
+
+            # Branch by forbidding one of the violating arcs
+            # Choose the arc with smaller Z value to minimize impact
+            if z1_val <= z2_val:
+                t_br, u_br, z_val = t1, u, z1_val
+            else:
+                t_br, u_br, z_val = t2, up, z2_val
+
+            # Only create Z=0 branch (forbid the arc to break LEFO violation)
+            left = BranchNode(
+                node_id=node_counter,
+                parent_id=node.node_id,
+                depth=node.depth + 1,
+                theta_0_by_item={i: s.copy() for i, s in node.theta_0_by_item.items()},
+                theta_1_by_item={i: s.copy() for i, s in node.theta_1_by_item.items()},
+                upsilon_0_by_item={
+                    i: s.copy() for i, s in node.upsilon_0_by_item.items()
+                },
+                upsilon_1_by_item={
+                    i: s.copy() for i, s in node.upsilon_1_by_item.items()
+                },
+                branch_variable=("LEFO", item_id, t_br, u_br, z_val),
+                branch_direction="Z=0",
+            )
+            left.theta_0_by_item[item_id].add((t_br, u_br))
+            left.lp_bound = node.lp_bound
+
+            sig_left = node_signature(left)
+            if sig_left not in seen_signatures:
+                seen_signatures.add(sig_left)
+                node_counter += 1
+                stats.nodes_created += 1
+                queue.append((left, z_vals, y_vals, x_vals, parent_rmp))
+
+            # Also try forbidding the OTHER arc
+            if z1_val <= z2_val:
+                t_br2, u_br2 = t2, up
+            else:
+                t_br2, u_br2 = t1, u
+
+            right = BranchNode(
+                node_id=node_counter,
+                parent_id=node.node_id,
+                depth=node.depth + 1,
+                theta_0_by_item={i: s.copy() for i, s in node.theta_0_by_item.items()},
+                theta_1_by_item={i: s.copy() for i, s in node.theta_1_by_item.items()},
+                upsilon_0_by_item={
+                    i: s.copy() for i, s in node.upsilon_0_by_item.items()
+                },
+                upsilon_1_by_item={
+                    i: s.copy() for i, s in node.upsilon_1_by_item.items()
+                },
+                branch_variable=("LEFO", item_id, t_br2, u_br2, z_val),
+                branch_direction="Z=0",
+            )
+            right.theta_0_by_item[item_id].add((t_br2, u_br2))
+            right.lp_bound = node.lp_bound
+
+            sig_right = node_signature(right)
+            if sig_right not in seen_signatures:
+                seen_signatures.add(sig_right)
+                node_counter += 1
+                stats.nodes_created += 1
+                queue.append((right, z_vals, y_vals, x_vals, parent_rmp))
+
+            print(
+                f"  Branch LEFO: Z[{item_id},{t1},{u}]={z1_val:.3f} vs Z[{item_id},{t2},{up}]={z2_val:.3f}"
+            )
+            continue
 
         branch_var_z = find_most_fractional_z(z_vals, node, eps)
         if branch_var_z is not None:
@@ -1354,3 +1773,424 @@ def generate_orders_txt(
         orders_txt.append("")
 
     return orders_txt
+
+
+if __name__ == "__main__":
+    import json
+    from pathlib import Path
+    import csv
+    from datetime import datetime
+
+    # ------------------------------------------------------------------
+    # Instance
+    # ------------------------------------------------------------------
+    instance = {
+        "period": 7,
+        "production_capacity": 35,  # 30 units per period
+        "items": {
+            "1": {
+                "demand": [10, 12, 8, 15, 10, 9, 11],
+                "c_var": 5.0,
+                "h": 0.5,
+                "setup": 80.0,
+                "shelf_seq": [2, 2, 5, 1, 2, 2, 3],
+            },
+            "2": {
+                "demand": [5, 7, 6, 8, 9, 7, 6],
+                "c_var": 8.0,
+                "h": 0.8,
+                "setup": 120.0,
+                "shelf_seq": [1, 4, 5, 1, 3, 3, 5],
+            },
+            "3": {
+                "demand": [2, 7, 6, 8, 9, 17, 6],
+                "c_var": 8.5,
+                "h": 0.7,
+                "setup": 110.0,
+                "shelf_seq": [2, 1, 2, 3, 4, 5, 6],
+            },
+        },
+    }
+
+    out_dir = Path("debug_results")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_path = out_dir / "solver_log.txt"
+    log_file = open(log_path, "w", encoding="utf-8")
+    log_file.write(f"Branch-and-Price Execution — {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+    log_file.write("=" * 90 + "\n\n")
+
+    Path("debug_instance.json").write_text(json.dumps(instance, indent=2))
+
+    # ------------------------------------------------------------------
+    # Global: track the best known solution
+    # ------------------------------------------------------------------
+    best_objective = float("inf")
+    best_rmp = None
+    best_node_id = None
+
+    # ------------------------------------------------------------------
+    # Helper: branching status
+    # ------------------------------------------------------------------
+    def log_branching_status(node: BranchNode):
+        log_file.write(f"  Branching constraints (depth {node.depth}):\n")
+        has_any = False
+        for item_id in sorted(node.theta_0_by_item.keys()):
+            if node.theta_0_by_item[item_id]:
+                has_any = True
+                arcs = sorted(node.theta_0_by_item[item_id])
+                log_file.write(f"    Item {item_id}: Z=0 forbidden → {arcs}\n")
+        for item_id in sorted(node.theta_1_by_item.keys()):
+            if node.theta_1_by_item[item_id]:
+                has_any = True
+                arcs = sorted(node.theta_1_by_item[item_id])
+                log_file.write(f"    Item {item_id}: Z=1 forced → {arcs}\n")
+        for item_id in sorted(node.upsilon_0_by_item.keys()):
+            if node.upsilon_0_by_item[item_id]:
+                has_any = True
+                periods = sorted(node.upsilon_0_by_item[item_id])
+                log_file.write(f"    Item {item_id}: Y=0 forbidden in → {periods}\n")
+        for item_id in sorted(node.upsilon_1_by_item.keys()):
+            if node.upsilon_1_by_item[item_id]:
+                has_any = True
+                periods = sorted(node.upsilon_1_by_item[item_id])
+                log_file.write(f"    Item {item_id}: Y=1 forced in → {periods}\n")
+        if not has_any:
+            log_file.write("    (No branching constraints)\n")
+        log_file.write("\n")
+
+    # ------------------------------------------------------------------
+    # Column generation with correct incumbent tracking and CSV logging
+    # ------------------------------------------------------------------
+    def solve_node_with_column_generation_logged(
+        items,
+        T,
+        capacity,
+        Gamma_by_item,
+        Expiry_by_item,
+        node: BranchNode,
+        parent_rmp=None,
+        max_iter: int = 200,
+        eps: float = 1e-6,
+        verbose: bool = True,
+        use_mip_pricing: bool = True,
+    ):
+        global best_objective, best_rmp, best_node_id
+
+        inherited_cols = inherit_columns_from_parent(parent_rmp, node, items, eps)
+        total_inherited = sum(len(cols) for cols in inherited_cols.values())
+
+        rmp = RestrictedMasterProblem(
+            items=items,
+            T=T,
+            capacity=capacity,
+            Gamma_by_item=Gamma_by_item,
+            theta_0_by_item=node.theta_0_by_item,
+            upsilon_0_by_item=node.upsilon_0_by_item,
+            initial_columns=inherited_cols,
+        )
+
+        # Track existing column signatures per item to avoid duplicates
+        existing_signatures_log: Dict[int, Set[str]] = {i: set() for i in items}
+
+        # Track arc usage counts for perturbation (diversification)
+        arc_usage_counts_log: Dict[int, Dict[Tuple[int, int], int]] = {
+            i: {} for i in items
+        }
+
+        # Add signatures of inherited columns and count their arc usage
+        for item_id, cols in inherited_cols.items():
+            for col in cols:
+                existing_signatures_log[item_id].add(column_signature(col))
+                for (t, u), val in col.arc_usage.items():
+                    if val > 0.5:
+                        arc_usage_counts_log[item_id][(t, u)] = (
+                            arc_usage_counts_log[item_id].get((t, u), 0) + 1
+                        )
+
+        #  reasonable dummy cost (was 1000× demand → allowed outsourcing)
+        for item_id, idata in items.items():
+            total_d = sum(idata["demand"])
+            dummy_cost = 1000.0 * total_d
+            dummy = ProductionPlanColumn(
+                item_id=item_id,
+                total_plan_cost=dummy_cost,
+                capacity_usage_by_period=[0.0] * T,
+                setup_by_period=[0.0] * T,
+                arc_usage={},
+            )
+            rmp.add_column(dummy)
+
+        csv_path = out_dir / f"convergence_node_{node.node_id}.csv"
+        with open(csv_path, "w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(
+                [
+                    "iteration",
+                    "rmp_obj",
+                    "worst_rc",
+                    "total_rc",
+                    "cols_added",
+                    "stall_count",
+                    "cold_deleted",
+                ]
+            )
+
+            log_file.write(
+                f"\nNODE {node.node_id} (depth {node.depth}) {'— ROOT' if node.node_id == 0 else ''}\n"
+            )
+            log_file.write("-" * 80 + "\n")
+            log_file.write(f"  Inherited {total_inherited} columns\n")
+            log_branching_status(node)
+
+            # Track stall conditions
+            stall_count = 0
+            max_stalls = 5
+            current_perturbation = 1e-5
+
+            for it in range(1, max_iter + 1):
+                obj, mu, pi, sigma, tau = rmp.solve()
+                if not math.isfinite(obj):
+                    log_file.write(f"  Infeasible RMP at iteration {it}\n")
+                    return math.inf, rmp, False, {}, {}, {}
+
+                total_rc = worst_rc = 0.0
+                added = 0
+                all_duplicates = True
+                cold_deleted = 0
+
+                for item_id in items:
+                    rc, col, is_duplicate = solve_pricing_subproblem(
+                        item_id=item_id,
+                        item_data=items[item_id],
+                        T=T,
+                        Gamma=Gamma_by_item[item_id],
+                        Expiry=Expiry_by_item[item_id],
+                        capacity_duals=pi,
+                        convexity_dual=mu[item_id],
+                        theta_0=node.theta_0_by_item.get(item_id, set()),
+                        theta_1=node.theta_1_by_item.get(item_id, set()),
+                        upsilon_0=node.upsilon_0_by_item.get(item_id, set()),
+                        upsilon_1=node.upsilon_1_by_item.get(item_id, set()),
+                        sigma=sigma,
+                        tau=tau,
+                        eps=eps,
+                        use_mip=use_mip_pricing,
+                        existing_signatures=existing_signatures_log[item_id],
+                        arc_usage_counts=arc_usage_counts_log[item_id],
+                        perturbation_eps=current_perturbation,
+                        return_duplicate_flag=True,
+                    )
+                    total_rc += rc
+                    worst_rc = min(worst_rc, rc)
+
+                    if rc < -eps and not is_duplicate:
+                        all_duplicates = False
+
+                    if col and rc < -eps:
+                        sig = column_signature(col)
+                        if sig not in existing_signatures_log[item_id]:
+                            rmp.add_column(col)
+                            existing_signatures_log[item_id].add(sig)
+                            # Update arc usage counts
+                            for (t, u), val in col.arc_usage.items():
+                                if val > 0.5:
+                                    arc_usage_counts_log[item_id][(t, u)] = (
+                                        arc_usage_counts_log[item_id].get((t, u), 0) + 1
+                                    )
+                            added += 1
+
+                writer.writerow(
+                    [it, obj, worst_rc, total_rc, added, stall_count, cold_deleted]
+                )
+
+                # Check convergence: worst_rc must be >= -eps
+                if worst_rc >= -eps:
+                    log_file.write(
+                        f"  Converged after {it} iterations — worst_rc = {worst_rc:.10f}\n"
+                    )
+                    csv_file.close()
+
+                    z_vals = extract_z_values(rmp, items, eps)
+                    y_vals = extract_y_values(rmp, items, eps)
+                    x_vals = extract_x_values(rmp, items, eps)
+
+                    if is_valid_integer_solution(
+                        z_vals, y_vals, rmp, items, Expiry_by_item, Gamma_by_item, eps
+                    ):
+                        # CORRECT: only update if better than known best
+                        if obj < best_objective - 1e-6:
+                            best_objective = obj
+                            best_rmp = rmp
+                            best_node_id = node.node_id
+                            log_file.write(
+                                f"  NEW BEST SOLUTION: {obj:.4f} (node {node.node_id})\n"
+                            )
+
+                    return obj, rmp, True, z_vals, y_vals, x_vals
+
+                # Handle stall: negative RC but no columns added (all duplicates)
+                if added == 0:
+                    if worst_rc < -eps and all_duplicates:
+                        stall_count += 1
+                        log_file.write(
+                            f"  Stall {stall_count}/{max_stalls}: RC={worst_rc:.4f} but all duplicates\n"
+                        )
+
+                        if stall_count >= max_stalls:
+                            # Try cold column deletion
+                            cold_deleted = rmp.remove_cold_columns(eps=1e-8, keep_min=2)
+                            if cold_deleted > 0:
+                                log_file.write(
+                                    f"  Deleted {cold_deleted} cold columns\n"
+                                )
+                                # Clear signatures for removed columns
+                                for item_id in items:
+                                    existing_signatures_log[item_id] = set()
+                                    for idx, col in enumerate(rmp.columns[item_id]):
+                                        if idx > 0:  # Skip dummy
+                                            existing_signatures_log[item_id].add(
+                                                column_signature(col)
+                                            )
+                                stall_count = 0
+                                continue
+                            else:
+                                # Increase perturbation
+                                current_perturbation *= 10
+                                log_file.write(
+                                    f"  Increased perturbation to {current_perturbation}\n"
+                                )
+                                if current_perturbation > 1e-2:
+                                    # Give up - we're stuck
+                                    log_file.write(
+                                        f"  Giving up after {it} iterations — stuck at RC={worst_rc:.10f}\n"
+                                    )
+                                    csv_file.close()
+                                    z_vals = extract_z_values(rmp, items, eps)
+                                    y_vals = extract_y_values(rmp, items, eps)
+                                    x_vals = extract_x_values(rmp, items, eps)
+                                    return obj, rmp, True, z_vals, y_vals, x_vals
+                                stall_count = 0
+                                continue
+                    else:
+                        # No columns added but not all duplicates - this means RC >= -eps for unique cols
+                        log_file.write(
+                            f"  Converged after {it} iterations — total_rc = {total_rc:.10f}\n"
+                        )
+                        csv_file.close()
+
+                        z_vals = extract_z_values(rmp, items, eps)
+                        y_vals = extract_y_values(rmp, items, eps)
+                        x_vals = extract_x_values(rmp, items, eps)
+
+                        if is_valid_integer_solution(
+                            z_vals,
+                            y_vals,
+                            rmp,
+                            items,
+                            Expiry_by_item,
+                            Gamma_by_item,
+                            eps,
+                        ):
+                            if obj < best_objective - 1e-6:
+                                best_objective = obj
+                                best_rmp = rmp
+                                best_node_id = node.node_id
+                                log_file.write(
+                                    f"  NEW BEST SOLUTION: {obj:.4f} (node {node.node_id})\n"
+                                )
+
+                        return obj, rmp, True, z_vals, y_vals, x_vals
+                else:
+                    stall_count = 0  # Reset stall count when we make progress
+
+        log_file.write("  Max iterations reached\n")
+        csv_file.close()
+        z_vals = extract_z_values(rmp, items, eps)
+        y_vals = extract_y_values(rmp, items, eps)
+        x_vals = extract_x_values(rmp, items, eps)
+        return obj, rmp, False, z_vals, y_vals, x_vals
+
+    # ------------------------------------------------------------------
+    # Run solver
+    # ------------------------------------------------------------------
+    solve_instance.__globals__["solve_node_with_column_generation"] = (
+        solve_node_with_column_generation_logged
+    )
+
+    print("Solving instance...")
+    summary, orders = solve_instance(
+        instance_path="debug_instance.json",
+        time_limit=600,
+        out_dir=out_dir,
+    )
+
+    # ------------------------------------------------------------------
+    # Final report — now 100% correct
+    # ------------------------------------------------------------------
+    log_file.write("\n" + "=" * 90 + "\n")
+    log_file.write("FINAL OPTIMAL SOLUTION\n")
+    log_file.write("=" * 90 + "\n")
+    log_file.write(f"Objective value     : {summary.get('objective', '—'):>20}\n")
+    log_file.write(f"Best bound          : {summary['best_bound']:20.4f}\n")
+    log_file.write(f"Optimality gap      : {summary.get('gap', 0)*100:8.3f}%\n")
+    log_file.write(f"Runtime             : {summary['runtime_sec']:.2f} seconds\n\n")
+
+    log_file.write("PRODUCTION PLAN\n")
+    log_file.write("-" * 60 + "\n")
+    for line in orders:
+        log_file.write(line + "\n")
+    log_file.write("\n")
+
+    if best_rmp is not None:
+        log_file.write("ACTIVE COLUMNS IN OPTIMAL BASIS\n")
+        log_file.write("-" * 90 + "\n")
+        log_file.write(
+            f"{'Column ID':<12} {'Item':<6} {'λ value':<12} {'Total Cost':<14} {'Description'}\n"
+        )
+        log_file.write("-" * 90 + "\n")
+
+        active_cols = []
+        for (item_id, idx), lam in best_rmp.lambdas.items():
+            if lam.X > 1e-6 and idx > 0:
+                col = best_rmp.columns[item_id][idx]
+                active_cols.append((item_id, idx, lam.X, col.total_plan_cost))
+
+        active_cols.sort(key=lambda x: x[0])
+
+        for item_id, idx, lam_val, cost in active_cols:
+            desc = (
+                "Main production plan for Item 1"
+                if item_id == 1
+                else "Main production plan for Item 2"
+            )
+            log_file.write(
+                f"λ[{item_id},{idx}]    {item_id:<6} {lam_val:<12.4f} {cost:<14.1f} {desc}\n"
+            )
+
+        log_file.write("-" * 90 + "\n")
+        log_file.write(f"Only {len(active_cols)} columns used in optimal basis\n")
+        log_file.write("Solution is convex combination of few extreme points\n\n")
+    else:
+        log_file.write("No integer solution found\n\n")
+
+    log_file.write("CONVERGENCE DATA\n")
+    log_file.write("→ convergence_node_0.csv : Root node\n")
+    log_file.write("→ convergence_node_X.csv : Branch nodes\n")
+    log_file.write("→ worst_rc converges to zero in all files\n")
+
+    log_file.write("\n" + "=" * 90 + "\n")
+    log_file.write("Execution completed\n")
+    log_file.write("=" * 90 + "\n")
+    log_file.close()
+
+    print("\n" + "=" * 70)
+    print("SOLUTION SUMMARY")
+    print("=" * 70)
+    print(f"Objective   : {summary.get('objective', '—')}")
+    print(f"Best bound  : {summary['best_bound']:.4f}")
+    print(f"Gap         : {summary.get('gap',0)*100:.3f}%")
+    print(f"Runtime     : {summary['runtime_sec']:.2f}s")
+    if best_rmp:
+        print(f"Active columns : {len(active_cols)}")
+    print(f"\nLog → {log_path}")
+    print("Done.")

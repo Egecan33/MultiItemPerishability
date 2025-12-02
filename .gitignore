@@ -41,3 +41,7 @@ CHOSEN.zip
 /mip_results_no_crossing
 /dp_zio_results
 tmp_instance_saved.json
+/bnp_results
+/bnp_v10_results
+/debug_results
+tmp_instance_saved.json
