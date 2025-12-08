@@ -1,16 +1,33 @@
 """
 Branch-and-Price for Perishable Lot-Sizing with Heterogeneous Shelf Lives and LEFO
+Version 11: Branching via RMP Linking Constraints (not subproblem restrictions)
+
+Key Changes from v10:
+- Branching enforcement moved from pricing subproblem to RMP:
+  * Υ^0, Θ^0 (forbidden): Enforced by FILTERING columns before adding to RMP
+  * Υ^1, Θ^1 (forced): Enforced by RMP linking constraints (Σ Y λ = 1, Σ Z λ = 1)
+- Pricing subproblem is UNRESTRICTED - generates any feasible ZIO column
+- Duals from = 1 linking constraints guide pricing toward required features
+
+Features:
+- Best-first search using heap ordered by LP bound (lowest first)
+- Memory optimization: queue stores only (bound, node_id, node, rmp)
+- Column inheritance for faster convergence at branch nodes
+- σ (sigma) and τ (tau) duals from Υ^1/Θ^1 linking constraints guide pricing
+- Dummy column detection to prevent false integer solutions
+- Branching on Z (arc) and Y (setup) variables
+- DP-based pricing for ZIO columns
+
 """
 
 from __future__ import annotations
-import csv
 import heapq
 import json
 import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, IO, Union
+from typing import Dict, List, Optional, Set, Tuple
 import gurobipy as gp
 from gurobipy import GRB
 
@@ -100,44 +117,36 @@ class SearchStatistics:
     total_cg_iterations: int = 0
     start_time: float = field(default_factory=time.time)
 
-    def print_summary(
-        self, best_lb: float, best_ub: Optional[float], eps: float, log_file=None
-    ):
+    def print_summary(self, best_lb: float, best_ub: Optional[float], eps: float):
         elapsed = time.time() - self.start_time
 
-        lines = []
-        lines.append("\n" + "=" * 70)
-        lines.append(" " * 28 + "FINAL RESULTS")
-        lines.append("=" * 70)
-        lines.append(f"  Time elapsed:          {elapsed:.2f} seconds")
-        lines.append(f"  Nodes created:         {self.nodes_created}")
-        lines.append(f"  Nodes explored:        {self.nodes_explored}")
-        lines.append(f"  Integer solutions:     {self.nodes_integer}")
-        lines.append(f"  Max depth:             {self.max_depth}")
-        lines.append(f"  Total CG iterations:   {self.total_cg_iterations}")
-        lines.append(f"  Total columns added:   {self.total_columns_generated}")
-        lines.append("")
-        lines.append(f"  Fathomed by bound:     {self.nodes_fathomed_by_bound}")
-        lines.append(f"  Fathomed infeasible:   {self.nodes_fathomed_by_infeasible}")
-        lines.append(f"  Fathomed on incumbent: {self.nodes_fathomed_on_incumbent}")
-        lines.append("")
-        lines.append(f"  Best lower bound:      {best_lb:.4f}")
+        print("\n" + "=" * 70)
+        print(" " * 28 + "FINAL RESULTS")
+        print("=" * 70)
+        print(f"  Time elapsed:          {elapsed:.2f} seconds")
+        print(f"  Nodes created:         {self.nodes_created}")
+        print(f"  Nodes explored:        {self.nodes_explored}")
+        print(f"  Integer solutions:     {self.nodes_integer}")
+        print(f"  Max depth:             {self.max_depth}")
+        print(f"  Total CG iterations:   {self.total_cg_iterations}")
+        print(f"  Total columns added:   {self.total_columns_generated}")
+        print()
+        print(f"  Fathomed by bound:     {self.nodes_fathomed_by_bound}")
+        print(f"  Fathomed infeasible:   {self.nodes_fathomed_by_infeasible}")
+        print(f"  Fathomed on incumbent: {self.nodes_fathomed_on_incumbent}")
+        print()
+        print(f"  Best lower bound:      {best_lb:.4f}")
 
         if best_ub is not None:
-            lines.append(f"  Best upper bound:      {best_ub:.4f}")
+            print(f"  Best upper bound:      {best_ub:.4f}")
             gap = best_ub - best_lb
             gap_pct = 100 * gap / max(abs(best_ub), 1e-10)
-            lines.append(f"  Gap:                   {gap:.4f} ({gap_pct:.2f}%)")
+            print(f"  Gap:                   {gap:.4f} ({gap_pct:.2f}%)")
             if gap < eps:
-                lines.append(f"\n  ★★★ PROVEN OPTIMAL! ★★★")
+                print("  DONE")
         else:
-            lines.append(f"  Best upper bound:      Not found")
-        lines.append("=" * 70)
-
-        for line in lines:
-            print(line)
-            if log_file:
-                log_file.write(line + "\n")
+            print(f"  Best upper bound:      Not found")
+        print("=" * 70)
 
 
 def _cap_global_from_dem(items: Dict[int, dict], T: int) -> List[float]:
@@ -212,6 +221,44 @@ def inherit_columns_from_parent(
     return inherited
 
 
+def column_violates_lefo(
+    arc_usage: Dict[Tuple[int, int], float],
+    Gamma: Dict[int, List[int]],
+    Expiry: Dict[int, int],
+    eps: float = 1e-6,
+) -> bool:
+
+    if not arc_usage:
+        return False
+
+    # production periods that actually appear in this column
+    prods = sorted({t for (t, u) in arc_usage.keys()}, key=lambda t: Expiry[t])
+
+    for a in range(len(prods)):
+        t1 = prods[a]
+        v1 = Expiry[t1]
+        for b in range(a + 1, len(prods)):
+            t2 = prods[b]
+            v2 = Expiry[t2]
+            if v1 >= v2:
+                # we only care about v1 < v2 (earlier expiry first)
+                continue
+
+            # up = demand periods served from t2
+            for up in Gamma.get(t2, []):
+                if arc_usage.get((t2, up), 0.0) <= eps:
+                    continue  # this arc not actually used
+
+                # u = demand periods served from t1 in [t2, up-1]
+                for u in Gamma.get(t1, []):
+                    if u < t2 or u > up - 1:
+                        continue
+                    if arc_usage.get((t1, u), 0.0) > eps:
+                        # we have both Z[t1,u] = 1 and Z[t2,up] = 1 in this column
+                        return True
+    return False
+
+
 def solve_pricing_subproblem(
     item_id: int,
     item_data: dict,
@@ -221,20 +268,16 @@ def solve_pricing_subproblem(
     capacity_duals: List[float],
     convexity_dual: float,
     theta_0: Set[Tuple[int, int]],
-    theta_1: Set[Tuple[int, int]],
     upsilon_0: Set[int],
-    upsilon_1: Set[int],
     sigma: Optional[Dict[Tuple[int, int], float]] = None,
     tau: Optional[Dict[Tuple[int, int, int], float]] = None,
     eps: float = 1e-6,
-    use_mip: bool = False,
 ) -> Tuple[float, Optional[ProductionPlanColumn]]:
-    """
-    DP-based pricing subproblem for ZIO columns with COMPLETE Wagner-Whitin coverage.
-    """
+
     sigma = sigma or {}
     tau = tau or {}
 
+    # Extract item parameters
     demand = item_data["demand"]
     c_var = item_data["c_var"]
     h = item_data["h"]
@@ -249,6 +292,7 @@ def solve_pricing_subproblem(
     def s_at(t: int) -> float:
         return float(setup[t]) if isinstance(setup, list) else float(setup)
 
+    # Cumulative holding cost prefix sums
     h_prefix = [0.0] * (T + 1)
     for k in range(T):
         h_prefix[k + 1] = h_prefix[k] + h_at(k)
@@ -258,30 +302,15 @@ def solve_pricing_subproblem(
 
     INF = float("inf")
 
-    for t in upsilon_1:
-        if t in upsilon_0:
-            return INF, None
-
-    forced_source: Dict[int, int] = {}
-    for t, u in theta_1:
-        if u in forced_source and forced_source[u] != t:
-            return INF, None
-        forced_source[u] = t
-        if t in upsilon_0:
-            return INF, None
-
-    must_produce_at: Set[int] = set()
-    for t, u in theta_1:
-        must_produce_at.add(t)
-
-    min_end_for_forced: Dict[int, int] = {}
-    for t, u in theta_1:
-        if t not in min_end_for_forced:
-            min_end_for_forced[t] = u
-        else:
-            min_end_for_forced[t] = max(min_end_for_forced[t], u)
+    # HELPER FUNCTIONS - Enforce Υ^0 and Θ^0 (forbidden constraints)
 
     def can_produce_at(t: int) -> bool:
+        """
+        Check if production is allowed at period t.
+        Returns False if:
+            - t ∈ Υ^0 (setup forbidden)
+            - Γ_t^i = ∅ (no reachable demand periods)
+        """
         if t in upsilon_0:
             return False
         if t not in Gamma:
@@ -289,105 +318,86 @@ def solve_pricing_subproblem(
         return len(Gamma.get(t, [])) > 0
 
     def get_valid_ends(t: int) -> List[int]:
+        """
+        Get valid end periods for production run starting at t.
+        Filters by:
+            1. s ∈ Γ_t^i (shelf-life feasibility)
+            2. ∀u ∈ [t,s]: (t,u) ∉ Θ^0 (no forbidden arcs)
+        """
         if not can_produce_at(t):
             return []
+
         valid_ends = Gamma.get(t, [])
         if not valid_ends:
             return []
+
         result = []
-        min_s = min_end_for_forced.get(t, t)
         for s in valid_ends:
-            if s < min_s:
-                continue
+            # Check no arc in [t,s] is forbidden
             arc_valid = True
             for u in range(t, s + 1):
                 if (t, u) in theta_0:
                     arc_valid = False
                     break
-            if not arc_valid:
-                continue
-            source_conflict = False
-            for u in range(t, s + 1):
-                if u in forced_source and forced_source[u] != t:
-                    source_conflict = True
-                    break
-            if source_conflict:
-                continue
-            result.append(s)
+            if arc_valid:
+                result.append(s)
+
         return result
 
     def run_reduced_cost(t: int, s: int) -> float:
-        cost = s_at(t)
-        cost -= sigma.get((item_id, t), 0.0)
+        """
+        Compute reduced cost for production run [t, s].
+        Includes duals from Υ^1/Θ^1 linking constraints.
+        """
+        cost = s_at(t)  # Setup cost
+        cost -= sigma.get((item_id, t), 0.0)  # Setup dual from Υ^1 constraints
+
         for u in range(t, s + 1):
             d_u = float(demand[u])
             if d_u > 0:
                 unit_cost = c_at(t) + h_sum(t, u) - capacity_duals[t]
                 cost += unit_cost * d_u
-                cost -= tau.get((item_id, t, u), 0.0)
+                cost -= tau.get((item_id, t, u), 0.0)  # Arc dual from Θ^1 constraints
+
         return cost
+
+    # DYNAMIC PROGRAMMING: BACKWARD RECURSION
 
     dp = [INF] * (T + 1)
     decision = [(-1, -1)] * T
     dp[T] = 0
 
     for t in range(T - 1, -1, -1):
-        if t in forced_source and forced_source[t] != t:
-            dp[t] = dp[t + 1]
-            decision[t] = (-1, -1)
-            continue
-
         best_cost = INF
         best_action = (-1, -1)
 
-        can_skip = (
-            (t not in must_produce_at)
-            and (t not in upsilon_1)
-            and float(demand[t]) <= 0
-        )
-        if can_skip:
+        # ACTION 1: SKIP (only if no demand)
+        if float(demand[t]) <= 0:
             skip_cost = dp[t + 1]
             if skip_cost < best_cost:
                 best_cost = skip_cost
                 best_action = (-1, -1)
 
-        can_setup_only = (
-            (t not in upsilon_0)
-            and (t not in must_produce_at)
-            and float(demand[t]) <= 0
-        )
-        if can_setup_only:
+        # ACTION 2: SETUP ONLY (only if no demand and setup not forbidden)
+        if float(demand[t]) <= 0 and t not in upsilon_0:
             setup_cost = s_at(t) - sigma.get((item_id, t), 0.0) + dp[t + 1]
             if setup_cost < best_cost:
                 best_cost = setup_cost
                 best_action = (0, -1)
 
+        # ACTION 3: PRODUCE from t to s (respecting Υ^0 and Θ^0)
         if can_produce_at(t):
-            valid_ends = get_valid_ends(t)
-            for s in valid_ends:
+            for s in get_valid_ends(t):
                 if s + 1 <= T and dp[s + 1] < INF:
                     cost = run_reduced_cost(t, s) + dp[s + 1]
                     if cost < best_cost:
                         best_cost = cost
                         best_action = (1, s)
 
-        if t in must_produce_at and best_action[0] != 1:
-            dp[t] = INF
-            continue
-
-        if t in upsilon_1 and best_action[0] == -1:
-            if can_setup_only:
-                setup_cost = s_at(t) - sigma.get((item_id, t), 0.0) + dp[t + 1]
-                if setup_cost < INF:
-                    best_cost = setup_cost
-                    best_action = (0, -1)
-            else:
-                dp[t] = INF
-                continue
-
         dp[t] = best_cost
         decision[t] = best_action
 
+    # Check feasibility
     if dp[0] >= INF:
         return INF, None
 
@@ -395,6 +405,8 @@ def solve_pricing_subproblem(
 
     if reduced_cost >= -eps:
         return reduced_cost, None
+
+    # SOLUTION RECONSTRUCTION
 
     cap_usage = [0.0] * T
     setup_usage = [0.0] * T
@@ -404,6 +416,7 @@ def solve_pricing_subproblem(
     t = 0
     while t < T:
         action, s = decision[t]
+
         if action == -1:
             t += 1
             continue
@@ -422,11 +435,7 @@ def solve_pricing_subproblem(
                     total_cost += (c_at(t) + h_sum(t, u)) * d_u
             t = s + 1
 
-    for t_forced in upsilon_1:
-        if t_forced < T and setup_usage[t_forced] < 0.5:
-            setup_usage[t_forced] = 1.0
-            total_cost += s_at(t_forced)
-
+    # Validate demand coverage
     covered = [False] * T
     for (t_prod, u), val in arc_usage.items():
         if val > 0.5 and u < T:
@@ -434,10 +443,6 @@ def solve_pricing_subproblem(
 
     for u in range(T):
         if demand[u] > 0 and not covered[u]:
-            return INF, None
-
-    for t_force, u_force in theta_1:
-        if arc_usage.get((t_force, u_force), 0.0) < 0.5:
             return INF, None
 
     column = ProductionPlanColumn(
@@ -452,7 +457,6 @@ def solve_pricing_subproblem(
 
 
 class RestrictedMasterProblem:
-    """Restricted Master Problem for the Dantzig-Wolfe decomposition."""
 
     def __init__(
         self,
@@ -461,15 +465,21 @@ class RestrictedMasterProblem:
         capacity: List[float],
         Gamma_by_item: Dict[int, Dict[int, List[int]]],
         theta_0_by_item: Optional[Dict[int, Set[Tuple[int, int]]]] = None,
+        theta_1_by_item: Optional[Dict[int, Set[Tuple[int, int]]]] = None,
         upsilon_0_by_item: Optional[Dict[int, Set[int]]] = None,
+        upsilon_1_by_item: Optional[Dict[int, Set[int]]] = None,
         initial_columns: Optional[Dict[int, List[ProductionPlanColumn]]] = None,
     ):
         self.items = items
         self.T = T
         self.capacity = capacity
         self.Gamma_by_item = Gamma_by_item
+        # Store = 0 sets for filtering (used externally, not in RMP constraints)
         self.theta_0_by_item = theta_0_by_item or {i: set() for i in items}
         self.upsilon_0_by_item = upsilon_0_by_item or {i: set() for i in items}
+        # Store = 1 sets for linking constraints
+        self.theta_1_by_item = theta_1_by_item or {i: set() for i in items}
+        self.upsilon_1_by_item = upsilon_1_by_item or {i: set() for i in items}
 
         self.model = gp.Model("RMP")
         self.model.Params.OutputFlag = 0
@@ -482,15 +492,67 @@ class RestrictedMasterProblem:
         self.convex_expr: Dict[int, gp.LinExpr] = {i: gp.LinExpr(0.0) for i in items}
         self.cap_expr: List[gp.LinExpr] = [gp.LinExpr(0.0) for _ in range(T)]
 
+        # Linking expressions for Υ^1 (forced setups): Σ Y λ = 1
         self.y_link_expr: Dict[Tuple[int, int], gp.LinExpr] = {}
         for item_id in items:
-            for t in self.upsilon_0_by_item.get(item_id, set()):
+            for t in self.upsilon_1_by_item.get(item_id, set()):
                 self.y_link_expr[(item_id, t)] = gp.LinExpr(0.0)
 
+        # Linking expressions for Θ^1 (forced arcs): Σ Z λ = 1
         self.z_link_expr: Dict[Tuple[int, int, int], gp.LinExpr] = {}
         for item_id in items:
-            for t, u in self.theta_0_by_item.get(item_id, set()):
+            for t, u in self.theta_1_by_item.get(item_id, set()):
                 self.z_link_expr[(item_id, t, u)] = gp.LinExpr(0.0)
+
+        # LEFO  constraints in the RMP
+        # key = (item_id, t1, t2, u, up)
+        self.lefo_expr: Dict[Tuple[int, int, int, int, int], gp.LinExpr] = {}
+        self.lefo_con: Dict[Tuple[int, int, int, int, int], gp.Constr] = {}
+        # index to know which LEFO constraints each arc (i,t,u) appears in
+        self.lefo_index_by_arc: Dict[
+            Tuple[int, int, int], List[Tuple[int, int, int, int, int]]
+        ] = {}
+
+        # Build LEFO rows per item using the same logic as MIP C5
+        for item_id in items:
+            Gamma = self.Gamma_by_item[item_id]
+
+            # compute expiry v_it from shelf_seq
+            shelf_seq = list(self.items[item_id]["shelf_seq"])
+            Expiry = {t: t + int(shelf_seq[t]) for t in range(self.T)}
+
+            prods = [t for t in range(self.T) if Gamma.get(t)]
+            prods.sort(key=lambda t: Expiry[t])  # ascending by v_it
+
+            for a in range(len(prods)):
+                t1 = prods[a]
+                v1 = Expiry[t1]
+                for b in range(a + 1, len(prods)):
+                    t2 = prods[b]
+                    v2 = Expiry[t2]
+                    if v1 >= v2:  # only v1 < v2
+                        continue
+
+                    for up in Gamma.get(t2, []):  # u' for t2
+                        for u in [
+                            uu for uu in Gamma.get(t1, []) if t2 <= uu < up
+                        ]:  # u for t1
+                            key = (item_id, t1, t2, u, up)
+
+                            expr = gp.LinExpr(0.0)
+                            self.lefo_expr[key] = expr
+                            self.lefo_con[key] = self.model.addConstr(
+                                expr <= 1.0,
+                                name=f"lefo_{item_id}_{t1}_{t2}_{u}_{up}",
+                            )
+
+                            # index arcs → LEFO rows
+                            self.lefo_index_by_arc.setdefault(
+                                (item_id, t1, u), []
+                            ).append(key)
+                            self.lefo_index_by_arc.setdefault(
+                                (item_id, t2, up), []
+                            ).append(key)
 
         self.convex_con: Dict[int, gp.Constr] = {}
         self.cap_con: List[gp.Constr] = []
@@ -509,14 +571,16 @@ class RestrictedMasterProblem:
                 )
             )
 
+        # Setup linking constraints for Υ^1 (= 1)
         for (item_id, t), expr in self.y_link_expr.items():
             self.y_link_con[(item_id, t)] = self.model.addConstr(
-                expr == 0.0, name=f"y_link_{item_id}_{t}"
+                expr == 1.0, name=f"y_link_{item_id}_{t}"
             )
 
+        # Arc linking constraints for Θ^1 (= 1)
         for (item_id, t, u), expr in self.z_link_expr.items():
             self.z_link_con[(item_id, t, u)] = self.model.addConstr(
-                expr == 0.0, name=f"z_link_{item_id}_{t}_{u}"
+                expr == 1.0, name=f"z_link_{item_id}_{t}_{u}"
             )
 
         if initial_columns:
@@ -525,6 +589,7 @@ class RestrictedMasterProblem:
                     self.add_column(col)
 
     def _rebuild(self):
+        """Rebuild constraints after adding columns."""
         for item_id in self.items:
             self.model.remove(self.convex_con[item_id])
             self.convex_con[item_id] = self.model.addConstr(
@@ -535,18 +600,30 @@ class RestrictedMasterProblem:
             self.cap_con[t] = self.model.addConstr(
                 self.cap_expr[t] <= self.capacity[t], name=f"cap_{t}"
             )
+        # Rebuild Υ^1 constraints
         for key, expr in self.y_link_expr.items():
             self.model.remove(self.y_link_con[key])
             self.y_link_con[key] = self.model.addConstr(
-                expr == 0.0, name=f"y_link_{key[0]}_{key[1]}"
+                expr == 1.0, name=f"y_link_{key[0]}_{key[1]}"
             )
+        # Rebuild Θ^1 constraints
         for key, expr in self.z_link_expr.items():
             self.model.remove(self.z_link_con[key])
             self.z_link_con[key] = self.model.addConstr(
-                expr == 0.0, name=f"z_link_{key[0]}_{key[1]}_{key[2]}"
+                expr == 1.0, name=f"z_link_{key[0]}_{key[1]}_{key[2]}"
+            )
+
+        # Rebuild LEFO (C5) constraints
+        for key, expr in self.lefo_expr.items():
+            self.model.remove(self.lefo_con[key])
+            i, t1, t2, u, up = key
+            self.lefo_con[key] = self.model.addConstr(
+                expr <= 1.0,
+                name=f"lefo_{i}_{t1}_{t2}_{u}_{up}",
             )
 
     def add_column(self, col: ProductionPlanColumn):
+        """Add a column to the RMP."""
         item_id = col.item_id
         idx = len(self.columns[item_id])
 
@@ -565,16 +642,25 @@ class RestrictedMasterProblem:
             if col.capacity_usage_by_period[t] != 0.0:
                 self.cap_expr[t] += col.capacity_usage_by_period[t] * lam
 
-        for t in self.upsilon_0_by_item.get(item_id, set()):
+        # Update Υ^1 linking expressions
+        for t in self.upsilon_1_by_item.get(item_id, set()):
             if t < len(col.setup_by_period):
                 y_val = col.setup_by_period[t]
                 if y_val != 0.0:
                     self.y_link_expr[(item_id, t)] += y_val * lam
 
-        for t, u in self.theta_0_by_item.get(item_id, set()):
+        # Update Θ^1 linking expressions
+        for t, u in self.theta_1_by_item.get(item_id, set()):
             z_val = col.arc_usage.get((t, u), 0.0)
             if z_val != 0.0:
                 self.z_link_expr[(item_id, t, u)] += z_val * lam
+
+        # Update LEFO constraints
+        for (t, u), z_val in col.arc_usage.items():
+            if z_val == 0.0:
+                continue
+            for key in self.lefo_index_by_arc.get((item_id, t, u), []):
+                self.lefo_expr[key] += z_val * lam
 
         self._rebuild()
 
@@ -585,6 +671,17 @@ class RestrictedMasterProblem:
         Dict[Tuple[int, int], float],
         Dict[Tuple[int, int, int], float],
     ]:
+        """
+        Solve the RMP and return duals.
+
+        Returns:
+            (obj_val, mu, pi, sigma, tau) where:
+            - obj_val: Objective value
+            - mu: Convexity duals {item_id: μ_i}
+            - pi: Capacity duals [π_t for t in T]
+            - sigma: Setup linking duals {(item_id, t): σ_{it}} from Υ^1 constraints
+            - tau: Arc linking duals {(item_id, t, u): τ_{itu}} from Θ^1 constraints
+        """
         self.model.optimize()
 
         if self.model.status != GRB.OPTIMAL:
@@ -593,10 +690,12 @@ class RestrictedMasterProblem:
         mu = {i: self.convex_con[i].Pi for i in self.items}
         pi = [self.cap_con[t].Pi for t in range(self.T)]
 
+        # Collect setup linking duals from Υ^1
         sigma: Dict[Tuple[int, int], float] = {}
         for (item_id, t), con in self.y_link_con.items():
             sigma[(item_id, t)] = con.Pi
 
+        # Collect arc linking duals from Θ^1
         tau: Dict[Tuple[int, int, int], float] = {}
         for (item_id, t, u), con in self.z_link_con.items():
             tau[(item_id, t, u)] = con.Pi
@@ -617,10 +716,7 @@ def solve_node_with_column_generation(
     parent_rmp: Optional[RestrictedMasterProblem] = None,
     max_iter: int = 500,
     eps: float = 1e-6,
-    verbose: bool = False,
-    log_file=None,
     stats: Optional[SearchStatistics] = None,
-    convergence_dir: Optional[Path] = None,
 ) -> Tuple[
     float,
     Optional[RestrictedMasterProblem],
@@ -633,177 +729,120 @@ def solve_node_with_column_generation(
     inherited_cols = inherit_columns_from_parent(parent_rmp, node, items, eps)
     total_inherited = sum(len(cols) for cols in inherited_cols.values())
 
+    # Create RMP with linking constraints for = 1 branching (Υ^1, Θ^1)
+    # = 0 constraints (Υ^0, Θ^0) are enforced by filtering columns before adding
     rmp = RestrictedMasterProblem(
         items=items,
         T=T,
         capacity=capacity,
         Gamma_by_item=Gamma_by_item,
         theta_0_by_item=node.theta_0_by_item,
+        theta_1_by_item=node.theta_1_by_item,
         upsilon_0_by_item=node.upsilon_0_by_item,
+        upsilon_1_by_item=node.upsilon_1_by_item,
         initial_columns=inherited_cols,
     )
 
-    # Add dummy columns
+    # Add dummy columns that satisfy = 1 branching constraints (Υ^1, Θ^1)
+    # This ensures RMP feasibility at branch nodes
     for item_id, item_data in items.items():
         demand = item_data["demand"]
         total_demand = sum(demand)
         dummy_cost = 10000.0 * (total_demand + 1.0)
 
+        # Create setup vector: 1 for all forced setups (Υ^1), 0 otherwise
+        dummy_setup = [0.0] * T
+        for t in node.upsilon_1_by_item.get(item_id, set()):
+            if t < T:
+                dummy_setup[t] = 1.0
+
+        # Create arc usage: 1 for all forced arcs (Θ^1)
+        dummy_arcs: Dict[Tuple[int, int], float] = {}
+        for t, u in node.theta_1_by_item.get(item_id, set()):
+            dummy_arcs[(t, u)] = 1.0
+
         col = ProductionPlanColumn(
             item_id=item_id,
             total_plan_cost=dummy_cost,
             capacity_usage_by_period=[0.0] * T,
-            setup_by_period=[0.0] * T,
-            arc_usage={},
+            setup_by_period=dummy_setup,
+            arc_usage=dummy_arcs,
         )
         rmp.add_column(col)
 
-    if verbose:
-        msg = f"  └─ CG[inherited={total_inherited}]: "
-        print(msg, end="", flush=True)
-        if log_file:
-            log_file.write(msg)
+    print(f"  └─ CG[inherited={total_inherited}]: ", end="", flush=True)
 
     columns_added_this_node = 0
     iterations_this_node = 0
 
-    # Setup convergence CSV tracking
-    csv_file = None
-    csv_writer = None
-    item_ids_sorted = sorted(items.keys())
-    if convergence_dir is not None:
-        csv_path = convergence_dir / f"convergence_node_{node.node_id}.csv"
-        csv_file = open(csv_path, "w", newline="", encoding="utf-8")
-        csv_writer = csv.writer(csv_file)
-        # Header includes lambda sum for each item
-        header = [
-            "iteration",
-            "rmp_obj",
-            "worst_rc",
-            "total_rc",
-            "cols_added",
-            "total_cols",
-        ]
-        for item_id in item_ids_sorted:
-            header.append(f"lambda_sum_i{item_id}")
-        csv_writer.writerow(header)
+    for iteration in range(1, max_iter + 1):
+        lb, mu, pi, sigma, tau = rmp.solve()
+        iterations_this_node += 1
 
-    try:
-        for iteration in range(1, max_iter + 1):
-            lb, mu, pi, sigma, tau = rmp.solve()
-            iterations_this_node += 1
+        if not math.isfinite(lb):
+            print("INFEASIBLE")
+            return math.inf, rmp, False, {}, {}, {}
 
-            # Calculate lambda sums right after solving (before any modifications)
-            lambda_sums = []
-            if csv_writer and math.isfinite(lb):
-                for item_id in item_ids_sorted:
-                    lam_sum = 0.0
-                    for (iid, idx), lam_var in rmp.lambdas.items():
-                        if iid == item_id:
-                            lam_sum += lam_var.X
-                    lambda_sums.append(f"{lam_sum:.6f}")
+        any_added = False
+        cols_this_iter = 0
 
-            if not math.isfinite(lb):
-                if csv_writer:
-                    row = [iteration, "inf", "N/A", "N/A", 0, rmp.get_column_count()]
-                    row += ["N/A"] * len(item_ids_sorted)
-                    csv_writer.writerow(row)
-                if verbose:
-                    print("INFEASIBLE")
-                    if log_file:
-                        log_file.write("INFEASIBLE\n")
-                return math.inf, rmp, False, {}, {}, {}
+        for item_id, item_data in items.items():
+            # Get forbidden branching sets for pricing
+            theta_0 = node.theta_0_by_item.get(item_id, set())
+            upsilon_0 = node.upsilon_0_by_item.get(item_id, set())
 
-            any_added = False
-            cols_this_iter = 0
-            worst_rc = 0.0
-            total_rc = 0.0
+            Gamma = Gamma_by_item[item_id]
+            Expiry = Expiry_by_item[item_id]
 
-            for item_id, item_data in items.items():
-                theta_0 = node.theta_0_by_item.get(item_id, set())
-                theta_1 = node.theta_1_by_item.get(item_id, set())
-                upsilon_0 = node.upsilon_0_by_item.get(item_id, set())
-                upsilon_1 = node.upsilon_1_by_item.get(item_id, set())
+            # Pricing subproblem:
+            # - Enforces Υ^0 and Θ^0 (forbidden) as hard constraints
+            # - Uses σ and τ duals from Υ^1/Θ^1 linking constraints
+            rc, col = solve_pricing_subproblem(
+                item_id=item_id,
+                item_data=item_data,
+                T=T,
+                Gamma=Gamma,
+                Expiry=Expiry,
+                capacity_duals=pi,
+                convexity_dual=mu[item_id],
+                theta_0=theta_0,
+                upsilon_0=upsilon_0,
+                sigma=sigma,
+                tau=tau,
+                eps=eps,
+            )
 
-                Gamma = Gamma_by_item[item_id]
-                Expiry = Expiry_by_item[item_id]
+            if col is not None and rc < -eps:
+                rmp.add_column(col)
+                any_added = True
+                columns_added_this_node += 1
+                cols_this_iter += 1
 
-                rc, col = solve_pricing_subproblem(
-                    item_id=item_id,
-                    item_data=item_data,
-                    T=T,
-                    Gamma=Gamma,
-                    Expiry=Expiry,
-                    capacity_duals=pi,
-                    convexity_dual=mu[item_id],
-                    theta_0=theta_0,
-                    theta_1=theta_1,
-                    upsilon_0=upsilon_0,
-                    upsilon_1=upsilon_1,
-                    sigma=sigma,
-                    tau=tau,
-                    eps=eps,
-                )
+        if not any_added:
+            print(f"LB={lb:.2f} (iter={iteration}, cols={columns_added_this_node})")
 
-                if math.isfinite(rc):
-                    total_rc += rc
-                    worst_rc = min(worst_rc, rc)
+            if stats:
+                stats.total_cg_iterations += iterations_this_node
+                stats.total_columns_generated += columns_added_this_node
 
-                if col is not None and rc < -eps:
-                    rmp.add_column(col)
-                    any_added = True
-                    columns_added_this_node += 1
-                    cols_this_iter += 1
+            z_vals = extract_z_values(rmp, items, eps)
+            y_vals = extract_y_values(rmp, items, eps)
+            x_vals = extract_x_values(rmp, items, eps)
+            return lb, rmp, True, z_vals, y_vals, x_vals
 
-            # Write convergence data (using lambda_sums captured earlier)
-            if csv_writer:
-                row = [
-                    iteration,
-                    f"{lb:.6f}",
-                    f"{worst_rc:.10f}",
-                    f"{total_rc:.10f}",
-                    cols_this_iter,
-                    rmp.get_column_count(),
-                ] + lambda_sums
-                csv_writer.writerow(row)
+    lb, _, _, _, _ = rmp.solve()
 
-            if not any_added:
-                if verbose:
-                    msg = f"LB={lb:.2f} (iter={iteration}, cols={columns_added_this_node})"
-                    print(msg)
-                    if log_file:
-                        log_file.write(msg + "\n")
+    if stats:
+        stats.total_cg_iterations += iterations_this_node
+        stats.total_columns_generated += columns_added_this_node
 
-                if stats:
-                    stats.total_cg_iterations += iterations_this_node
-                    stats.total_columns_generated += columns_added_this_node
+    z_vals = extract_z_values(rmp, items, eps)
+    y_vals = extract_y_values(rmp, items, eps)
+    x_vals = extract_x_values(rmp, items, eps)
 
-                z_vals = extract_z_values(rmp, items, eps)
-                y_vals = extract_y_values(rmp, items, eps)
-                x_vals = extract_x_values(rmp, items, eps)
-                return lb, rmp, True, z_vals, y_vals, x_vals
+    print(f"LB={lb:.2f} (max iter, cols={columns_added_this_node})")
 
-        lb, _, _, _, _ = rmp.solve()
-
-        if stats:
-            stats.total_cg_iterations += iterations_this_node
-            stats.total_columns_generated += columns_added_this_node
-
-        z_vals = extract_z_values(rmp, items, eps)
-        y_vals = extract_y_values(rmp, items, eps)
-        x_vals = extract_x_values(rmp, items, eps)
-
-        if verbose:
-            msg = f"LB={lb:.2f} (max iter, cols={columns_added_this_node})"
-            print(msg)
-            if log_file:
-                log_file.write(msg + "\n")
-
-        return lb, rmp, False, z_vals, y_vals, x_vals
-
-    finally:
-        if csv_file:
-            csv_file.close()
+    return lb, rmp, False, z_vals, y_vals, x_vals
 
 
 def extract_z_values(
@@ -1020,15 +1059,8 @@ def solve_instance(
     time_limit: int = 0,
     mip_gap: float = 0.0,
     out_dir: str | Path = "bnp_results",
-    log_file=None,
-    return_active_cols: bool = False,
-) -> Union[Tuple[Dict, List[str]], Tuple[Dict, List[str], List[Dict]]]:
-    """Solve the perishable lot-sizing problem using Branch-and-Price with Best-First Search.
-
-    Args:
-        return_active_cols: If True, returns (summary, orders_txt, active_cols).
-                           If False (default), returns (summary, orders_txt) for backward compatibility.
-    """
+) -> Tuple[Dict, List[str]]:
+    """Solve the perishable lot-sizing problem using Branch-and-Price with Best-First Search."""
     start_time = time.time()
 
     data = json.loads(Path(instance_path).read_text())
@@ -1048,17 +1080,11 @@ def solve_instance(
     max_nodes = 1000000
     print_frequency = 50
 
-    # Setup convergence tracking directory
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    convergence_dir = out_path / "convergence"
-    convergence_dir.mkdir(parents=True, exist_ok=True)
 
     header = [
-        "\n" + "╔" + "═" * 68 + "╗",
-        f"║ {'BRANCH-AND-PRICE: PERISHABLE LOT-SIZING WITH LEFO':^66s} ║",
         "╠" + "═" * 68 + "╣",
-        f"║  Version:   {'v10 - Best-First Search + Memory Optimization':<55s} ║",
         f"║  Items:     {len(items):<55d} ║",
         f"║  Periods:   {T:<55d} ║",
         f"║  Capacity:  {str(capacity[:min(6, T)]) + ('...' if T > 6 else ''):<55s} ║",
@@ -1066,8 +1092,6 @@ def solve_instance(
     ]
     for line in header:
         print(line)
-        if log_file:
-            log_file.write(line + "\n")
 
     Gamma_by_item: Dict[int, Dict[int, List[int]]] = {}
     Expiry_by_item: Dict[int, Dict[int, int]] = {}
@@ -1103,10 +1127,7 @@ def solve_instance(
         upsilon_1_by_item={i: set() for i in items},
     )
 
-    msg = "\n>>> ROOT NODE <<<"
-    print(msg)
-    if log_file:
-        log_file.write(msg + "\n")
+    print("\n>>> ROOT NODE <<<")
 
     root_lb, rmp, converged, z_vals, y_vals, x_vals = solve_node_with_column_generation(
         items=items,
@@ -1116,17 +1137,11 @@ def solve_instance(
         Expiry_by_item=Expiry_by_item,
         node=root,
         parent_rmp=None,
-        verbose=True,
-        log_file=log_file,
         stats=stats,
-        convergence_dir=convergence_dir,
     )
 
     if not math.isfinite(root_lb):
-        msg = "\n✗ Root infeasible!"
-        print(msg)
-        if log_file:
-            log_file.write(msg + "\n")
+        print("\n✗ Root infeasible!")
         summary = {
             "status": int(GRB.INFEASIBLE),
             "objective": None,
@@ -1137,19 +1152,13 @@ def solve_instance(
             "n_items": len(items),
             "T": T,
         }
-        return summary, [], None
+        return summary, []
 
     root.lp_bound = root_lb
 
-    msgs = [
-        f"  Root LB:      {root_lb:.4f}",
-        f"  Integer?      {is_integer(z_vals, y_vals, eps)}",
-        f"  Uses dummy?   {solution_uses_dummy(rmp, items, eps)}",
-    ]
-    for m in msgs:
-        print(m)
-        if log_file:
-            log_file.write(m + "\n")
+    print(f"  Root LB:      {root_lb:.4f}")
+    print(f"  Integer?      {is_integer(z_vals, y_vals, eps)}")
+    print(f"  Uses dummy?   {solution_uses_dummy(rmp, items, eps)}")
 
     best_lb = root_lb
     best_ub: Optional[float] = None
@@ -1157,13 +1166,11 @@ def solve_instance(
     best_z: Dict[int, Dict[Tuple[int, int], float]] = {}
     best_y: Dict[int, Dict[int, float]] = {}
     best_x: Dict[int, Dict[int, float]] = {}
-    best_active_cols: List[Dict] = []
 
     node_counter = 1
     seen_signatures = {node_signature(root)}
 
     # Best-first search heap: (bound, node_id, node, parent_rmp)
-    # Memory optimized: no z_vals, y_vals, x_vals stored
     heap: List[Tuple[float, int, BranchNode, RestrictedMasterProblem]] = []
 
     stats.nodes_created = 1
@@ -1177,16 +1184,12 @@ def solve_instance(
         best_z = z_vals
         best_y = y_vals
         best_x = x_vals
-        best_active_cols = extract_active_columns(rmp, items, eps)
         root.is_integer = True
         stats.nodes_integer = 1
 
-        msg = "\n✓ Root is INTEGER - OPTIMAL!"
-        print(msg)
-        if log_file:
-            log_file.write(msg + "\n")
+        print("\n✓ Root is INTEGER - OPTIMAL!")
 
-        stats.print_summary(best_lb, best_ub, eps, log_file)
+        stats.print_summary(best_lb, best_ub, eps)
         orders_txt = generate_orders_txt(items, best_x, eps)
 
         summary = {
@@ -1207,8 +1210,6 @@ def solve_instance(
             json.dumps(summary, indent=2), encoding="utf-8"
         )
 
-        if return_active_cols:
-            return summary, orders_txt, best_active_cols
         return summary, orders_txt
 
     # Branch from root - add children to heap
@@ -1256,10 +1257,7 @@ def solve_instance(
             stats.nodes_created += 1
             heapq.heappush(heap, (right.lp_bound, right.node_id, right, rmp))
 
-        msg = f"  Branch Z[{item_id},{t_br},{u_br}]={z_val:.3f}"
-        print(msg)
-        if log_file:
-            log_file.write(msg + "\n")
+        print(f"  Branch Z[{item_id},{t_br},{u_br}]={z_val:.3f}")
     else:
         branch_var_y = find_most_fractional_y(y_vals, root, eps)
         if branch_var_y is not None:
@@ -1313,22 +1311,13 @@ def solve_instance(
                 stats.nodes_created += 1
                 heapq.heappush(heap, (right.lp_bound, right.node_id, right, rmp))
 
-            msg = f"  Branch Y[{item_id},{t_br}]={y_val:.3f}"
-            print(msg)
-            if log_file:
-                log_file.write(msg + "\n")
+            print(f"  Branch Y[{item_id},{t_br}]={y_val:.3f}")
 
-    msg = f"\n{'=' * 70}\nBEST-FIRST SEARCH (Heap-based)\n{'=' * 70}\n"
-    print(msg)
-    if log_file:
-        log_file.write(msg)
+    print(f"\n{'=' * 70}\nBEST-FIRST SEARCH)\n{'=' * 70}\n")
 
     while heap and stats.nodes_explored < max_nodes:
         if time.time() - start_time > max_time:
-            msg = "\n⏱ Time limit reached"
-            print(msg)
-            if log_file:
-                log_file.write(msg + "\n")
+            print("\n⏱ Time limit reached")
             break
 
         # Pop node with lowest bound (best-first)
@@ -1345,18 +1334,12 @@ def solve_instance(
                 gap = best_ub - best_lb
                 gap_pct = 100 * gap / max(abs(best_ub), 1e-10)
                 gap_str = f"{gap_pct:.2f}%"
-            msg = (
+            print(
                 f"[Progress: N={stats.nodes_explored:4d}, Heap={len(heap):4d}, "
                 f"LB={best_lb:.2f}, UB={best_ub if best_ub is not None else 'N/A'}, Gap={gap_str}]"
             )
-            print(msg)
-            if log_file:
-                log_file.write(msg + "\n")
 
-        msg = f"N{node.node_id:4d} D{node.depth:2d} "
-        print(msg, end="", flush=True)
-        if log_file:
-            log_file.write(msg)
+        print(f"N{node.node_id:4d} D{node.depth:2d} ", end="", flush=True)
 
         lb, rmp, converged, z_vals, y_vals, x_vals = solve_node_with_column_generation(
             items=items,
@@ -1366,10 +1349,7 @@ def solve_instance(
             Expiry_by_item=Expiry_by_item,
             node=node,
             parent_rmp=parent_rmp,
-            verbose=True,
-            log_file=log_file,
             stats=stats,
-            convergence_dir=convergence_dir,
         )
 
         stats.nodes_explored += 1
@@ -1377,10 +1357,7 @@ def solve_instance(
         node.lp_bound = lb
 
         if not math.isfinite(lb):
-            msg = "  FATHOMED: Infeasible"
-            print(msg)
-            if log_file:
-                log_file.write(msg + "\n")
+            print("  FATHOMED: Infeasible")
             node.is_pruned = True
             node.prune_reason = "infeasible"
             stats.nodes_fathomed_by_infeasible += 1
@@ -1393,10 +1370,7 @@ def solve_instance(
             best_lb = lb
 
         if best_ub is not None and lb >= best_ub - eps:
-            msg = f"  FATHOMED: {lb:.2f} >= {best_ub:.2f}"
-            print(msg)
-            if log_file:
-                log_file.write(msg + "\n")
+            print(f"  FATHOMED: {lb:.2f} >= {best_ub:.2f}")
             node.is_pruned = True
             node.prune_reason = "bound"
             stats.nodes_fathomed_by_bound += 1
@@ -1404,10 +1378,7 @@ def solve_instance(
 
         # Check if valid integer solution
         if is_valid_integer_solution(z_vals, y_vals, rmp, items, eps):
-            msg = f"  INTEGER: {lb:.2f}"
-            print(msg, end="")
-            if log_file:
-                log_file.write(msg)
+            print(f"  INTEGER: {lb:.2f}", end="")
 
             node.is_integer = True
             stats.nodes_integer += 1
@@ -1418,24 +1389,15 @@ def solve_instance(
                 best_z = z_vals
                 best_y = y_vals
                 best_x = x_vals
-                best_active_cols = extract_active_columns(rmp, items, eps)
-                msg = " ★ NEW INCUMBENT!"
-                print(msg)
-                if log_file:
-                    log_file.write(msg + "\n")
+                print(" ★ NEW INCUMBENT!")
 
                 num_fathomed = fathom_heap_by_incumbent(heap, best_ub, eps)
                 stats.nodes_fathomed_on_incumbent += num_fathomed
 
                 if num_fathomed > 0:
-                    msg = f"  Fathomed {num_fathomed} nodes from heap"
-                    print(msg)
-                    if log_file:
-                        log_file.write(msg + "\n")
+                    print(f"  Fathomed {num_fathomed} nodes from heap")
             else:
                 print()
-                if log_file:
-                    log_file.write("\n")
 
             if heap:
                 best_lb = min(h[0] for h in heap)
@@ -1446,10 +1408,7 @@ def solve_instance(
 
         # Check if solution only uses dummy
         if solution_uses_dummy(rmp, items, eps) and is_integer(z_vals, y_vals, eps):
-            msg = "  FATHOMED: Dummy-only solution"
-            print(msg)
-            if log_file:
-                log_file.write(msg + "\n")
+            print("  FATHOMED: Dummy-only solution")
             node.is_pruned = True
             node.prune_reason = "dummy_infeasible"
             stats.nodes_fathomed_by_infeasible += 1
@@ -1508,10 +1467,7 @@ def solve_instance(
                 stats.nodes_created += 1
                 heapq.heappush(heap, (lb, right.node_id, right, rmp))
 
-            msg = f"  Branch Z[{item_id},{t_br},{u_br}]={z_val:.3f}"
-            print(msg)
-            if log_file:
-                log_file.write(msg + "\n")
+            print(f"  Branch Z[{item_id},{t_br},{u_br}]={z_val:.3f}")
             continue
 
         branch_var_y = find_most_fractional_y(y_vals, node, eps)
@@ -1566,21 +1522,15 @@ def solve_instance(
                 stats.nodes_created += 1
                 heapq.heappush(heap, (lb, right.node_id, right, rmp))
 
-            msg = f"  Branch Y[{item_id},{t_br}]={y_val:.3f}"
-            print(msg)
-            if log_file:
-                log_file.write(msg + "\n")
+            print(f"  Branch Y[{item_id},{t_br}]={y_val:.3f}")
             continue
 
-        msg = "  No fractional variable - solution is integral"
-        print(msg)
-        if log_file:
-            log_file.write(msg + "\n")
+        print("  No fractional variable - solution is integral")
 
     if best_ub is not None:
         best_lb = best_ub
 
-    stats.print_summary(best_lb, best_ub, eps, log_file)
+    stats.print_summary(best_lb, best_ub, eps)
 
     orders_txt = generate_orders_txt(items, best_x, eps)
 
@@ -1610,8 +1560,6 @@ def solve_instance(
         json.dumps(summary, indent=2), encoding="utf-8"
     )
 
-    if return_active_cols:
-        return summary, orders_txt, best_active_cols
     return summary, orders_txt
 
 
@@ -1630,109 +1578,3 @@ def generate_orders_txt(
                 orders_txt.append(f" {t:2d} → {qty:8.3f}")
         orders_txt.append("")
     return orders_txt
-
-
-def log_optimal_solution_details(
-    summary: Dict,
-    orders: List[str],
-    active_cols: List[Dict],
-    items: Dict[int, dict],
-    log_file,
-    eps: float = 1e-6,
-):
-    """Write comprehensive details about the optimal solution to log file."""
-    log_file.write("\n" + "=" * 90 + "\n")
-    log_file.write("OPTIMAL SOLUTION DETAILS\n")
-    log_file.write("=" * 90 + "\n\n")
-
-    # Summary statistics
-    log_file.write("SOLUTION SUMMARY\n")
-    log_file.write("-" * 60 + "\n")
-    log_file.write(f"  Objective value:       {summary.get('objective', 'N/A')}\n")
-    log_file.write(f"  Best bound:            {summary.get('best_bound', 'N/A'):.4f}\n")
-    gap = summary.get("gap", 0) or 0
-    log_file.write(f"  Optimality gap:        {gap * 100:.4f}%\n")
-    log_file.write(
-        f"  Runtime:               {summary.get('runtime_sec', 0):.2f} seconds\n"
-    )
-    log_file.write(f"  Nodes explored:        {summary.get('nodes_explored', 0)}\n")
-    log_file.write(f"  Nodes created:         {summary.get('nodes_created', 0)}\n")
-    log_file.write(
-        f"  Total CG iterations:   {summary.get('total_cg_iterations', 0)}\n"
-    )
-    log_file.write(f"  Total columns added:   {summary.get('total_columns', 0)}\n")
-    log_file.write("\n")
-
-    # Production plan
-    log_file.write("PRODUCTION PLAN\n")
-    log_file.write("-" * 60 + "\n")
-    for line in orders:
-        log_file.write(line + "\n")
-    log_file.write("\n")
-
-    # Active columns in optimal basis
-    if active_cols:
-        log_file.write("ACTIVE COLUMNS IN OPTIMAL BASIS\n")
-        log_file.write("-" * 100 + "\n")
-        log_file.write(
-            f"{'Column':<15} {'Item':<6} {'λ value':<12} {'Cost':<14} {'Setups':<20} {'Arcs'}\n"
-        )
-        log_file.write("-" * 100 + "\n")
-
-        # Sort by item_id, then col_idx
-        sorted_cols = sorted(active_cols, key=lambda x: (x["item_id"], x["col_idx"]))
-
-        for col_info in sorted_cols:
-            item_id = col_info["item_id"]
-            idx = col_info["col_idx"]
-            lam_val = col_info["lambda_val"]
-            cost = col_info["cost"]
-            setups = col_info["setups"]
-            arcs = col_info["arcs"]
-
-            setup_str = ",".join(map(str, setups)) if setups else "none"
-            arc_str = ",".join(f"({t},{u})" for t, u in arcs) if arcs else "none"
-            log_file.write(
-                f"λ[{item_id},{idx}]     {item_id:<6} {lam_val:<12.6f} {cost:<14.2f} {setup_str:<20} {arc_str}\n"
-            )
-
-        log_file.write("-" * 100 + "\n")
-        log_file.write(f"Total active columns: {len(active_cols)}\n\n")
-
-        # Per-item breakdown
-        log_file.write("PER-ITEM SOLUTION BREAKDOWN\n")
-        log_file.write("-" * 60 + "\n")
-
-        for item_id in sorted(items.keys()):
-            item_data = items[item_id]
-            log_file.write(f"\nItem {item_id}:\n")
-            log_file.write(f"  Demand:    {item_data['demand']}\n")
-            log_file.write(f"  Shelf seq: {item_data['shelf_seq']}\n")
-            log_file.write(f"  Setup:     {item_data['setup']}\n")
-            log_file.write(f"  Var cost:  {item_data['c_var']}\n")
-            log_file.write(f"  Holding:   {item_data['h']}\n")
-
-            # Get columns for this item
-            item_cols = [c for c in active_cols if c["item_id"] == item_id]
-
-            if item_cols:
-                log_file.write(f"  Active columns: {len(item_cols)}\n")
-                for col_info in item_cols:
-                    idx = col_info["col_idx"]
-                    lam_val = col_info["lambda_val"]
-                    cost = col_info["cost"]
-                    cap_usage = col_info["capacity_usage"]
-                    setups = col_info["setups"]
-
-                    log_file.write(
-                        f"    λ[{item_id},{idx}] = {lam_val:.6f}, cost = {cost:.2f}\n"
-                    )
-                    for t in setups:
-                        prod = cap_usage[t] if t < len(cap_usage) else 0
-                        log_file.write(f"      t={t}: setup=1, prod={prod:.2f}\n")
-    else:
-        log_file.write("ACTIVE COLUMNS IN OPTIMAL BASIS\n")
-        log_file.write("-" * 60 + "\n")
-        log_file.write("No active columns captured (solution may be infeasible)\n\n")
-
-    log_file.write("\n" + "=" * 90 + "\n")

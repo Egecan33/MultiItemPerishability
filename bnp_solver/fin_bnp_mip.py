@@ -178,13 +178,6 @@ def node_signature(node: BranchNode) -> str:
     return "|".join(sig_parts)
 
 
-def column_signature(col: ProductionPlanColumn) -> str:
-    """Generate a unique signature for a column to detect duplicates."""
-    # A column is uniquely identified by its arc usage pattern
-    arcs = sorted((t, u) for (t, u), val in col.arc_usage.items() if val > 0.5)
-    return f"I{col.item_id}:" + ",".join(f"{t}-{u}" for t, u in arcs)
-
-
 def inherit_columns_from_parent(
     parent_rmp: Optional["RestrictedMasterProblem"],
     child_node: BranchNode,
@@ -426,11 +419,6 @@ def solve_pricing_subproblem(
         setup_by_period=setup_usage,
         arc_usage=arc_usage,
     )
-
-    # Check for duplicate
-    sig = column_signature(column)
-    if sig in existing_signatures:
-        return reduced_cost, None  # Don't return duplicate
 
     return reduced_cost, column
 
@@ -674,7 +662,7 @@ def solve_node_with_column_generation(
     )
 
     # Track existing column signatures per item to avoid duplicates
-    existing_signatures: Dict[int, Set[str]] = {i: set() for i in items}
+    # existing_signatures: Dict[int, Set[str]] = {i: set() for i in items}
 
     # Track arc usage counts for perturbation (diversification)
     arc_usage_counts: Dict[int, Dict[Tuple[int, int], int]] = {i: {} for i in items}
@@ -682,7 +670,7 @@ def solve_node_with_column_generation(
     # Add signatures of inherited columns and count their arc usage
     for item_id, cols in inherited_cols.items():
         for col in cols:
-            existing_signatures[item_id].add(column_signature(col))
+            # existing_signatures[item_id].add(column_signature(col))
             for (t, u), val in col.arc_usage.items():
                 if val > 0.5:
                     arc_usage_counts[item_id][(t, u)] = (
@@ -742,23 +730,14 @@ def solve_node_with_column_generation(
                 tau=tau,
                 eps=eps,
                 use_mip=use_mip_pricing,
-                existing_signatures=existing_signatures[item_id],
+                # existing_signatures=existing_signatures[item_id],
                 arc_usage_counts=arc_usage_counts[item_id],
                 perturbation_eps=1e-5,
             )
 
             if col is not None and rc < -eps:
-                sig = column_signature(col)
-                if sig not in existing_signatures[item_id]:
-                    rmp.add_column(col)
-                    existing_signatures[item_id].add(sig)
-                    # Update arc usage counts
-                    for (t, u), val in col.arc_usage.items():
-                        if val > 0.5:
-                            arc_usage_counts[item_id][(t, u)] = (
-                                arc_usage_counts[item_id].get((t, u), 0) + 1
-                            )
-                    any_added = True
+                rmp.add_column(col)
+                any_added = True
 
         if not any_added:
             if verbose:
@@ -907,6 +886,15 @@ def is_valid_integer_solution(
     """
     Check if solution is integer, doesn't use dummy columns, AND satisfies LEFO.
     """
+    best_objective = obj
+    best_rmp = rmp
+    best_node_id = node.node_id
+    if obj < best_objective - 1e-6:
+        best_objective = obj
+        best_rmp = rmp
+        best_node_id = node.node_id
+        log_file.write(f"  NEW BEST SOLUTION: {obj:.4f} (node {node.node_id})\n")
+
     # Must be integral
     if not is_integer(z_vals, y_vals, eps):
         return False
@@ -1589,31 +1577,55 @@ if __name__ == "__main__":
     # Instance
     # ------------------------------------------------------------------
     instance = {
-        "period": 7,
-        "production_capacity": 35,  # 30 units per period
+        "period": 10,
+        "manual_capacity": [0, 0, 80, 80, 80, 80, 80, 80, 100, 80],
         "items": {
-            "1": {
-                "demand": [10, 12, 8, 15, 10, 9, 11],
-                "c_var": 5.0,
-                "h": 0.5,
-                "setup": 80.0,
-                "shelf_seq": [2, 2, 5, 1, 2, 2, 3],
-            },
-            "2": {
-                "demand": [5, 7, 6, 8, 9, 7, 6],
-                "c_var": 8.0,
-                "h": 0.8,
-                "setup": 120.0,
-                "shelf_seq": [1, 4, 5, 1, 3, 3, 5],
-            },
-            "3": {
-                "demand": [2, 7, 6, 8, 9, 17, 6],
-                "c_var": 8.5,
-                "h": 0.7,
-                "setup": 110.0,
-                "shelf_seq": [2, 1, 2, 3, 4, 5, 6],
-            },
+            "0": {
+                "h": [
+                    0.4,
+                    0.4083164676327104,
+                    0.41626946572303203,
+                    0.423511410091699,
+                    0.42972579301909575,
+                    0.43464101615137757,
+                    0.4380422606518062,
+                    0.439780875814731,
+                    0.439780875814731,
+                    0.4380422606518062,
+                ],
+                "b_var": 0,
+                "c_var": [
+                    1.7616423189662318,
+                    1.714378675341894,
+                    2.495224634136382,
+                    1.778983838209823,
+                    1.6742623735990734,
+                    2.1097890590592483,
+                    1.3744368033291616,
+                    1.2393047580737573,
+                    2.680699649170001,
+                    1.8054001149306065,
+                ],
+                "setup": [
+                    80,
+                    81.66329352654208,
+                    83.2538931446064,
+                    84.70228201833979,
+                    85.94515860381915,
+                    86.9282032302755,
+                    87.60845213036123,
+                    87.9561751629462,
+                    87.9561751629462,
+                    87.60845213036123,
+                ],
+                "demand": [0, 0, 68, 49, 66, 38, 17, 17, 41, 43],
+                "shelf_seq": [24, 18, 22, 6, 16, 9, 21, 23, 9, 7],
+            }
         },
+        # optional extras (currently ignored by your solver)
+        "allow_unmet_demand": False,
+        "warehouse_capacity": None,
+        "lost_sales_penalty_factor": 200,
     }
 
     out_dir = Path("debug_results")
@@ -1704,7 +1716,6 @@ if __name__ == "__main__":
         # Add signatures of inherited columns and count their arc usage
         for item_id, cols in inherited_cols.items():
             for col in cols:
-                existing_signatures_log[item_id].add(column_signature(col))
                 for (t, u), val in col.arc_usage.items():
                     if val > 0.5:
                         arc_usage_counts_log[item_id][(t, u)] = (
@@ -1763,24 +1774,22 @@ if __name__ == "__main__":
                         tau=tau,
                         eps=eps,
                         use_mip=use_mip_pricing,
-                        existing_signatures=existing_signatures_log[item_id],
                         arc_usage_counts=arc_usage_counts_log[item_id],
                         perturbation_eps=1e-5,
                     )
                     total_rc += rc
                     worst_rc = min(worst_rc, rc)
                     if col and rc < -eps:
-                        sig = column_signature(col)
-                        if sig not in existing_signatures_log[item_id]:
-                            rmp.add_column(col)
-                            existing_signatures_log[item_id].add(sig)
-                            # Update arc usage counts
-                            for (t, u), val in col.arc_usage.items():
-                                if val > 0.5:
-                                    arc_usage_counts_log[item_id][(t, u)] = (
-                                        arc_usage_counts_log[item_id].get((t, u), 0) + 1
-                                    )
-                            added += 1
+
+                        rmp.add_column(col)
+
+                        # Update arc usage counts
+                        for (t, u), val in col.arc_usage.items():
+                            if val > 0.5:
+                                arc_usage_counts_log[item_id][(t, u)] = (
+                                    arc_usage_counts_log[item_id].get((t, u), 0) + 1
+                                )
+                        added += 1
 
                 writer.writerow([it, obj, worst_rc, total_rc, added])
 

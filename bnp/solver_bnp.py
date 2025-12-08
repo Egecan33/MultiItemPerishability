@@ -846,12 +846,7 @@ def is_valid_integer_solution(
     items: Dict[int, dict],
     eps: float = 1e-6,
 ) -> bool:
-    """
-    Check if solution is both integer AND doesn't use dummy columns.
 
-    A solution that is 'integer' but only uses dummy columns is actually
-    infeasible (dummy columns don't satisfy demand).
-    """
     # Must be integral
     if not is_integer(z_vals, y_vals, eps):
         return False
@@ -937,7 +932,7 @@ def solve_instance(
     mip_gap: float = 0.0,
     out_dir: str | Path = "bnp_results",
 ) -> Tuple[Dict, List[str]]:
-    """Solve the perishable lot-sizing problem using Branch-and-Price."""
+
     start_time = time.time()
 
     data = json.loads(Path(instance_path).read_text())

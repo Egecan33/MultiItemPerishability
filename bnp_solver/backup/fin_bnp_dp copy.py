@@ -233,44 +233,6 @@ def inherit_columns_from_parent(
     return inherited
 
 
-def column_violates_lefo(
-    arc_usage: Dict[Tuple[int, int], float],
-    Gamma: Dict[int, List[int]],
-    Expiry: Dict[int, int],
-    eps: float = 1e-6,
-) -> bool:
-
-    if not arc_usage:
-        return False
-
-    # production periods that actually appear in this column
-    prods = sorted({t for (t, u) in arc_usage.keys()}, key=lambda t: Expiry[t])
-
-    for a in range(len(prods)):
-        t1 = prods[a]
-        v1 = Expiry[t1]
-        for b in range(a + 1, len(prods)):
-            t2 = prods[b]
-            v2 = Expiry[t2]
-            if v1 >= v2:
-                # we only care about v1 < v2 (earlier expiry first)
-                continue
-
-            # up = demand periods served from t2
-            for up in Gamma.get(t2, []):
-                if arc_usage.get((t2, up), 0.0) <= eps:
-                    continue  # this arc not actually used
-
-                # u = demand periods served from t1 in [t2, up-1]
-                for u in Gamma.get(t1, []):
-                    if u < t2 or u > up - 1:
-                        continue
-                    if arc_usage.get((t1, u), 0.0) > eps:
-                        # we have both Z[t1,u] = 1 and Z[t2,up] = 1 in this column
-                        return True
-    return False
-
-
 def solve_pricing_subproblem(
     item_id: int,
     item_data: dict,
@@ -285,6 +247,40 @@ def solve_pricing_subproblem(
     tau: Optional[Dict[Tuple[int, int, int], float]] = None,
     eps: float = 1e-6,
 ) -> Tuple[float, Optional[ProductionPlanColumn]]:
+    """
+    Dynamic Programming Pricing Subproblem for Zero-Inventory-Ordering (ZIO) Columns.
+
+    VERSION 11: Hybrid branching enforcement
+    - Υ^0, Θ^0 (forbidden): Enforced HERE in pricing (hard constraints)
+    - Υ^1, Θ^1 (forced): Enforced by RMP linking constraints with duals (σ, τ)
+
+    This ensures:
+    1. Pricing only generates columns that don't violate forbidden constraints
+    2. If no such column exists, pricing returns INF → node is infeasible
+    3. Duals from Υ^1/Θ^1 linking constraints guide pricing toward required features
+
+    Reduced cost structure:
+        r̄_k = c_k - μ_i - Σ_t π_t · a_t^k - Σ_t σ_{it} · y_t^k - Σ_{t,u} τ_{itu} · z_{tu}^k
+
+    Args:
+        item_id: Item index i
+        item_data: Dictionary with keys 'demand', 'setup', 'c_var', 'h'
+        T: Number of periods
+        Gamma: Γ_t^i - valid demand coverage sets by production period
+        Expiry: v_t^i - expiry periods by production period
+        capacity_duals: π_t - dual values from capacity constraints
+        convexity_dual: μ_i - dual value from convexity constraint
+        theta_0: Θ_i^0 - forbidden arcs (z_{itu} = 0)
+        upsilon_0: Υ_i^0 - forbidden setups (y_{it} = 0)
+        sigma: σ_{it} - duals from setup linking constraints (Υ^1)
+        tau: τ_{itu} - duals from arc linking constraints (Θ^1)
+        eps: Numerical tolerance
+
+    Returns:
+        Tuple of (reduced_cost, column):
+            - reduced_cost: r̄_k value (INF if infeasible)
+            - column: ProductionPlanColumn if r̄_k < -ε, else None
+    """
 
     sigma = sigma or {}
     tau = tau or {}
@@ -313,8 +309,6 @@ def solve_pricing_subproblem(
         return h_prefix[u] - h_prefix[t]
 
     INF = float("inf")
-
-    # HELPER FUNCTIONS - Enforce Υ^0 and Θ^0 (forbidden constraints)
 
     def can_produce_at(t: int) -> bool:
         """
@@ -366,20 +360,14 @@ def solve_pricing_subproblem(
 
         for u in range(t, s + 1):
             d_u = float(demand[u])
-            if d_u >= 0:
+            if d_u > 0:
                 unit_cost = c_at(t) + h_sum(t, u) - capacity_duals[t]
                 cost += unit_cost * d_u
                 cost -= tau.get((item_id, t, u), 0.0)  # Arc dual from Θ^1 constraints
 
-        # ARC dual (Θ¹)
-        # tau_itu = tau.get((item_id, t, u), 0.0)
-        # if tau_itu > 0:
-        #     cost = 0
-        # cost -= tau_itu
-
         return cost
 
-    # DP BACKWARD RECURSION
+    # dp
 
     dp = [INF] * (T + 1)
     decision = [(-1, -1)] * T
@@ -396,14 +384,14 @@ def solve_pricing_subproblem(
                 best_cost = skip_cost
                 best_action = (-1, -1)
 
-        # ACTION 2: SETUP ONLY (only if no demand and setup not forbidden)
+        # ACTION 2: SETUP ONLY (only if no demand and setup not forbiden)
         if float(demand[t]) <= 0 and t not in upsilon_0:
             setup_cost = s_at(t) - sigma.get((item_id, t), 0.0) + dp[t + 1]
             if setup_cost < best_cost:
                 best_cost = setup_cost
                 best_action = (0, -1)
 
-        # ACTION 3: PRODUCE from t to s (respecting Υ^0 and Θ^0)
+        # ACTiON 3: PRODUCE from t to s (respecting Υ^0 and Θ^0)
         if can_produce_at(t):
             for s in get_valid_ends(t):
                 if s + 1 <= T and dp[s + 1] < INF:
@@ -423,8 +411,6 @@ def solve_pricing_subproblem(
 
     if reduced_cost >= -eps:
         return reduced_cost, None
-
-    # SOLUTION RECONSTRUCTION
 
     cap_usage = [0.0] * T
     setup_usage = [0.0] * T
@@ -471,16 +457,24 @@ def solve_pricing_subproblem(
         arc_usage=arc_usage,
     )
 
-    # # if this production plan violates LEFO, discard it but it wont.
-
-    # if column_violates_lefo(arc_usage, Gamma, Expiry, eps):
-    #     # Treat as "no improving column" from this item
-    #     return float("inf"), None
-
     return reduced_cost, column
 
 
 class RestrictedMasterProblem:
+    """
+    Restricted Master Problem for the Dantzig-Wolfe decomposition.
+
+    VERSION 11: Branching enforced via:
+    - Υ^0, Θ^0 (= 0 constraints): Enforced by FILTERING columns before adding
+    - Υ^1, Θ^1 (= 1 constraints): Enforced by RMP linking constraints with duals
+
+    Linking constraints (for = 1 only):
+        - Υ^1: Σ_k Y_{it}^k λ_k = 1  (forced setups)    → dual σ_{it}
+        - Θ^1: Σ_k Z_{itu}^k λ_k = 1 (forced arcs)      → dual τ_{itu}
+
+    The duals from = 1 constraints incentivize pricing to generate columns
+    with required features.
+    """
 
     def __init__(
         self,
@@ -527,56 +521,6 @@ class RestrictedMasterProblem:
         for item_id in items:
             for t, u in self.theta_1_by_item.get(item_id, set()):
                 self.z_link_expr[(item_id, t, u)] = gp.LinExpr(0.0)
-
-        # LEFO  constraints in the RMP
-        # key = (item_id, t1, t2, u, up)
-        self.lefo_expr: Dict[Tuple[int, int, int, int, int], gp.LinExpr] = {}
-        self.lefo_con: Dict[Tuple[int, int, int, int, int], gp.Constr] = {}
-        # index to know which LEFO constraints each arc (i,t,u) appears in
-        self.lefo_index_by_arc: Dict[
-            Tuple[int, int, int], List[Tuple[int, int, int, int, int]]
-        ] = {}
-
-        # Build LEFO rows per item using the same logic as MIP C5
-        for item_id in items:
-            Gamma = self.Gamma_by_item[item_id]
-
-            # compute expiry v_it from shelf_seq
-            shelf_seq = list(self.items[item_id]["shelf_seq"])
-            Expiry = {t: t + int(shelf_seq[t]) for t in range(self.T)}
-
-            prods = [t for t in range(self.T) if Gamma.get(t)]
-            prods.sort(key=lambda t: Expiry[t])  # ascending by v_it
-
-            for a in range(len(prods)):
-                t1 = prods[a]
-                v1 = Expiry[t1]
-                for b in range(a + 1, len(prods)):
-                    t2 = prods[b]
-                    v2 = Expiry[t2]
-                    if v1 >= v2:  # only v1 < v2
-                        continue
-
-                    for up in Gamma.get(t2, []):  # u' for t2
-                        for u in [
-                            uu for uu in Gamma.get(t1, []) if t2 <= uu < up
-                        ]:  # u for t1
-                            key = (item_id, t1, t2, u, up)
-
-                            expr = gp.LinExpr(0.0)
-                            self.lefo_expr[key] = expr
-                            self.lefo_con[key] = self.model.addConstr(
-                                expr <= 1.0,
-                                name=f"lefo_{item_id}_{t1}_{t2}_{u}_{up}",
-                            )
-
-                            # index arcs → LEFO rows
-                            self.lefo_index_by_arc.setdefault(
-                                (item_id, t1, u), []
-                            ).append(key)
-                            self.lefo_index_by_arc.setdefault(
-                                (item_id, t2, up), []
-                            ).append(key)
 
         self.convex_con: Dict[int, gp.Constr] = {}
         self.cap_con: List[gp.Constr] = []
@@ -637,15 +581,6 @@ class RestrictedMasterProblem:
                 expr == 1.0, name=f"z_link_{key[0]}_{key[1]}_{key[2]}"
             )
 
-        # # Rebuild LEFO (C5) constraints
-        # for key, expr in self.lefo_expr.items():
-        #     self.model.remove(self.lefo_con[key])
-        #     i, t1, t2, u, up = key
-        #     self.lefo_con[key] = self.model.addConstr(
-        #         expr <= 1.0,
-        #         name=f"lefo_{i}_{t1}_{t2}_{u}_{up}",
-        #     )
-
     def add_column(self, col: ProductionPlanColumn):
         """Add a column to the RMP."""
         item_id = col.item_id
@@ -678,13 +613,6 @@ class RestrictedMasterProblem:
             z_val = col.arc_usage.get((t, u), 0.0)
             if z_val != 0.0:
                 self.z_link_expr[(item_id, t, u)] += z_val * lam
-
-        # Update LEFO constraints
-        for (t, u), z_val in col.arc_usage.items():
-            if z_val == 0.0:
-                continue
-            for key in self.lefo_index_by_arc.get((item_id, t, u), []):
-                self.lefo_expr[key] += z_val * lam
 
         self._rebuild()
 
@@ -755,9 +683,6 @@ def solve_node_with_column_generation(
     """Solve a branch node using column generation with column inheritance."""
     inherited_cols = inherit_columns_from_parent(parent_rmp, node, items, eps)
     total_inherited = sum(len(cols) for cols in inherited_cols.values())
-
-    if node.node_id == 44:
-        print("here")
 
     # Create RMP with linking constraints for = 1 branching (Υ^1, Θ^1)
     # = 0 constraints (Υ^0, Θ^0) are enforced by filtering columns before adding
@@ -856,13 +781,10 @@ def solve_node_with_column_generation(
                         log_file.write("INFEASIBLE\n")
                 return math.inf, rmp, False, {}, {}, {}
 
-            # reinitilize tracking variables
             any_added = False
             cols_this_iter = 0
             worst_rc = 0.0
             total_rc = 0.0
-
-            # Pricing for each item
 
             for item_id, item_data in items.items():
                 # Get forbidden branching sets for pricing
@@ -1878,55 +1800,24 @@ if __name__ == "__main__":
     from datetime import datetime
 
     instance = {
-        "period": 10,
-        "manual_capacity": [0, 0, 80, 80, 80, 80, 80, 80, 100, 80],
+        "period": 7,
+        "production_capacity": 22,
         "items": {
-            "0": {
-                "h": [
-                    0.4,
-                    0.4083164676327104,
-                    0.41626946572303203,
-                    0.423511410091699,
-                    0.42972579301909575,
-                    0.43464101615137757,
-                    0.4380422606518062,
-                    0.439780875814731,
-                    0.439780875814731,
-                    0.4380422606518062,
-                ],
-                "b_var": 0,
-                "c_var": [
-                    1.7616423189662318,
-                    1.714378675341894,
-                    2.495224634136382,
-                    1.778983838209823,
-                    1.6742623735990734,
-                    2.1097890590592483,
-                    1.3744368033291616,
-                    1.2393047580737573,
-                    2.680699649170001,
-                    1.8054001149306065,
-                ],
-                "setup": [
-                    80,
-                    81.66329352654208,
-                    83.2538931446064,
-                    84.70228201833979,
-                    85.94515860381915,
-                    86.9282032302755,
-                    87.60845213036123,
-                    87.9561751629462,
-                    87.9561751629462,
-                    87.60845213036123,
-                ],
-                "demand": [0, 0, 68, 49, 66, 38, 17, 17, 41, 43],
-                "shelf_seq": [24, 18, 22, 6, 16, 9, 21, 23, 9, 7],
-            }
+            "1": {
+                "demand": [10, 12, 8, 15, 10, 9, 11],
+                "c_var": 5.0,
+                "h": 0.5,
+                "setup": 80.0,
+                "shelf_seq": [2, 2, 5, 1, 2, 2, 3],
+            },
+            "2": {
+                "demand": [5, 7, 6, 8, 9, 7, 6],
+                "c_var": 8.0,
+                "h": 0.8,
+                "setup": 120.0,
+                "shelf_seq": [1, 4, 5, 1, 3, 3, 5],
+            },
         },
-        # optional extras (currently ignored by your solver)
-        "allow_unmet_demand": False,
-        "warehouse_capacity": None,
-        "lost_sales_penalty_factor": 200,
     }
 
     out_dir = Path("bnp_v10_results")
@@ -1937,7 +1828,7 @@ if __name__ == "__main__":
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_file.write("=" * 90 + "\n")
-    log_file.write(f"Branch-and-Price Solver — Best-First Search\n")
+    log_file.write(f"Branch-and-Price Solver v10 — Best-First Search\n")
     log_file.write(f"Execution started: {timestamp}\n")
     log_file.write("=" * 90 + "\n\n")
 
@@ -1950,7 +1841,7 @@ if __name__ == "__main__":
     log_file.write("INSTANCE DETAILS\n")
     log_file.write("-" * 60 + "\n")
     log_file.write(f"  Periods: {instance['period']}\n")
-    log_file.write(f"  Capacity: {instance['manual_capacity']}\n")
+    log_file.write(f"  Capacity: {instance['production_capacity']}\n")
     log_file.write(f"  Items: {len(instance['items'])}\n\n")
 
     for item_id, item_data in instance["items"].items():
@@ -1970,8 +1861,9 @@ if __name__ == "__main__":
         log_file=log_file,
     )
 
+    # ------------------------------------------------------------------
     # Log optimal solution details
-
+    # ------------------------------------------------------------------
     items = {int(k): v for k, v in instance["items"].items()}
     log_optimal_solution_details(summary, orders, best_active_cols, items, log_file)
     # ------------------------------------------------------------------
