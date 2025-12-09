@@ -798,42 +798,69 @@ def solve_branch_and_price(
 
 
 def build_small_example_instance():
-    T = 8
+    """Build the problematic test case instance from bnp_v10_results/test_instance.json"""
+    T = 10
+
+    # Item 0 data from test_instance.json
+    demand = [0, 0, 68, 49, 66, 38, 17, 17, 41, 43]
+    c_var = [
+        1.7616423189662318,
+        1.714378675341894,
+        2.495224634136382,
+        1.778983838209823,
+        1.6742623735990734,
+        2.1097890590592483,
+        1.3744368033291616,
+        1.2393047580737573,
+        2.680699649170001,
+        1.8054001149306065,
+    ]
+    setup = [
+        80.0,
+        81.66329352654208,
+        83.2538931446064,
+        84.70228201833979,
+        85.94515860381915,
+        86.9282032302755,
+        87.60845213036123,
+        87.9561751629462,
+        87.9561751629462,
+        87.60845213036123,
+    ]
+    h = [
+        0.4,
+        0.4083164676327104,
+        0.41626946572303203,
+        0.423511410091699,
+        0.42972579301909575,
+        0.43464101615137757,
+        0.4380422606518062,
+        0.439780875814731,
+        0.439780875814731,
+        0.4380422606518062,
+    ]
+    shelf_seq = [24, 18, 22, 6, 16, 9, 21, 23, 9, 7]
+
+    # expiry_abs[t] = t + shelf_seq[t] (inclusive)
+    expiry_abs = [t + shelf_seq[t] for t in range(T)]
+
+    # Capacity from test_instance.json
+    capacity = [0, 0, 80, 80, 80, 80, 80, 80, 100, 80]
+
     return (
         [
             ProductionItem(
-                1,
-                T,
-                [6, 0, 5, 0, 3, 4, 0, 5],
-                [3.0, 3.0, 3.3, 3.3, 3.6, 3.6, 3.8, 3.8],
-                [22.0] * T,
-                [1.0] * T,
-                # expiry_abs[t] = t + L_t (inclusive)
-                [t + l for t, l in enumerate([3, 3, 2, 2, 2, 2, 2, 2])],
-                5000.0,
-            ),
-            ProductionItem(
-                2,
-                T,
-                [0, 7, 0, 6, 0, 5, 4, 0],
-                [2.8, 2.8, 3.0, 3.0, 3.2, 3.2, 3.5, 3.5],
-                [18.0] * T,
-                [0.8] * T,
-                [t + l for t, l in enumerate([2, 2, 3, 3, 2, 2, 2, 2])],
-                5000.0,
-            ),
-            ProductionItem(
-                3,
-                T,
-                [4, 4, 4, 0, 3, 0, 6, 0],
-                [3.2, 3.2, 3.2, 3.8, 3.8, 4.0, 4.0, 4.0],
-                [24.0] * T,
-                [1.2] * T,
-                [t + l for t, l in enumerate([2, 3, 2, 2, 3, 2, 2, 2])],
-                5000.0,
+                item_id=0,
+                number_of_periods=T,
+                demand_quantity_by_period=demand,
+                production_unit_cost_by_period=c_var,
+                setup_cost_by_period=setup,
+                holding_unit_cost_by_period=h,
+                perishability_horizon_by_start_period=expiry_abs,
+                lost_sales_penalty_per_unit=5000.0,
             ),
         ],
-        [15, 11, 15, 8, 8, 8, 9, 9],
+        capacity,
     )
 
 

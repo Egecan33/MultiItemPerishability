@@ -7,6 +7,9 @@ Features:
 - σ (sigma) and τ (tau) duals for forbidden branches to guide pricing (Section 4.3.2)
 - Dummy column detection to prevent false integer solutions
 - Branching on Z (arc) and Y (setup) variables
+- ALWAYS uses MIP pricing (Gurobi) - NEVER uses DP
+  - Root node: SPI root MIP formulation (as per paper)
+  - Branch nodes: SPI branch formulation (as per paper)
 
 Note on dual variable handling:
 - At root node: σ = τ = 0 (no branching constraints)
@@ -219,13 +222,18 @@ def solve_pricing_subproblem(
     sigma: Optional[Dict[Tuple[int, int], float]] = None,
     tau: Optional[Dict[Tuple[int, int, int], float]] = None,
     eps: float = 1e-6,
-    use_mip: bool = False,
     existing_signatures: Optional[Set[str]] = None,
     arc_usage_counts: Optional[Dict[Tuple[int, int], int]] = None,
     perturbation_eps: float = 1e-5,
 ) -> Tuple[float, Optional[ProductionPlanColumn]]:
     """
-    Solve the pricing subproblem for a single item.
+    Solve the pricing subproblem for a single item using MIP (Gurobi).
+
+    This implements the SPI (Single-Item) pricing subproblem as per the paper:
+    - Root node: SPI root MIP formulation
+    - Branch nodes: SPI branch formulation with branching constraints
+
+    NEVER uses DP - always uses Gurobi MIP solver.
 
     Reduced cost formula (Section 4.3.2, Equation 7):
         rc = c^k_i - μ_i - Σ_t π_t X^k_it - Σ_t σ_it Y^k_it - Σ_{t,u} τ_itu Z^k_itu
@@ -288,9 +296,9 @@ def solve_pricing_subproblem(
 
     model.update()
 
+    # (C3) Demand satisfaction - match pure MIP: include ALL periods (even zero-demand)
+    # This ensures the pricing subproblem can generate columns that match the pure MIP exactly
     for u in range(T):
-        if demand[u] <= 0:
-            continue
         expr = gp.LinExpr()
         for t in range(u + 1):
             if (t, u) in X:
@@ -404,6 +412,7 @@ def solve_pricing_subproblem(
         if x_val > eps:
             cap_usage[t] += x_val
             total_cost += (c_at(t) + h_sum(t, u)) * x_val
+        # Use actual Z value for arc_usage (matches solver_bnp.py)
         arc_usage[(t, u)] = Z[t, u].X
 
     for t in range(T):
@@ -633,10 +642,9 @@ def solve_node_with_column_generation(
     Expiry_by_item: Dict[int, Dict[int, int]],
     node: BranchNode,
     parent_rmp: Optional[RestrictedMasterProblem] = None,
-    max_iter: int = 100,
+    max_iter: int = 500,  # Increased to ensure convergence and find all optimal columns
     eps: float = 1e-6,
     verbose: bool = False,
-    use_mip_pricing: bool = True,
 ) -> Tuple[
     float,
     Optional[RestrictedMasterProblem],
@@ -681,7 +689,7 @@ def solve_node_with_column_generation(
     for item_id, item_data in items.items():
         demand = item_data["demand"]
         total_demand = sum(demand)
-        dummy_cost = 1000.0 * (total_demand + 1.0)
+        dummy_cost = 10000.0 * (total_demand + 1.0)
 
         col = ProductionPlanColumn(
             item_id=item_id,
@@ -729,8 +737,6 @@ def solve_node_with_column_generation(
                 sigma=sigma,
                 tau=tau,
                 eps=eps,
-                use_mip=use_mip_pricing,
-                # existing_signatures=existing_signatures[item_id],
                 arc_usage_counts=arc_usage_counts[item_id],
                 perturbation_eps=1e-5,
             )
@@ -879,21 +885,12 @@ def is_valid_integer_solution(
     y_vals: Dict[int, Dict[int, float]],
     rmp: RestrictedMasterProblem,
     items: Dict[int, dict],
-    Expiry_by_item: Dict[int, Dict[int, int]],
-    Gamma_by_item: Dict[int, Dict[int, List[int]]],
     eps: float = 1e-6,
 ) -> bool:
     """
-    Check if solution is integer, doesn't use dummy columns, AND satisfies LEFO.
+    Check if solution is integer and doesn't use dummy columns.
+    Note: LEFO constraints are enforced in the pricing subproblem MIP, so we don't need to check them here.
     """
-    best_objective = obj
-    best_rmp = rmp
-    best_node_id = node.node_id
-    if obj < best_objective - 1e-6:
-        best_objective = obj
-        best_rmp = rmp
-        best_node_id = node.node_id
-        log_file.write(f"  NEW BEST SOLUTION: {obj:.4f} (node {node.node_id})\n")
 
     # Must be integral
     if not is_integer(z_vals, y_vals, eps):
@@ -908,10 +905,6 @@ def is_valid_integer_solution(
     all_y_empty = all(len(setups) == 0 for setups in y_vals.values())
 
     if all_z_empty and all_y_empty:
-        return False
-
-    # Check LEFO constraints
-    if not check_lefo_satisfied(z_vals, Expiry_by_item, Gamma_by_item, eps):
         return False
 
     return True
@@ -1087,7 +1080,7 @@ def solve_instance(
     max_time = int(time_limit) if time_limit > 0 else 60000
     max_nodes = 1000000
     print_frequency = 50
-    use_mip_pricing = True
+    # Always use MIP pricing (never DP) - matches paper documentation
 
     print("\n" + "╔" + "═" * 68 + "╗")
     print(f"║ {'BRANCH-AND-PRICE: PERISHABLE LOT-SIZING WITH LEFO':^66s} ║")
@@ -1117,7 +1110,8 @@ def solve_instance(
                 Gamma[t] = []
                 continue
 
-            u_max = min(T - 1, v_it - 1)
+            # Match MIP solver: u_max = min(T - 1, v_it) where v_it is inclusive expiry
+            u_max = min(T - 1, v_it)
             Gamma[t] = list(range(t, u_max + 1))
 
         Gamma_by_item[item_id] = Gamma
@@ -1136,7 +1130,7 @@ def solve_instance(
         upsilon_1_by_item={i: set() for i in items},
     )
 
-    print("\n>>> ROOT NODE <<<")
+    print("\n>>> ROOT NODE (SPI Root MIP) <<<")
     root_lb, rmp, converged, z_vals, y_vals, x_vals = solve_node_with_column_generation(
         items=items,
         T=T,
@@ -1146,7 +1140,6 @@ def solve_instance(
         node=root,
         parent_rmp=None,
         verbose=True,
-        use_mip_pricing=use_mip_pricing,
     )
 
     if not math.isfinite(root_lb):
@@ -1176,9 +1169,7 @@ def solve_instance(
     stats.nodes_created = 1
 
     # Check if root is already a valid integer solution
-    if is_valid_integer_solution(
-        z_vals, y_vals, rmp, items, Expiry_by_item, Gamma_by_item, eps
-    ):
+    if is_valid_integer_solution(z_vals, y_vals, rmp, items, eps):
         best_ub = root_lb
         best_lb = root_lb
         root.is_integer = True
@@ -1250,7 +1241,6 @@ def solve_instance(
                     node=node,
                     parent_rmp=parent_rmp,
                     verbose=True,
-                    use_mip_pricing=use_mip_pricing,
                 )
             )
 
@@ -1277,10 +1267,8 @@ def solve_instance(
                 stats.nodes_fathomed_by_bound += 1
                 continue
 
-            # Check if it's a valid integer solution (integral AND not using dummy AND satisfies LEFO)
-            if is_valid_integer_solution(
-                z_vals, y_vals, rmp, items, Expiry_by_item, Gamma_by_item, eps
-            ):
+            # Check if it's a valid integer solution (integral AND not using dummy)
+            if is_valid_integer_solution(z_vals, y_vals, rmp, items, eps):
                 print(f"  INTEGER: {lb:.2f}", end="")
                 node.is_integer = True
                 stats.nodes_integer += 1
@@ -1321,81 +1309,9 @@ def solve_instance(
             y_vals = parent_y
             x_vals = parent_x
 
-        # FIRST: Check for LEFO violations and branch on them
-        lefo_viol = find_lefo_violation(
-            z_vals, Expiry_by_item, Gamma_by_item, node, eps
-        )
-        if lefo_viol is not None:
-            item_id, t1, u, t2, up, z1_val, z2_val = lefo_viol
-
-            # Branch by forbidding one of the violating arcs
-            # Choose the arc with smaller Z value to minimize impact
-            if z1_val <= z2_val:
-                t_br, u_br, z_val = t1, u, z1_val
-            else:
-                t_br, u_br, z_val = t2, up, z2_val
-
-            # Only create Z=0 branch (forbid the arc to break LEFO violation)
-            left = BranchNode(
-                node_id=node_counter,
-                parent_id=node.node_id,
-                depth=node.depth + 1,
-                theta_0_by_item={i: s.copy() for i, s in node.theta_0_by_item.items()},
-                theta_1_by_item={i: s.copy() for i, s in node.theta_1_by_item.items()},
-                upsilon_0_by_item={
-                    i: s.copy() for i, s in node.upsilon_0_by_item.items()
-                },
-                upsilon_1_by_item={
-                    i: s.copy() for i, s in node.upsilon_1_by_item.items()
-                },
-                branch_variable=("LEFO", item_id, t_br, u_br, z_val),
-                branch_direction="Z=0",
-            )
-            left.theta_0_by_item[item_id].add((t_br, u_br))
-            left.lp_bound = node.lp_bound
-
-            sig_left = node_signature(left)
-            if sig_left not in seen_signatures:
-                seen_signatures.add(sig_left)
-                node_counter += 1
-                stats.nodes_created += 1
-                queue.append((left, z_vals, y_vals, x_vals, parent_rmp))
-
-            # Also try forbidding the OTHER arc
-            if z1_val <= z2_val:
-                t_br2, u_br2 = t2, up
-            else:
-                t_br2, u_br2 = t1, u
-
-            right = BranchNode(
-                node_id=node_counter,
-                parent_id=node.node_id,
-                depth=node.depth + 1,
-                theta_0_by_item={i: s.copy() for i, s in node.theta_0_by_item.items()},
-                theta_1_by_item={i: s.copy() for i, s in node.theta_1_by_item.items()},
-                upsilon_0_by_item={
-                    i: s.copy() for i, s in node.upsilon_0_by_item.items()
-                },
-                upsilon_1_by_item={
-                    i: s.copy() for i, s in node.upsilon_1_by_item.items()
-                },
-                branch_variable=("LEFO", item_id, t_br2, u_br2, z_val),
-                branch_direction="Z=0",
-            )
-            right.theta_0_by_item[item_id].add((t_br2, u_br2))
-            right.lp_bound = node.lp_bound
-
-            sig_right = node_signature(right)
-            if sig_right not in seen_signatures:
-                seen_signatures.add(sig_right)
-                node_counter += 1
-                stats.nodes_created += 1
-                queue.append((right, z_vals, y_vals, x_vals, parent_rmp))
-
-            print(
-                f"  Branch LEFO: Z[{item_id},{t1},{u}]={z1_val:.3f} vs Z[{item_id},{t2},{up}]={z2_val:.3f}"
-            )
-            continue
+        # Note: LEFO constraints are enforced in the pricing subproblem MIP,
+        # so we don't need to branch on LEFO violations here.
+        # Just branch on fractional Z and Y variables.
 
         branch_var_z = find_most_fractional_z(z_vals, node, eps)
         if branch_var_z is not None:
@@ -1685,10 +1601,9 @@ if __name__ == "__main__":
         Expiry_by_item,
         node: BranchNode,
         parent_rmp=None,
-        max_iter: int = 200,
+        max_iter: int = 500,  # Increased to ensure convergence and find all optimal columns
         eps: float = 1e-6,
         verbose: bool = True,
-        use_mip_pricing: bool = True,
     ):
         global best_objective, best_rmp, best_node_id  # ← THIS LINE FIXED
 
@@ -1773,7 +1688,6 @@ if __name__ == "__main__":
                         sigma=sigma,
                         tau=tau,
                         eps=eps,
-                        use_mip=use_mip_pricing,
                         arc_usage_counts=arc_usage_counts_log[item_id],
                         perturbation_eps=1e-5,
                     )
