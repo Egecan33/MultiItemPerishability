@@ -156,6 +156,10 @@ class SearchStatistics:
             print(line)
 
 
+class TimeLimitExceeded(Exception):
+    """Raised when the global time limit is reached during solving."""
+
+
 def _cap_global_from_dem(items: Dict[int, dict], T: int) -> List[float]:
     """Generate default capacity from total demand with buffer."""
     cap_raw = [0.0] * T
@@ -820,6 +824,7 @@ def solve_node_with_column_generation(
     verbose: bool = False,
     stats: Optional[SearchStatistics] = None,
     use_mip_pricing: bool = True,  # Default to MIP to match solver_bnp.py
+    max_time: Optional[float] = None,
 ) -> Tuple[
     float,
     Optional[RestrictedMasterProblem],
@@ -869,6 +874,16 @@ def solve_node_with_column_generation(
 
     try:
         for iteration in range(1, max_iter + 1):
+            # Abort if the global time limit has been exceeded
+            if (
+                max_time is not None
+                and stats is not None
+                and time.time() - stats.start_time > max_time
+            ):
+                if verbose:
+                    print("TIME LIMIT during column generation")
+                raise TimeLimitExceeded
+
             lb, mu, pi, sigma, tau = rmp.solve()
             iterations_this_node += 1
 
@@ -910,6 +925,15 @@ def solve_node_with_column_generation(
             # Pricing for each item
 
             for item_id, item_data in items.items():
+                if (
+                    max_time is not None
+                    and stats is not None
+                    and time.time() - stats.start_time > max_time
+                ):
+                    if verbose:
+                        print("TIME LIMIT during pricing")
+                    raise TimeLimitExceeded
+
                 # Get branching sets for pricing
                 theta_0 = node.theta_0_by_item.get(item_id, set())
                 theta_1 = node.theta_1_by_item.get(item_id, set())
@@ -989,6 +1013,9 @@ def solve_node_with_column_generation(
 
         return lb, rmp, False, z_vals, y_vals, x_vals
 
+    except TimeLimitExceeded:
+        # Propagate the timeout to the caller
+        raise
     except Exception:
         # Fallback on unexpected failure to keep solver running
         return math.inf, None, False, {}, {}, {}
@@ -1298,18 +1325,46 @@ def solve_instance(
 
     print("\n>>> ROOT NODE <<<")
 
-    root_lb, rmp, converged, z_vals, y_vals, x_vals = solve_node_with_column_generation(
-        items=items,
-        T=T,
-        capacity=capacity,
-        Gamma_by_item=Gamma_by_item,
-        Expiry_by_item=Expiry_by_item,
-        node=root,
-        parent_rmp=None,
-        verbose=True,
-        stats=stats,
-        use_mip_pricing=use_mip_pricing,
-    )
+    timed_out = False
+
+    try:
+        root_lb, rmp, converged, z_vals, y_vals, x_vals = (
+            solve_node_with_column_generation(
+                items=items,
+                T=T,
+                capacity=capacity,
+                Gamma_by_item=Gamma_by_item,
+                Expiry_by_item=Expiry_by_item,
+                node=root,
+                parent_rmp=None,
+                verbose=True,
+                stats=stats,
+                use_mip_pricing=use_mip_pricing,
+                max_time=max_time,
+            )
+        )
+    except TimeLimitExceeded:
+        timed_out = True
+        msg = (
+            f"\n⏱ Time limit reached ({max_time}s) during root column generation. "
+            "No solution found."
+        )
+        print(msg)
+        summary = {
+            "status": int(GRB.TIME_LIMIT),
+            "objective": None,
+            "best_bound": None,
+            "gap": None,
+            "runtime_sec": time.time() - start_time,
+            "solver_version": (
+                "branch_and_price_mip_dfs"
+                if use_mip_pricing
+                else "branch_and_price_dp_dfs"
+            ),
+            "n_items": len(items),
+            "T": T,
+        }
+        return summary, [], []
 
     if not math.isfinite(root_lb):
         print("\n✗ Root infeasible!")
@@ -1471,6 +1526,7 @@ def solve_instance(
         # Check time limit
         elapsed_time = time.time() - start_time
         if elapsed_time > max_time:
+            timed_out = True
             msg = f"\n⏱ Time limit reached ({max_time}s). Best incumbent: {best_ub if best_ub is not None else 'N/A'}"
             print(msg)
             break
@@ -1516,20 +1572,26 @@ def solve_instance(
             msg = f"N{node.node_id:4d} D{node.depth:2d} "
             print(msg, end="", flush=True)
 
-            lb, rmp, converged, z_vals, y_vals, x_vals = (
-                solve_node_with_column_generation(
-                    items=items,
-                    T=T,
-                    capacity=capacity,
-                    Gamma_by_item=Gamma_by_item,
-                    Expiry_by_item=Expiry_by_item,
-                    node=node,
-                    parent_rmp=parent_rmp,
-                    verbose=True,
-                    stats=stats,
-                    use_mip_pricing=use_mip_pricing,
+            try:
+                lb, rmp, converged, z_vals, y_vals, x_vals = (
+                    solve_node_with_column_generation(
+                        items=items,
+                        T=T,
+                        capacity=capacity,
+                        Gamma_by_item=Gamma_by_item,
+                        Expiry_by_item=Expiry_by_item,
+                        node=node,
+                        parent_rmp=parent_rmp,
+                        verbose=True,
+                        stats=stats,
+                        use_mip_pricing=use_mip_pricing,
+                        max_time=max_time,
+                    )
                 )
-            )
+            except TimeLimitExceeded:
+                timed_out = True
+                print(f"\n⏱ Time limit reached ({max_time}s) during column generation.")
+                break
 
             stats.nodes_explored += 1
             stats.max_depth = max(stats.max_depth, node.depth)
@@ -1850,17 +1912,57 @@ def solve_instance(
 
     stats.print_summary(best_lb, best_ub, eps)
 
-    orders_txt = generate_orders_txt(items, opt_x, eps)
-
-    summary = {
-        "status": int(
+    status = int(
+        GRB.TIME_LIMIT
+        if timed_out
+        else (
             GRB.OPTIMAL
             if best_ub is not None and abs(best_ub - best_lb) < eps
             else GRB.SUBOPTIMAL if best_ub is not None else GRB.INFEASIBLE
-        ),
+        )
+    )
+    gap_val = (
+        (best_ub - best_lb) / max(abs(best_ub), 1e-10) if best_ub is not None else None
+    )
+
+    # If we timed out and never found an incumbent, report no solution/Gap
+    if timed_out and best_ub is None:
+        orders_txt = []
+        best_active_cols = []
+        summary = {
+            "status": status,
+            "objective": None,
+            "best_bound": None,
+            "gap": None,
+            "runtime_sec": float(time.time() - start_time),
+            "solver_version": (
+                "branch_and_price_mip_dfs"
+                if use_mip_pricing
+                else "branch_and_price_dp_dfs"
+            ),
+            "n_items": len(items),
+            "T": T,
+            "nodes_explored": stats.nodes_explored,
+            "nodes_created": stats.nodes_created,
+            "total_columns": stats.total_columns_generated,
+            "total_cg_iterations": stats.total_cg_iterations,
+        }
+
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "summary.json").write_text(
+            json.dumps(summary, indent=2), encoding="utf-8"
+        )
+
+        return summary, orders_txt, best_active_cols
+
+    orders_txt = generate_orders_txt(items, opt_x, eps)
+
+    summary = {
+        "status": status,
         "objective": float(best_ub) if best_ub is not None else None,
         "best_bound": float(best_lb),
-        "gap": ((best_ub - best_lb) / max(abs(best_ub), 1e-10) if best_ub else None),
+        "gap": gap_val,
         "runtime_sec": float(time.time() - start_time),
         "solver_version": (
             "branch_and_price_mip_dfs" if use_mip_pricing else "branch_and_price_dp_dfs"
