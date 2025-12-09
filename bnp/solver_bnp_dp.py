@@ -10,7 +10,7 @@ Key Changes from v10:
 - Duals from = 1 linking constraints guide pricing toward required features
 
 Features:
-- Depth-first search using deque (matching solver_bnp.py)
+- Best-first search using priority queue (heapq) - always explores node with best (lowest) lower bound
 - Memory optimization: queue stores only (bound, node_id, node, rmp)
 - Column inheritance for faster convergence at branch nodes
 - σ (sigma) and τ (tau) duals from Υ^1/Θ^1 linking constraints guide pricing
@@ -25,7 +25,7 @@ import csv
 import json
 import math
 import time
-from collections import deque
+import heapq
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, IO
@@ -1571,16 +1571,17 @@ def find_most_fractional_y(
     return best
 
 
-def fathom_queue_by_incumbent(queue: deque, incumbent: float, eps: float) -> int:
-    """Remove nodes from queue that can be fathomed by bound."""
+def fathom_queue_by_incumbent(queue: List, incumbent: float, eps: float) -> int:
+    """Remove nodes from priority queue that can be fathomed by bound."""
     original_size = len(queue)
-    new_queue = deque()
-    for node, z_vals, y_vals, x_vals, rmp in queue:
-        if node.lp_bound < incumbent - eps:
-            new_queue.append((node, z_vals, y_vals, x_vals, rmp))
+    new_queue = []
+    for bound, node_id, node, pz, py, px, prmp in queue:
+        if bound < incumbent - eps:
+            heapq.heappush(new_queue, (bound, node_id, node, pz, py, px, prmp))
     num_fathomed = original_size - len(new_queue)
     queue.clear()
     queue.extend(new_queue)
+    heapq.heapify(queue)  # Re-heapify after modification
     return num_fathomed
 
 
@@ -1744,7 +1745,14 @@ def solve_instance(
     best_ub: Optional[float] = None
     node_counter = 1
     seen_signatures = {node_signature(root)}
-    queue = deque([(root, z_vals, y_vals, x_vals, rmp)])
+    # Priority queue: (lp_bound, node_id, node, parent_z, parent_y, parent_x, parent_rmp)
+    # Lower bound = higher priority (best-first)
+    queue: List[
+        Tuple[float, int, BranchNode, Dict, Dict, Dict, RestrictedMasterProblem]
+    ] = []
+    heapq.heappush(
+        queue, (root.lp_bound, root.node_id, root, z_vals, y_vals, x_vals, rmp)
+    )
     stats.nodes_created = 1
 
     # Track which nodes have been fully branched (2 children created)
@@ -1823,7 +1831,7 @@ def solve_instance(
         return summary, orders_txt
 
     stats.nodes_explored = 1
-    msg = f"\n{'=' * 70}\nDEPTH-FIRST SEARCH\n{'=' * 70}\n"
+    msg = f"\n{'=' * 70}\nBEST-FIRST SEARCH (Best Lower Bound)\n{'=' * 70}\n"
     print(msg)
     if log_file:
         log_file.write(msg)
@@ -1845,16 +1853,25 @@ def solve_instance(
 
         # Remove nodes that have been fully branched (2 children) from queue
         # This saves memory by not keeping parent nodes after branching
-        new_queue = deque()
-        for n, pz, py, px, prmp in queue:
-            if n.node_id not in nodes_with_children:
-                new_queue.append((n, pz, py, px, prmp))
+        # Also update best_lb to exclude these nodes
+        # Explicitly delete parent nodes and their RMPs to free RAM
+        new_queue = []
+        for bound, node_id, node, pz, py, px, prmp in queue:
+            if node.node_id not in nodes_with_children:
+                heapq.heappush(new_queue, (bound, node_id, node, pz, py, px, prmp))
+            else:
+                # Parent node has been fully branched - free its memory
+                del node
+                del prmp
         queue = new_queue
 
         if not queue:
             break
 
-        node, parent_z, parent_y, parent_x, parent_rmp = queue.pop()
+        # Pop node with best (lowest) lower bound (best-first)
+        bound, node_id, node, parent_z, parent_y, parent_x, parent_rmp = heapq.heappop(
+            queue
+        )
 
         if node.node_id != 0:
             # Print progress with gap tracking
@@ -1907,10 +1924,18 @@ def solve_instance(
                 stats.nodes_fathomed_by_infeasible += 1
                 continue
 
-            if queue:
-                best_lb = min(lb, min(n.lp_bound for n, _, _, _, _ in queue))
-            else:
-                best_lb = lb
+            # Update best_lb: current node's lb and all unfathomed nodes in queue (exclude nodes_with_children)
+            candidates = [lb]
+            candidates.extend(
+                [
+                    bound
+                    for bound, nid, n, _, _, _, _ in queue
+                    if n.node_id not in nodes_with_children
+                    and hasattr(n, "lp_bound")
+                    and math.isfinite(n.lp_bound)
+                ]
+            )
+            best_lb = min(candidates)
 
             if best_ub is not None and lb >= best_ub - eps:
                 print(f"  FATHOMED: {lb:.2f} >= {best_ub:.2f}")
@@ -1937,8 +1962,16 @@ def solve_instance(
                 else:
                     print()
 
-                if queue:
-                    best_lb = min(n.lp_bound for n, _, _, _, _ in queue)
+                # Update best_lb from queue (exclude nodes_with_children)
+                candidates = [
+                    bound
+                    for bound, nid, n, _, _, _, _ in queue
+                    if n.node_id not in nodes_with_children
+                    and hasattr(n, "lp_bound")
+                    and math.isfinite(n.lp_bound)
+                ]
+                if candidates:
+                    best_lb = min(candidates)
                 else:
                     best_lb = best_ub if best_ub is not None else lb
 
@@ -1990,7 +2023,18 @@ def solve_instance(
                 seen_signatures.add(sig_left)
                 node_counter += 1
                 stats.nodes_created += 1
-                queue.append((left, z_vals, y_vals, x_vals, parent_rmp))
+                heapq.heappush(
+                    queue,
+                    (
+                        left.lp_bound,
+                        left.node_id,
+                        left,
+                        z_vals,
+                        y_vals,
+                        x_vals,
+                        parent_rmp,
+                    ),
+                )
                 children_added += 1
 
             right = BranchNode(
@@ -2016,12 +2060,43 @@ def solve_instance(
                 seen_signatures.add(sig_right)
                 node_counter += 1
                 stats.nodes_created += 1
-                queue.append((right, z_vals, y_vals, x_vals, parent_rmp))
+                heapq.heappush(
+                    queue,
+                    (
+                        right.lp_bound,
+                        right.node_id,
+                        right,
+                        z_vals,
+                        y_vals,
+                        x_vals,
+                        parent_rmp,
+                    ),
+                )
                 children_added += 1
 
             # Mark this node as having children (fully branched)
+            # Update best_lb: remove parent's bound, use children's bounds
+            # Free parent node from memory to save RAM
             if children_added == 2:
                 nodes_with_children.add(node.node_id)
+                # Update best_lb from queue (exclude nodes_with_children)
+                candidates = [
+                    bound
+                    for bound, nid, n, _, _, _, _ in queue
+                    if n.node_id not in nodes_with_children
+                    and hasattr(n, "lp_bound")
+                    and math.isfinite(n.lp_bound)
+                ]
+                if candidates:
+                    best_lb = min(candidates)
+                # Free parent node and RMP from memory
+                # Children have already inherited columns, so parent RMP is no longer needed
+                del node
+                del parent_rmp
+                # Clear parent solution values
+                parent_z = None
+                parent_y = None
+                parent_x = None
 
             print(f"  Branch Y[{item_id},{t_br}]={y_val:.3f}")
             continue
@@ -2055,7 +2130,18 @@ def solve_instance(
                 seen_signatures.add(sig_left)
                 node_counter += 1
                 stats.nodes_created += 1
-                queue.append((left, z_vals, y_vals, x_vals, parent_rmp))
+                heapq.heappush(
+                    queue,
+                    (
+                        left.lp_bound,
+                        left.node_id,
+                        left,
+                        z_vals,
+                        y_vals,
+                        x_vals,
+                        parent_rmp,
+                    ),
+                )
                 children_added += 1
 
             right = BranchNode(
@@ -2081,20 +2167,66 @@ def solve_instance(
                 seen_signatures.add(sig_right)
                 node_counter += 1
                 stats.nodes_created += 1
-                queue.append((right, z_vals, y_vals, x_vals, parent_rmp))
+                heapq.heappush(
+                    queue,
+                    (
+                        right.lp_bound,
+                        right.node_id,
+                        right,
+                        z_vals,
+                        y_vals,
+                        x_vals,
+                        parent_rmp,
+                    ),
+                )
                 children_added += 1
 
             # Mark this node as having children (fully branched)
+            # Update best_lb: remove parent's bound, use children's bounds
+            # Free parent node from memory to save RAM
             if children_added == 2:
                 nodes_with_children.add(node.node_id)
+                # Update best_lb from queue (exclude nodes_with_children)
+                candidates = [
+                    bound
+                    for bound, nid, n, _, _, _, _ in queue
+                    if n.node_id not in nodes_with_children
+                    and hasattr(n, "lp_bound")
+                    and math.isfinite(n.lp_bound)
+                ]
+                if candidates:
+                    best_lb = min(candidates)
+                # Free parent node and RMP from memory
+                # Children have already inherited columns, so parent RMP is no longer needed
+                del node
+                del parent_rmp
+                # Clear parent solution values
+                parent_z = None
+                parent_y = None
+                parent_x = None
 
             print(f"  Branch Z[{item_id},{t_br},{u_br}]={z_val:.3f}")
             continue
 
         print("  No fractional variable - solution is integral")
 
-    # Finalize best bound
-    if best_ub is not None:
+    # Finalize best bound - compute best_lb from queue (exclude nodes_with_children)
+    candidates = [
+        bound
+        for bound, nid, n, _, _, _, _ in queue
+        if n.node_id not in nodes_with_children
+        and hasattr(n, "lp_bound")
+        and math.isfinite(n.lp_bound)
+    ]
+    if candidates:
+        best_lb = min(best_lb, min(candidates))
+
+    # Ensure best_lb <= best_ub (should always be true, but safety check)
+    if best_ub is not None and best_lb > best_ub + eps:
+        best_lb = best_ub
+
+    # Only set best_lb = best_ub if we've proven optimality (gap < eps)
+    if best_ub is not None and abs(best_ub - best_lb) < eps:
         best_lb = best_ub
 
     stats.print_summary(best_lb, best_ub, eps, log_file)
