@@ -1001,6 +1001,118 @@ class RestrictedMasterProblem:
     def get_column_count(self) -> int:
         return sum(len(cols) for cols in self.columns.values())
 
+    def delete_zero_lambda_columns(self, eps: float = 1e-8) -> int:
+        """
+        Delete columns with lambda = 0 (or very close to 0) to save memory.
+
+        Args:
+            eps: Threshold below which lambda is considered zero
+
+        Returns:
+            Number of columns deleted
+        """
+        if self.model.status != GRB.OPTIMAL:
+            return 0  # Can't delete if model not solved
+
+        deleted_count = 0
+        columns_to_delete: List[Tuple[int, int]] = []
+
+        # First pass: identify columns to delete (in reverse order to maintain indices)
+        for (item_id, idx), lam_var in list(self.lambdas.items()):
+            try:
+                lam_val = lam_var.X
+            except (AttributeError, ValueError, Exception):
+                continue
+
+            # Skip if lambda is above threshold
+            if lam_val >= eps:
+                continue
+
+            # Don't delete dummy columns (first column is usually dummy)
+            if idx == 0:
+                continue
+
+            # Don't delete if it's the only non-dummy column for this item
+            if len(self.columns[item_id]) <= 2:  # 1 dummy + 1 real
+                continue
+
+            columns_to_delete.append((item_id, idx))
+
+        # Second pass: delete columns (in reverse order to maintain indices)
+        columns_to_delete.sort(reverse=True, key=lambda x: x[1])
+
+        for item_id, idx in columns_to_delete:
+            lam_var = self.lambdas.get((item_id, idx))
+            if lam_var is None:
+                continue
+
+            # Remove lambda variable from model
+            self.model.remove(lam_var)
+
+            # Remove from our data structures
+            self.lambdas.pop((item_id, idx), None)
+            col = self.columns[item_id].pop(idx)
+
+            # Reindex remaining lambdas for this item (shift indices down)
+            num_cols_after = len(self.columns[item_id])
+            for i in range(num_cols_after - 1, idx - 1, -1):
+                old_key = (item_id, i + 1)
+                if old_key in self.lambdas:
+                    new_key = (item_id, i)
+                    lam = self.lambdas.pop(old_key)
+                    self.lambdas[new_key] = lam
+
+            deleted_count += 1
+
+        # Rebuild expressions and constraints from scratch after deletion
+        if deleted_count > 0:
+            # Rebuild expressions from scratch
+            for item_id in self.items:
+                self.convex_expr[item_id] = gp.LinExpr(0.0)
+                for idx in range(len(self.columns[item_id])):
+                    if (item_id, idx) in self.lambdas:
+                        self.convex_expr[item_id] += self.lambdas[(item_id, idx)]
+
+            for t in range(self.T):
+                self.cap_expr[t] = gp.LinExpr(0.0)
+                for item_id in self.items:
+                    for idx in range(len(self.columns[item_id])):
+                        if (item_id, idx) in self.lambdas:
+                            col = self.columns[item_id][idx]
+                            if col.capacity_usage_by_period[t] != 0.0:
+                                self.cap_expr[t] += (
+                                    col.capacity_usage_by_period[t]
+                                    * self.lambdas[(item_id, idx)]
+                                )
+
+            for item_id, t in self.y_link_expr.keys():
+                self.y_link_expr[(item_id, t)] = gp.LinExpr(0.0)
+                for idx in range(len(self.columns[item_id])):
+                    if (item_id, idx) in self.lambdas:
+                        col = self.columns[item_id][idx]
+                        if t < len(col.setup_by_period):
+                            y_val = col.setup_by_period[t]
+                            if y_val != 0.0:
+                                self.y_link_expr[(item_id, t)] += (
+                                    y_val * self.lambdas[(item_id, idx)]
+                                )
+
+            for item_id, t, u in self.z_link_expr.keys():
+                self.z_link_expr[(item_id, t, u)] = gp.LinExpr(0.0)
+                for idx in range(len(self.columns[item_id])):
+                    if (item_id, idx) in self.lambdas:
+                        col = self.columns[item_id][idx]
+                        z_val = col.arc_usage.get((t, u), 0.0)
+                        if z_val != 0.0:
+                            self.z_link_expr[(item_id, t, u)] += (
+                                z_val * self.lambdas[(item_id, idx)]
+                            )
+
+            # Rebuild constraints
+            self._rebuild()
+
+        return deleted_count
+
 
 def solve_node_with_column_generation(
     items: Dict[int, dict],
@@ -1116,6 +1228,30 @@ def solve_node_with_column_generation(
                         log_file.write("INFEASIBLE\n")
                 return math.inf, rmp, False, {}, {}, {}
 
+            # Delete columns with lambda=0 to save memory (if more than 2 columns per item)
+            # This ensures if a column is needed, it will be regenerated
+            # Only do this every few iterations to avoid excessive deletion/re-solving
+            # and only when there are many columns to avoid corrupting the model
+            if (
+                iteration > 10  # Wait until we have some columns
+                and iteration % 10 == 0  # Only delete every 10 iterations
+                and rmp.get_column_count()
+                > len(items) * 5  # More conservative threshold
+            ):  # More than just dummy columns
+                deleted = rmp.delete_zero_lambda_columns(eps=eps)
+                if deleted > 0:
+                    # Re-solve after deletion to get updated duals
+                    new_lb, new_mu, new_pi, new_sigma, new_tau = rmp.solve()
+                    # Only update if solve was successful and all items are present
+                    if math.isfinite(new_lb) and len(new_mu) == len(items):
+                        lb = new_lb
+                        mu = new_mu
+                        pi = new_pi
+                        sigma = new_sigma
+                        tau = new_tau
+                    # If solve failed, keep using old duals (they're still valid)
+                    # Suppress verbose output - deletion happens silently
+
             # reinitilize tracking variables
             any_added = False
             cols_this_iter = 0
@@ -1138,6 +1274,18 @@ def solve_node_with_column_generation(
                 # - Enforces Υ^0 and Θ^0 (forbidden) as hard constraints
                 # - Enforces Υ^1 and Θ^1 (forced) as hard constraints
                 # - Uses σ and τ duals from forbidden branch constraints (= 0) to guide pricing
+                # Safety check: ensure mu has this item_id
+                if item_id not in mu:
+                    if verbose:
+                        print(
+                            f"WARNING: item_id {item_id} not in mu after deletion, skipping pricing"
+                        )
+                        if log_file:
+                            log_file.write(
+                                f"WARNING: item_id {item_id} not in mu after deletion, skipping pricing\n"
+                            )
+                    continue
+
                 rc, col = solve_pricing_subproblem(
                     item_id=item_id,
                     item_data=item_data,
@@ -1599,6 +1747,10 @@ def solve_instance(
     queue = deque([(root, z_vals, y_vals, x_vals, rmp)])
     stats.nodes_created = 1
 
+    # Track which nodes have been fully branched (2 children created)
+    # Once a node has 2 children, we can remove it from memory
+    nodes_with_children: Set[int] = set()
+
     # Check if root is already a valid integer solution
     if is_valid_integer_solution(z_vals, y_vals, rmp, items, eps):
         best_ub = root_lb
@@ -1682,25 +1834,41 @@ def solve_instance(
     opt_x = x_vals
 
     while queue and stats.nodes_explored < max_nodes:
-        if time.time() - start_time > max_time:
-            msg = "\n⏱ Time limit reached"
+        # Check time limit
+        elapsed_time = time.time() - start_time
+        if elapsed_time > max_time:
+            msg = f"\n⏱ Time limit reached ({max_time}s). Best incumbent: {best_ub if best_ub is not None else 'N/A'}"
             print(msg)
             if log_file:
                 log_file.write(msg + "\n")
             break
 
+        # Remove nodes that have been fully branched (2 children) from queue
+        # This saves memory by not keeping parent nodes after branching
+        new_queue = deque()
+        for n, pz, py, px, prmp in queue:
+            if n.node_id not in nodes_with_children:
+                new_queue.append((n, pz, py, px, prmp))
+        queue = new_queue
+
+        if not queue:
+            break
+
         node, parent_z, parent_y, parent_x, parent_rmp = queue.pop()
 
         if node.node_id != 0:
-            if stats.nodes_explored % print_frequency == 0:
+            # Print progress with gap tracking
+            if stats.nodes_explored % print_frequency == 0 or stats.nodes_explored == 1:
                 gap_str = "N/A"
+                gap_abs = None
                 if best_ub is not None:
-                    gap = best_ub - best_lb
-                    gap_pct = 100 * gap / max(abs(best_ub), 1e-10)
-                    gap_str = f"{gap_pct:.2f}%"
+                    gap_abs = best_ub - best_lb
+                    gap_pct = 100 * gap_abs / max(abs(best_ub), 1e-10)
+                    gap_str = f"{gap_abs:.2f} ({gap_pct:.2f}%)"
                 msg = (
-                    f"[Progress: N={stats.nodes_explored:4d}, Queue={len(queue):4d}, "
-                    f"LB={best_lb:.2f}, UB={best_ub if best_ub is not None else 'N/A'}, Gap={gap_str}]"
+                    f"[N={stats.nodes_explored:4d}, Q={len(queue):4d}, "
+                    f"LB={best_lb:.2f}, UB={best_ub if best_ub is not None else 'N/A':>8}, "
+                    f"Gap={gap_str:>12}, Time={elapsed_time:6.1f}s]"
                 )
                 print(msg)
                 if log_file:
@@ -1817,11 +1985,13 @@ def solve_instance(
             left.lp_bound = node.lp_bound
 
             sig_left = node_signature(left)
+            children_added = 0
             if sig_left not in seen_signatures:
                 seen_signatures.add(sig_left)
                 node_counter += 1
                 stats.nodes_created += 1
                 queue.append((left, z_vals, y_vals, x_vals, parent_rmp))
+                children_added += 1
 
             right = BranchNode(
                 node_id=node_counter,
@@ -1847,6 +2017,11 @@ def solve_instance(
                 node_counter += 1
                 stats.nodes_created += 1
                 queue.append((right, z_vals, y_vals, x_vals, parent_rmp))
+                children_added += 1
+
+            # Mark this node as having children (fully branched)
+            if children_added == 2:
+                nodes_with_children.add(node.node_id)
 
             print(f"  Branch Y[{item_id},{t_br}]={y_val:.3f}")
             continue
@@ -1875,11 +2050,13 @@ def solve_instance(
             left.lp_bound = node.lp_bound
 
             sig_left = node_signature(left)
+            children_added = 0
             if sig_left not in seen_signatures:
                 seen_signatures.add(sig_left)
                 node_counter += 1
                 stats.nodes_created += 1
                 queue.append((left, z_vals, y_vals, x_vals, parent_rmp))
+                children_added += 1
 
             right = BranchNode(
                 node_id=node_counter,
@@ -1905,15 +2082,18 @@ def solve_instance(
                 node_counter += 1
                 stats.nodes_created += 1
                 queue.append((right, z_vals, y_vals, x_vals, parent_rmp))
+                children_added += 1
+
+            # Mark this node as having children (fully branched)
+            if children_added == 2:
+                nodes_with_children.add(node.node_id)
 
             print(f"  Branch Z[{item_id},{t_br},{u_br}]={z_val:.3f}")
             continue
 
         print("  No fractional variable - solution is integral")
 
-    if best_ub is not None:
-        best_lb = best_ub
-
+    # Finalize best bound
     if best_ub is not None:
         best_lb = best_ub
 
