@@ -1247,7 +1247,7 @@ def solve_instance(
     mip_gap: float = 0.0,
     out_dir: str | Path = "bnp_results",
     use_mip_pricing: bool = True,  # Default to MIP to match solver_bnp.py
-) -> Tuple[Dict, List[str], List[Dict]]:
+) -> Tuple[Dict, List[str]]:
     """Solve the perishable lot-sizing problem using Branch-and-Price with Depth-First Search.
 
     Args:
@@ -1364,7 +1364,7 @@ def solve_instance(
             "n_items": len(items),
             "T": T,
         }
-        return summary, [], []
+        return summary, []
 
     if not math.isfinite(root_lb):
         print("\n✗ Root infeasible!")
@@ -1461,15 +1461,7 @@ def solve_instance(
             json.dumps(summary, indent=2), encoding="utf-8"
         )
 
-        # Extract active columns from root RMP
-        best_active_cols = []
-        if rmp is not None:
-            try:
-                best_active_cols = extract_active_columns(rmp, items, eps=eps)
-            except Exception:
-                best_active_cols = []
-
-        return summary, orders_txt, best_active_cols
+        return summary, orders_txt
 
     # Check if root is already a valid integer solution
     if is_valid_integer_solution(z_vals, y_vals, rmp, items, eps):
@@ -1502,15 +1494,7 @@ def solve_instance(
             json.dumps(summary, indent=2), encoding="utf-8"
         )
 
-        # Extract active columns from root RMP
-        best_active_cols = []
-        if rmp is not None:
-            try:
-                best_active_cols = extract_active_columns(rmp, items, eps=eps)
-            except Exception:
-                best_active_cols = []
-
-        return summary, orders_txt, best_active_cols
+        return summary, orders_txt
 
     stats.nodes_explored = 1
     msg = f"\n{'=' * 70}\nBEST-FIRST SEARCH (Best Lower Bound)\n{'=' * 70}\n"
@@ -1928,7 +1912,6 @@ def solve_instance(
     # If we timed out and never found an incumbent, report no solution/Gap
     if timed_out and best_ub is None:
         orders_txt = []
-        best_active_cols = []
         summary = {
             "status": status,
             "objective": None,
@@ -1954,7 +1937,7 @@ def solve_instance(
             json.dumps(summary, indent=2), encoding="utf-8"
         )
 
-        return summary, orders_txt, best_active_cols
+        return summary, orders_txt
 
     orders_txt = generate_orders_txt(items, opt_x, eps)
 
@@ -1975,14 +1958,6 @@ def solve_instance(
         "total_cg_iterations": stats.total_cg_iterations,
     }
 
-    # Extract active columns from optimal RMP
-    best_active_cols = []
-    if opt_rmp is not None:
-        try:
-            best_active_cols = extract_active_columns(opt_rmp, items, eps=eps)
-        except Exception:
-            best_active_cols = []
-
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "orders.txt").write_text("\n".join(orders_txt), encoding="utf-8")
@@ -1990,7 +1965,7 @@ def solve_instance(
         json.dumps(summary, indent=2), encoding="utf-8"
     )
 
-    return summary, orders_txt, best_active_cols
+    return summary, orders_txt
 
 
 def generate_orders_txt(
@@ -2087,7 +2062,7 @@ if __name__ == "__main__":
     instance_path.write_text(json.dumps(instance, indent=2))
     # ------------------------------------------------------------------
 
-    summary, orders, best_active_cols = solve_instance(
+    summary, orders = solve_instance(
         instance_path=str(instance_path),
         time_limit=600,
         out_dir=out_dir,
@@ -2111,34 +2086,6 @@ if __name__ == "__main__":
     print(f"  Nodes created:   {summary.get('nodes_created', 0)}")
     print(f"  CG iterations:   {summary.get('total_cg_iterations', 0)}")
     print(f"  Columns added:   {summary.get('total_columns', 0)}")
-
-    # Active columns info
-    if best_active_cols:
-        print(f"  Active columns:  {len(best_active_cols)}")
-        print("\n" + "-" * 70)
-        print("ACTIVE COLUMNS IN OPTIMAL BASIS")
-        print("-" * 70)
-        print(
-            f"{'Column':<15} {'Item':<6} {'λ value':<12} {'Cost':<14} {'Setups':<20} {'Arcs'}"
-        )
-        print("-" * 70)
-        sorted_cols = sorted(
-            best_active_cols, key=lambda x: (x["item_id"], x["col_idx"])
-        )
-        for col_info in sorted_cols:
-            item_id = col_info["item_id"]
-            idx = col_info["col_idx"]
-            lam_val = col_info["lambda_val"]
-            cost = col_info["cost"]
-            setups = col_info["setups"]
-            arcs = col_info["arcs"]
-            setup_str = ",".join(map(str, setups)) if setups else "none"
-            arc_str = ",".join(f"({t},{u})" for t, u in arcs) if arcs else "none"
-            print(
-                f"λ[{item_id},{idx}]     {item_id:<6} {lam_val:<12.6f} {cost:<14.2f} {setup_str:<20} {arc_str}"
-            )
-        print("-" * 70)
-        print(f"Total active columns: {len(best_active_cols)}\n")
 
     print("\n" + "-" * 70)
     print("PRODUCTION PLAN")
