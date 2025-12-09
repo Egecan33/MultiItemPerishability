@@ -1313,9 +1313,10 @@ with items_tab:
         else:
             with st.spinner("Solving..."):
                 _solve_fn, _solver_tag = get_solver_backend()
-                summary, orders_txt = _solve_fn(
+                result = _solve_fn(
                     "last_instance.json", time_limit=time_limit, mip_gap=mip_gap
                 )
+                summary, orders_txt = result[0], result[1]  # Handle 2 or 3 return values
             st.subheader("Summary")
             st.json(summary)
             st.subheader("Orders")
@@ -2271,9 +2272,10 @@ with batch_tab:
 
                 # solve
                 _solve_fn, _solver_tag = get_solver_backend()
-                summary, orders_txt = _solve_fn(
+                result = _solve_fn(
                     "last_instance.json", time_limit=time_limit, mip_gap=mip_gap
                 )
+                summary, orders_txt = result[0], result[1]  # Handle 2 or 3 return values
 
                 # log to Supabase (if configured)
                 sb = supabase_client()
@@ -3160,9 +3162,10 @@ with saved_run_tab:
                     continue
 
                 # run solver
-                summary, orders_txt = solve_fn(
+                result = solve_fn(
                     str(tmp_path), time_limit=time_limit, mip_gap=mip_gap
                 )
+                summary, orders_txt = result[0], result[1]  # Handle 2 or 3 return values
 
                 # log run + orders
                 try:

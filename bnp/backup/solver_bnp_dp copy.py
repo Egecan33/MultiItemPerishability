@@ -271,7 +271,7 @@ def column_violates_lefo(
     return False
 
 
-def solve_pricing_subproblem(
+def solve_pricing_subproblem_mip(
     item_id: int,
     item_data: dict,
     T: int,
@@ -288,18 +288,237 @@ def solve_pricing_subproblem(
     eps: float = 1e-6,
 ) -> Tuple[float, Optional[ProductionPlanColumn]]:
     """
-    Solve pricing subproblem using DP.
+    Solve pricing subproblem using MIP (Gurobi) - matches solver_bnp.py exactly.
 
-    DP implements Wagner-Whitin DP with three decision types:
+    This can find non-ZIO solutions, unlike DP which enforces ZIO property.
+    """
+    sigma = sigma or {}
+    tau = tau or {}
+
+    demand = item_data["demand"]
+    c_var = item_data["c_var"]
+    h = item_data["h"]
+    setup = item_data["setup"]
+
+    def c_at(t: int) -> float:
+        return float(c_var[t]) if isinstance(c_var, list) else float(c_var)
+
+    def h_at(t: int) -> float:
+        return float(h[t]) if isinstance(h, list) else float(h)
+
+    def s_at(t: int) -> float:
+        return float(setup[t]) if isinstance(setup, list) else float(setup)
+
+    h_prefix = [0.0] * (T + 1)
+    for k in range(T):
+        h_prefix[k + 1] = h_prefix[k] + h_at(k)
+
+    def h_sum(t: int, u: int) -> float:
+        return h_prefix[u] - h_prefix[t]
+
+    Triples: List[Tuple[int, int]] = []
+    for t in range(T):
+        for u in Gamma.get(t, []):
+            Triples.append((t, u))
+
+    mu_t: Dict[int, float] = {}
+    for t in range(T):
+        mu_t[t] = sum(float(demand[u]) for u in Gamma.get(t, []))
+
+    model = gp.Model(f"pricing_item_{item_id}")
+    model.Params.OutputFlag = 0
+    model.Params.LogToConsole = 0
+
+    X: Dict[Tuple[int, int], gp.Var] = {}
+    Z: Dict[Tuple[int, int], gp.Var] = {}
+    for t, u in Triples:
+        X[t, u] = model.addVar(lb=0.0, vtype=GRB.CONTINUOUS, name=f"X_{t}_{u}")
+        Z[t, u] = model.addVar(lb=0.0, ub=1.0, vtype=GRB.BINARY, name=f"Z_{t}_{u}")
+
+    Y: Dict[int, gp.Var] = {}
+    for t in range(T):
+        Y[t] = model.addVar(lb=0.0, ub=1.0, vtype=GRB.BINARY, name=f"Y_{t}")
+
+    model.update()
+
+    # (C3) Demand satisfaction - include ALL periods (even zero-demand)
+    for u in range(T):
+        expr = gp.LinExpr()
+        for t in range(u + 1):
+            if (t, u) in X:
+                expr += X[t, u]
+        model.addConstr(expr == float(demand[u]), name=f"demand_{u}")
+
+    for t in range(T):
+        if not Gamma.get(t):
+            model.addConstr(Y[t] == 0.0, name=f"setup_zero_{t}")
+            continue
+        expr = gp.LinExpr()
+        for u in Gamma[t]:
+            if (t, u) in X:
+                expr += X[t, u]
+        model.addConstr(expr <= mu_t[t] * Y[t], name=f"setupLink_{t}")
+
+    for t, u in Triples:
+        C_u = float(demand[u])
+        model.addConstr(X[t, u] <= C_u * Z[t, u], name=f"arc_on_{t}_{u}")
+
+    prods = [t for t in range(T) if Gamma.get(t)]
+    prods.sort(key=lambda t: Expiry.get(t, t))
+
+    for idx1 in range(len(prods)):
+        t1 = prods[idx1]
+        v1 = Expiry.get(t1, t1)
+        for idx2 in range(idx1 + 1, len(prods)):
+            t2 = prods[idx2]
+            v2 = Expiry.get(t2, t2)
+            if v1 >= v2:
+                continue
+            for up in Gamma.get(t2, []):
+                for u in [uu for uu in Gamma.get(t1, []) if t2 <= uu <= up - 1]:
+                    if (t1, u) in Z and (t2, up) in Z:
+                        model.addConstr(
+                            Z[t1, u] + Z[t2, up] <= 1,
+                            name=f"nocross_{t1}_{t2}_{u}_{up}",
+                        )
+
+    # Branching constraints (enforced in pricing, not RMP)
+    for t_forb, u_forb in theta_0:
+        if (t_forb, u_forb) in Z:
+            model.addConstr(
+                Z[t_forb, u_forb] == 0.0, name=f"branch_Z0_{t_forb}_{u_forb}"
+            )
+
+    for t_force, u_force in theta_1:
+        if (t_force, u_force) in Z:
+            model.addConstr(
+                Z[t_force, u_force] == 1.0, name=f"branch_Z1_{t_force}_{u_force}"
+            )
+        else:
+            model.addConstr(0.0 == 1.0, name=f"branch_impossible_{t_force}_{u_force}")
+
+    for t_forb in upsilon_0:
+        if t_forb in Y:
+            model.addConstr(Y[t_forb] == 0.0, name=f"branch_Y0_{t_forb}")
+
+    for t_force in upsilon_1:
+        if t_force in Y:
+            model.addConstr(Y[t_force] == 1.0, name=f"branch_Y1_{t_force}")
+
+    # Objective: reduced cost with all duals
+    obj = gp.LinExpr()
+
+    # Production and holding costs minus capacity duals
+    for t, u in Triples:
+        unit_cost = c_at(t) + h_sum(t, u)
+        obj += unit_cost * X[t, u]
+        obj -= capacity_duals[t] * X[t, u]
+
+    # Setup costs minus sigma duals
+    for t in range(T):
+        obj += s_at(t) * Y[t]
+        sigma_val = sigma.get((item_id, t), 0.0)
+        if sigma_val != 0.0:
+            obj -= sigma_val * Y[t]
+
+    # Subtract tau duals for arcs
+    for t, u in Triples:
+        tau_val = tau.get((item_id, t, u), 0.0)
+        if tau_val != 0.0:
+            obj -= tau_val * Z[t, u]
+
+    # Subtract convexity dual
+    obj -= convexity_dual
+
+    model.setObjective(obj, GRB.MINIMIZE)
+    model.optimize()
+
+    if model.Status != GRB.OPTIMAL:
+        return math.inf, None
+
+    reduced_cost = model.ObjVal
+    if reduced_cost >= -eps:
+        return reduced_cost, None
+
+    cap_usage = [0.0] * T
+    setup_usage = [0.0] * T
+    arc_usage: Dict[Tuple[int, int], float] = {}
+    total_cost = 0.0
+
+    for t, u in Triples:
+        x_val = X[t, u].X
+        if x_val > eps:
+            cap_usage[t] += x_val
+            total_cost += (c_at(t) + h_sum(t, u)) * x_val
+        arc_usage[(t, u)] = Z[t, u].X
+
+    for t in range(T):
+        y_val = Y[t].X
+        if y_val > 0.5:
+            setup_usage[t] = y_val
+            total_cost += s_at(t) * y_val
+
+    column = ProductionPlanColumn(
+        item_id=item_id,
+        total_plan_cost=total_cost,
+        capacity_usage_by_period=cap_usage,
+        setup_by_period=setup_usage,
+        arc_usage=arc_usage,
+    )
+
+    return reduced_cost, column
+
+
+def solve_pricing_subproblem(
+    item_id: int,
+    item_data: dict,
+    T: int,
+    Gamma: Dict[int, List[int]],
+    Expiry: Dict[int, int],
+    capacity_duals: List[float],
+    convexity_dual: float,
+    theta_0: Set[Tuple[int, int]],
+    theta_1: Set[Tuple[int, int]],
+    upsilon_0: Set[int],
+    upsilon_1: Set[int],
+    sigma: Optional[Dict[Tuple[int, int], float]] = None,
+    tau: Optional[Dict[Tuple[int, int, int], float]] = None,
+    eps: float = 1e-6,
+    use_mip: bool = False,
+) -> Tuple[float, Optional[ProductionPlanColumn]]:
+    """
+    Solve pricing subproblem using either DP or MIP.
+
+    Args:
+        use_mip: If True, use MIP pricing (matches solver_bnp.py).
+                 If False, use DP pricing (enforces ZIO property).
+
+    DP implements Wagner-Whitin DP with two decision types:
     1. SKIP: no action at period t (only if no demand)
-    2. SETUP-ONLY: setup at t but no production
-    3. PRODUCTION BLOCK: produce at s, serve demands from s to t
+    2. PRODUCTION BLOCK: produce at s, serve demands from s to t
 
     Branching constraints:
-    - theta_0, upsilon_0: Forbidden (enforced by skipping blocks/actions)
-    - theta_1, upsilon_1: Forced (enforced by requiring blocks/actions)
-    - sigma, tau: Duals guide pricing - can make actions infinite cost or reduce costs
+    - theta_0, upsilon_0: Forbidden (enforced by skipping blocks)
+    - theta_1, upsilon_1: Forced (enforced by requiring blocks)
+    - sigma, tau: Duals from forbidden branch constraints (= 0) guide pricing
     """
+    if use_mip:
+        return solve_pricing_subproblem_mip(
+            item_id=item_id,
+            item_data=item_data,
+            T=T,
+            Gamma=Gamma,
+            Expiry=Expiry,
+            capacity_duals=capacity_duals,
+            convexity_dual=convexity_dual,
+            theta_0=theta_0,
+            theta_1=theta_1,
+            upsilon_0=upsilon_0,
+            upsilon_1=upsilon_1,
+            sigma=sigma,
+            tau=tau,
+            eps=eps,
+        )
     sigma = sigma or {}
     tau = tau or {}
 
@@ -358,16 +577,7 @@ def solve_pricing_subproblem(
     c_dual = [c_arr[t] - capacity_duals[t] for t in range(T)]
 
     # Precompute dual-updated setup costs: S' = s - σ
-    # Make forbidden setups infinite cost (they cannot be used)
-    s_dual = []
-    for t in range(T):
-        if t in upsilon_0:
-            # Forbidden setup - make it infinite cost
-            s_dual.append(INF)
-        else:
-            # Standard: setup cost minus sigma dual
-            # If sigma > 0 (forbidden setup constraint is tight), we get credit
-            s_dual.append(s_arr[t] - sigma_arr[t])
+    s_dual = [s_arr[t] - sigma_arr[t] for t in range(T)]
 
     for s in range(T):
         # Check if setup at s is forbidden
@@ -384,7 +594,8 @@ def solve_pricing_subproblem(
         c_dual_s = c_dual[s]
 
         for t in valid_ends:
-            # Check for forbidden arcs first
+            # Fast check: if any arc (s, u) for u in [s, t] is forbidden, skip
+            # Optimize: check only arcs that might be in theta_0 (early exit)
             has_forbidden = False
             for u in range(s, t + 1):
                 if (s, u) in theta_0_set:
@@ -397,6 +608,7 @@ def solve_pricing_subproblem(
             Q_st = D[t + 1] - D[s]  # D is 1-indexed, demand is 0-indexed
 
             # Compute holding cost H^{block}_{s,t} = sum_{u=s}^{t} H_i(s,u) * d_{iu}
+            # Optimize: compute H_i(s, u) = h_prefix[u] - h_prefix[s] directly
             H_block = 0.0
             h_prefix_s = h_prefix[s]
             for u in range(s, t + 1):
@@ -405,18 +617,13 @@ def solve_pricing_subproblem(
                     H_block += (h_prefix[u + 1] - h_prefix_s) * d_iu
 
             # Compute arc dual aggregation T_{s,t} = sum_{u=s}^{t} τ_{isu}
-            # Standard column generation: rc = cost - sum(dual * usage)
-            # So we subtract tau: rc = ... - sum(tau)
-            # This is correct regardless of tau sign:
-            # - If tau > 0: subtracting reduces cost (good)
-            # - If tau < 0: subtracting increases cost (bad, discourages arc)
+            # Use precomputed tau_cache
             T_st = 0.0
             for u in range(s, t + 1):
-                tau_val = tau_cache[(s, u)]
-                T_st += tau_val
+                T_st += tau_cache[(s, u)]
 
             # Reduced cost of block (s,t) for DP
-            # Standard formula: rc = (setup - sigma) + (var_cost - pi) * Q + holding - sum(tau)
+            # Use precomputed dual-updated costs
             rc = setup_cost_dp + c_dual_s * Q_st + H_block - T_st
 
             block_rc[(s, t)] = rc
@@ -461,20 +668,7 @@ def solve_pricing_subproblem(
                 best_cost = skip_cost
                 best_pred = ("SKIP", None)
 
-        # ACTION 2: SETUP-ONLY at period t_period (only if no demand and setup not forbidden)
-        # Skip if setup is forced (must produce, not just setup)
-        if (
-            d_arr[t_period] <= eps
-            and t_period not in upsilon_0
-            and t_period not in upsilon_1
-        ):
-            setup_cost_dp = s_dual[t_period]
-            setup_only_cost = F[t_idx - 1] + setup_cost_dp
-            if setup_only_cost < best_cost:
-                best_cost = setup_only_cost
-                best_pred = ("SETUP_ONLY", t_period)
-
-        # ACTION 3: PRODUCTION BLOCK ending at period t_period
+        # ACTION 2: PRODUCTION BLOCK ending at period t_period
         # Consider all blocks (s, t_period) where s <= t_period
         # F[s] represents cost to satisfy demands from 0 to s-1
         # Block (s, t_period) satisfies demands from s to t_period
@@ -524,10 +718,6 @@ def solve_pricing_subproblem(
         action, start = pred[t_idx]
 
         if action == "SKIP":
-            t_idx -= 1
-        elif action == "SETUP_ONLY":
-            setup_usage[start] = 1.0
-            total_cost += s_arr[start]
             t_idx -= 1
         elif action == "BLOCK":
             s = start  # s is 0-indexed period where block starts
@@ -598,49 +788,7 @@ def solve_pricing_subproblem(
     # So we allow columns that don't have forced arcs - the RMP will ensure
     # forced constraints are satisfied through column selection.
 
-    # Verify reduced cost by recomputing from column's actual cost
-    # rc = total_cost - (π * capacity + σ * setup + τ * arc + μ)
-    # EXPERIMENT: Try different dual contribution calculations
-    dual_contribution = convexity_dual  # μ (convexity dual)
-
-    # Add capacity dual contributions: π * capacity_usage
-    for t in range(T):
-        if cap_usage[t] > eps:
-            dual_contribution += capacity_duals[t] * cap_usage[t]
-
-    # Add setup dual contributions: σ * setup_usage
-    for t in range(T):
-        if setup_usage[t] > eps:
-            sigma_val = sigma.get((item_id, t), 0.0) if sigma else 0.0
-            dual_contribution += sigma_val * setup_usage[t]
-
-    # Add arc dual contributions: τ * arc_usage
-    # EXPERIMENT: User says "subtract tau to reduce cost"
-    # In standard column generation: rc = cost - sum(dual * usage)
-    # So we subtract tau contributions: dual_contribution += tau * arc
-    # But in DP we did: rc = ... - T_st where T_st = sum(tau)
-    # So if tau is positive, subtracting it reduces cost (correct)
-    for (t, u), arc_val in arc_usage.items():
-        if arc_val > eps:
-            tau_val = tau.get((item_id, t, u), 0.0) if tau else 0.0
-            # Standard: subtract tau (tau positive reduces cost)
-            dual_contribution += tau_val * arc_val
-
-    # Recompute reduced cost from actual column cost
-    verified_rc = total_cost - dual_contribution
-
-    # Check if DP reduced cost matches verified reduced cost (within tolerance)
-    rc_diff = abs(dp_reduced_cost - verified_rc)
-    if rc_diff > 1e-4:  # Allow small numerical differences
-        # Use verified reduced cost to ensure correctness
-        adjusted_reduced_cost = verified_rc
-        # Debug: print mismatch if significant
-        if rc_diff > 1e-2:
-            print(
-                f"WARNING: RC mismatch! DP={dp_reduced_cost:.6f}, Verified={verified_rc:.6f}, diff={rc_diff:.6f}"
-            )
-    else:
-        adjusted_reduced_cost = dp_reduced_cost
+    adjusted_reduced_cost = dp_reduced_cost
 
     if adjusted_reduced_cost >= -eps:
         return adjusted_reduced_cost, None
@@ -979,6 +1127,7 @@ def solve_node_with_column_generation(
     log_file=None,
     stats: Optional[SearchStatistics] = None,
     convergence_dir: Optional[Path] = None,
+    use_mip_pricing: bool = True,  # Default to MIP to match solver_bnp.py
 ) -> Tuple[
     float,
     Optional[RestrictedMasterProblem],
@@ -1151,6 +1300,7 @@ def solve_node_with_column_generation(
                     sigma=sigma,
                     tau=tau,
                     eps=eps,
+                    use_mip=use_mip_pricing,
                 )
 
                 if math.isfinite(rc):
@@ -1440,8 +1590,14 @@ def solve_instance(
     mip_gap: float = 0.0,
     out_dir: str | Path = "bnp_results",
     log_file=None,
+    use_mip_pricing: bool = True,  # Default to MIP to match solver_bnp.py
 ) -> Tuple[Dict, List[str], List[Dict]]:
-    """Solve the perishable lot-sizing problem using Branch-and-Price with DP pricing."""
+    """Solve the perishable lot-sizing problem using Branch-and-Price with Depth-First Search.
+
+    Args:
+        use_mip_pricing: If True, use MIP pricing (matches solver_bnp.py, can find non-ZIO solutions).
+                         If False, use DP pricing (enforces ZIO property).
+    """
     start_time = time.time()
 
     data = json.loads(Path(instance_path).read_text())
@@ -1497,7 +1653,7 @@ def solve_instance(
                 continue
             u_max = min(
                 T - 1, v_it
-            )  # Allow consumption up to and including period v_it
+            )  # Match MIP solver: allow consumption up to and including period v_it
             Gamma[t] = list(range(t, u_max + 1))
         Gamma_by_item[item_id] = Gamma
         Expiry_by_item[item_id] = Expiry
@@ -1532,6 +1688,7 @@ def solve_instance(
         log_file=log_file,
         stats=stats,
         convergence_dir=convergence_dir,
+        use_mip_pricing=use_mip_pricing,
     )
 
     if not math.isfinite(root_lb):
@@ -1545,7 +1702,11 @@ def solve_instance(
             "best_bound": None,
             "gap": None,
             "runtime_sec": time.time() - start_time,
-            "solver_version": "branch_and_price_dp_dfs",
+            "solver_version": (
+                "branch_and_price_mip_dfs"
+                if use_mip_pricing
+                else "branch_and_price_dp_dfs"
+            ),
             "n_items": len(items),
             "T": T,
         }
@@ -1616,7 +1777,11 @@ def solve_instance(
             "best_bound": float(best_lb),
             "gap": 0.0,
             "runtime_sec": time.time() - start_time,
-            "solver_version": "branch_and_price_dp_dfs",
+            "solver_version": (
+                "branch_and_price_mip_dfs"
+                if use_mip_pricing
+                else "branch_and_price_dp_dfs"
+            ),
             "n_items": len(items),
             "T": T,
         }
@@ -1658,7 +1823,11 @@ def solve_instance(
             "best_bound": float(best_lb),
             "gap": 0.0,
             "runtime_sec": time.time() - start_time,
-            "solver_version": "branch_and_price_dp_dfs",
+            "solver_version": (
+                "branch_and_price_mip_dfs"
+                if use_mip_pricing
+                else "branch_and_price_dp_dfs"
+            ),
             "n_items": len(items),
             "T": T,
         }
@@ -1761,6 +1930,7 @@ def solve_instance(
                     log_file=log_file,
                     stats=stats,
                     convergence_dir=convergence_dir,
+                    use_mip_pricing=use_mip_pricing,
                 )
             )
 
@@ -2095,7 +2265,9 @@ def solve_instance(
         "best_bound": float(best_lb),
         "gap": ((best_ub - best_lb) / max(abs(best_ub), 1e-10) if best_ub else None),
         "runtime_sec": float(time.time() - start_time),
-        "solver_version": "branch_and_price_dp_dfs",
+        "solver_version": (
+            "branch_and_price_mip_dfs" if use_mip_pricing else "branch_and_price_dp_dfs"
+        ),
         "n_items": len(items),
         "T": T,
         "nodes_explored": stats.nodes_explored,
