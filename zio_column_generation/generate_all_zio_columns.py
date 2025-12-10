@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Generate all possible ZIO columns for an item with new block interpretation.
+"""Generate all possible ZIO columns for an item using 11-node shortest path model.
 
-New interpretation:
-- Block (s,t) means production at period s+1 covering periods s+1 to t
-- Arc (s,t) means production at period s+1 covering periods s+1 to t
+11-Node Shortest Path Interpretation:
+- Nodes: 0 (start), 1-10 (representing periods 0-9)
+- Arc (s, u): produce at period s (node s), consume at period u-1 (node u)
+- Block (s, t): produce at period s, consume at periods s through t-1
+- Lambdas are over FULL COLUMNS (complete ZIO plans), not arcs
+- Convex combination of full plans to satisfy all demands
 - Include all periods 0 to T-1 (including zero demands)
 - Allow Y=1 even when X=0 (setup-only periods)
 """
@@ -120,21 +123,6 @@ print(f"Demand: {demand}")
 print(f"Gamma: {Gamma}")
 print(f"Expiry: {Expiry}")
 print()
-
-# New interpretation: 11-node shortest path problem
-# - Nodes: 0, 1, 2, ..., 10 (11 nodes for 10 periods)
-# - Node 0 = start node
-# - Node i (1-10) = period i-1 (so node 1 = period 0, node 10 = period 9)
-# - Arc (s, u) where s and u are node indices:
-#   * Production at period s (node s = period s)
-#   * Consumption at period u-1 (node u = period u-1)
-#   * So arc (0,1) means produce at period 0, consume at period 0
-#   * Arc (5,10) means produce at period 5, consume at period 9
-#   * Arc (s, u) exists only if u <= 10 (u is a valid node)
-# - Block (s, t) where s and t are node indices:
-#   * Production at period s (node s)
-#   * Consumption at periods s through t-1 (nodes s+1 through t)
-#   * So block (0, 3) means produce at period 0, consume at periods 0, 1, 2
 
 
 def generate_all_zio_columns() -> List[Dict]:
@@ -270,11 +258,9 @@ def generate_all_zio_columns() -> List[Dict]:
         # Try all combinations: minimal + subsets of setup-only candidates
         setup_combinations = [minimal_setups]  # At least minimal
 
-        # Add combinations with setup-only periods (limit to avoid explosion)
-        max_setup_only = min(
-            3, len(setup_only_candidates)
-        )  # Limit to 3 setup-only periods
-        for r in range(1, max_setup_only + 1):
+        # Add ALL combinations with setup-only periods (NO LIMIT - true enumeration)
+        # This generates all possible ZIO columns
+        for r in range(1, len(setup_only_candidates) + 1):
             for setup_only_subset in itertools.combinations(setup_only_candidates, r):
                 setup_combinations.append(minimal_setups | set(setup_only_subset))
 
@@ -372,8 +358,8 @@ zio_columns = generate_all_zio_columns()
 elapsed = time.time() - start_time
 print(f"Generated {len(zio_columns)} unique ZIO columns in {elapsed:.2f} seconds\n")
 
-# Create output directory
-output_dir = Path("zio_column_generation")
+# Create output directory (same directory as script)
+output_dir = Path(__file__).parent
 output_dir.mkdir(exist_ok=True)
 
 # Write columns to file
@@ -421,7 +407,7 @@ import gurobipy as gp
 from gurobipy import GRB
 
 # Import RMP class from solver_bnp_dp
-sys.path.insert(0, str(Path(__file__).parent / "bnp"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "bnp"))
 from solver_bnp_dp import RestrictedMasterProblem, ProductionPlanColumn
 
 # Create single item instance
@@ -596,9 +582,12 @@ for t in range(T):
     setup_str = f"{setup_val:.4f}" if setup_val > eps else "0.0000"
     print(f"{t:<8} {setup_str:<12} {has_prod:<15}")
 
-print("\n--- ARC USAGE (lambda > 0.001) ---")
-print(f"{'Arc (s,u)':<15} {'Lambda':<12} {'Meaning':<50}")
-print("-" * 80)
+print("\n--- ARC USAGE (aggregated from column lambdas) ---")
+print(f"{'Arc (s,u)':<15} {'Aggregated Weight':<18} {'Meaning':<50}")
+print("-" * 85)
+print(
+    "Note: Arc weights are aggregated from column lambdas. Each column (full plan) contributes to arcs."
+)
 for (s, u), val in sorted(total_arcs.items()):
     if val > 0.001:
         # Arc (s, u) where s and u are node indices:
@@ -607,11 +596,14 @@ for (s, u), val in sorted(total_arcs.items()):
         prod_period = s
         cons_period = u - 1  # node u = period u-1
         meaning = f"Produce at period {prod_period} (node {s}), consume at period {cons_period} (node {u})"
-        print(f"({s},{u}):{'':<8} {val:<12.6f} {meaning:<50}")
+        print(f"({s},{u}):{'':<8} {val:<18.6f} {meaning:<50}")
 
-print("\n--- ACTIVE COLUMNS DETAIL ---")
+print("\n--- ACTIVE COLUMNS DETAIL (Lambdas over FULL PLANS) ---")
 print(f"Number of active columns: {len(active_columns)}")
 print(f"Total lambda sum: {sum(lam for _, _, lam, _ in active_columns):.6f}")
+print(
+    "Note: Each lambda represents the weight of a FULL ZIO production plan (column) in the convex combination."
+)
 print("\nDetailed breakdown:")
 for item_id, col_idx, lam_val, col in sorted(active_columns, key=lambda x: -x[2]):
     setups = [t for t, v in enumerate(col.setup_by_period) if v > 0.5]

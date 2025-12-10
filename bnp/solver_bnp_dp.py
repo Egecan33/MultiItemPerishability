@@ -26,6 +26,7 @@ import json
 import math
 import time
 import heapq
+from itertools import combinations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, IO
@@ -219,10 +220,10 @@ def inherit_columns_from_parent(
 
     inherited = {i: [] for i in items}
     for item_id in items:
-        theta_0 = child_node.theta_0_by_item.get(item_id, set())
-        theta_1 = child_node.theta_1_by_item.get(item_id, set())
-        upsilon_0 = child_node.upsilon_0_by_item.get(item_id, set())
-        upsilon_1 = child_node.upsilon_1_by_item.get(item_id, set())
+        theta_0 = child_node.theta_0_by_item.get(item_id, set[Tuple[int, int]]())
+        theta_1 = child_node.theta_1_by_item.get(item_id, set[Tuple[int, int]]())
+        upsilon_0 = child_node.upsilon_0_by_item.get(item_id, set[int]())
+        upsilon_1 = child_node.upsilon_1_by_item.get(item_id, set[int]())
 
         for col in parent_rmp.columns[item_id][1:]:  # Skip dummy column
             if not col.violates_branching_constraints(
@@ -256,16 +257,18 @@ def column_violates_lefo(
                 # we only care about v1 < v2 (earlier expiry first)
                 continue
 
-            # up = demand periods served from t2
-            for up in Gamma.get(t2, []):
-                if arc_usage.get((t2, up), 0.0) <= eps:
+            # up_node = end nodes for arcs from t2 (11-node model)
+            for up_node in Gamma.get(t2, []):
+                if arc_usage.get((t2, up_node), 0.0) <= eps:
                     continue  # this arc not actually used
+                up_period = up_node - 1  # Consumption period for end node up_node
 
-                # u = demand periods served from t1 in [t2, up-1]
-                for u in Gamma.get(t1, []):
-                    if u < t2 or u > up - 1:
+                # u_node = end nodes for arcs from t1 (11-node model)
+                for u_node in Gamma.get(t1, []):
+                    u_period = u_node - 1  # Consumption period for end node u_node
+                    if u_period < t2 or u_period > up_period - 1:
                         continue
-                    if arc_usage.get((t1, u), 0.0) > eps:
+                    if arc_usage.get((t1, u_node), 0.0) > eps:
                         # we have both Z[t1,u] = 1 and Z[t2,up] = 1 in this column
                         return True
     return False
@@ -286,9 +289,19 @@ def solve_pricing_subproblem(
     sigma: Optional[Dict[Tuple[int, int], float]] = None,
     tau: Optional[Dict[Tuple[int, int, int], float]] = None,
     eps: float = 1e-6,
+    arc_usage_counts: Optional[Dict[Tuple[int, int], int]] = None,
+    perturbation_eps: float = 1e-5,
 ) -> Tuple[float, Optional[ProductionPlanColumn]]:
     """
-    Solve pricing subproblem using DP.
+    Solve pricing subproblem using DP with 11-node shortest path interpretation.
+
+    11-Node Model:
+    - Nodes: 0 (start), 1-10 (representing periods 0-9)
+    - Arc (s, u): produce at period s (node s), consume at period u-1 (node u)
+      * So arc (0,1) means produce at period 0, consume at period 0
+      * Arc (5,10) means produce at period 5, consume at period 9
+    - Block (s, t): produce at period s (node s), consume at periods s through t-1 (nodes s+1 through t)
+      * So block (0, 3) means produce at period 0, consume at periods 0, 1, 2
 
     DP implements Wagner-Whitin DP with three decision types:
     1. SKIP: no action at period t (only if no demand)
@@ -299,9 +312,15 @@ def solve_pricing_subproblem(
     - theta_0, upsilon_0: Forbidden (enforced by skipping blocks/actions)
     - theta_1, upsilon_1: Forced (enforced by requiring blocks/actions)
     - sigma, tau: Duals guide pricing - can make actions infinite cost or reduce costs
+
+    Degeneracy handling:
+    - arc_usage_counts: tracks how many times each arc has been used
+    - perturbation_eps: small daul cost mainupulation of tao and sigma is added to steer.
     """
+
     sigma = sigma or {}
     tau = tau or {}
+    arc_usage_counts = arc_usage_counts or {}
 
     # Extract item parameters
     demand = item_data["demand"]
@@ -339,13 +358,16 @@ def solve_pricing_subproblem(
 
     INF = float("inf")
 
-    # Precompute forbidden arc sets for faster lookup
+    # Precompute forbidden arc sets for faster lookup (using 11-node interpretation)
+    # theta_0 contains arcs (s, u_node) where u_node = consumption_period + 1
     theta_0_set = theta_0  # Already a set, use directly
-    # Precompute tau values for all (s, u) pairs to avoid repeated dict lookups
+    # Precompute tau values for all (s, u_node) pairs using 11-node interpretation
+    # Arc (s, u_node): produce at period s, consume at period u_period where u_node = u_period + 1
     tau_cache: Dict[Tuple[int, int], float] = {}
     for s in range(T):
-        for u in range(s, T):
-            tau_cache[(s, u)] = tau.get((item_id, s, u), 0.0)
+        for u_period in range(s, T):  # u_period is consumption period (0-indexed)
+            u_node = u_period + 1  # Node index for 11-node model
+            tau_cache[(s, u_node)] = tau.get((item_id, s, u_node), 0.0)
 
     # Precompute sigma values for all periods
     sigma_arr = [sigma.get((item_id, t), 0.0) for t in range(T)]
@@ -374,52 +396,80 @@ def solve_pricing_subproblem(
         if s in upsilon_0:
             continue
 
-        # Get valid end periods for block starting at s
-        valid_ends = Gamma.get(s, [])
-        if not valid_ends:
+        # Get valid end nodes for arcs starting at s (11-node model)
+        # Gamma[s] now stores END NODES (u_node), not consumption periods
+        valid_end_nodes = Gamma.get(s, [])
+        if not valid_end_nodes:
             continue
 
         # Precompute setup cost for this s (used in all blocks starting at s)
         setup_cost_dp = s_dual[s]
         c_dual_s = c_dual[s]
 
-        for t in valid_ends:
-            # Check for forbidden arcs first
+        for u_node in valid_end_nodes:
+            # u_node is the end node (11-node model)
+            # Consumption period u_period = u_node - 1 (0-indexed)
+            u_period = u_node - 1
+
+            # Block (s, u_node): produce at period s, consume at period u_period
+            # For ZIO blocks, we need to check if we can serve all periods from s to u_period
+            # Check if we can form a block (s, u_node) that serves periods s to u_period
+            # This requires that for each period u in [s, u_period], there exists an arc (s, u_node') where u_node' = u+1
+            can_form_block = True
+            required_periods = list(range(s, u_period + 1))
+            for u_req in required_periods:
+                u_node_req = u_req + 1  # Required end node for period u_req
+                if u_node_req not in Gamma[s]:
+                    can_form_block = False
+                    break
+            if not can_form_block:
+                continue  # Cannot form block - missing intermediate periods
+
+            # Check for forbidden arcs using 11-node interpretation
             has_forbidden = False
-            for u in range(s, t + 1):
-                if (s, u) in theta_0_set:
+            for u_req in required_periods:
+                u_node_req = u_req + 1
+                if (s, u_node_req) in theta_0_set:
                     has_forbidden = True
                     break
             if has_forbidden:
                 continue
 
-            # Compute block quantity Q_{s,t} = D_t - D_{s-1}
-            Q_st = D[t + 1] - D[s]  # D is 1-indexed, demand is 0-indexed
+            # Compute block quantity Q_{s,u_period} = sum of demands from s to u_period
+            # Block (s, u_node) serves periods s through u_period
+            Q_st = sum(d_arr[u_req] for u_req in required_periods)
+            # Ensure production is integral (round to nearest integer)
+            Q_st = round(Q_st)
 
-            # Compute holding cost H^{block}_{s,t} = sum_{u=s}^{t} H_i(s,u) * d_{iu}
+            # Compute holding cost H^{block}_{s,u_period} = sum_{u=s}^{u_period} H_i(s,u) * d_{iu}
             H_block = 0.0
             h_prefix_s = h_prefix[s]
-            for u in range(s, t + 1):
-                d_iu = d_arr[u]
+            for u_req in required_periods:
+                d_iu = d_arr[u_req]
                 if d_iu > eps:
-                    H_block += (h_prefix[u + 1] - h_prefix_s) * d_iu
+                    H_block += (h_prefix[u_req + 1] - h_prefix_s) * d_iu
 
-            # Compute arc dual aggregation T_{s,t} = sum_{u=s}^{t} τ_{isu}
+            # Compute arc dual aggregation T_{s,u_period} = sum_{u=s}^{u_period} τ_{is(u+1)}
+            # Using 11-node interpretation: arc (s, u_node) where u_node = u_period + 1
             # Standard column generation: rc = cost - sum(dual * usage)
             # So we subtract tau: rc = ... - sum(tau)
-            # This is correct regardless of tau sign:
-            # - If tau > 0: subtracting reduces cost (good)
-            # - If tau < 0: subtracting increases cost (bad, discourages arc)
             T_st = 0.0
-            for u in range(s, t + 1):
-                tau_val = tau_cache[(s, u)]
+            perturbation_st = 0.0  # Degeneracy handling: penalize frequently used arcs
+            for u_req in required_periods:
+                u_node_req = u_req + 1  # Node index
+                tau_val = tau.get((item_id, s, u_node_req), 0.0)
                 T_st += tau_val
+                # Add perturbation based on arc usage count
+                arc_count = arc_usage_counts.get((s, u_node_req), 0)
+                if arc_count > 0:
+                    perturbation_st += perturbation_eps * arc_count
 
-            # Reduced cost of block (s,t) for DP
-            # Standard formula: rc = (setup - sigma) + (var_cost - pi) * Q + holding - sum(tau)
-            rc = setup_cost_dp + c_dual_s * Q_st + H_block - T_st
+            # Reduced cost of block (s, u_node) for DP
+            # Standard formula: rc = (setup - sigma) + (var_cost - pi) * Q + holding - sum(tau) + perturbation
+            rc = setup_cost_dp + c_dual_s * Q_st + H_block - T_st + perturbation_st
 
-            block_rc[(s, t)] = rc
+            # Store block cost: key is (s, u_period) where u_period is the last consumption period
+            block_rc[(s, u_period)] = rc
 
     # Build reverse index: blocks_by_end[t] = list of (s, cost) for blocks ending at t
     # This allows O(1) lookup of all blocks ending at a period
@@ -521,7 +571,8 @@ def solve_pricing_subproblem(
     while t_idx > 0:
         if pred[t_idx] is None:
             return INF, None  # No valid path found - infeasible
-        action, start = pred[t_idx]
+        action = pred[t_idx][0]
+        start = pred[t_idx][1] if len(pred[t_idx]) > 1 else None
 
         if action == "SKIP":
             t_idx -= 1
@@ -537,17 +588,27 @@ def solve_pricing_subproblem(
             setup_usage[s] = 1.0
             total_cost += s_arr[s]
 
-            # Add production and arcs for this block (s, t_period)
+            # Add production and arcs for this block (s, t_period) using 11-node interpretation
+            # Block (s, t_period): produce at period s, consume at periods s through t_period
+            # Arc (s, u_node): produce at period s, consume at period u_period where u_node = u_period + 1
             # Optimize: precompute h_prefix_s once
             h_prefix_s = h_prefix[s]
             c_s = c_arr[s]
-            for u in range(s, t_period + 1):
-                d_u = d_arr[u]
+            production_qty = 0.0
+            for u_period in range(
+                s, t_period + 1
+            ):  # u_period is consumption period (0-indexed)
+                d_u = d_arr[u_period]
                 if d_u > eps:
-                    cap_usage[s] += d_u
-                    arc_usage[(s, u)] = 1.0
-                    # H_i(s, u) = h_prefix[u+1] - h_prefix[s]
-                    total_cost += (c_s + (h_prefix[u + 1] - h_prefix_s)) * d_u
+                    production_qty += d_u
+                    u_node = u_period + 1  # Node index for 11-node model
+                    arc_usage[(s, u_node)] = 1.0  # Arc (s, u_node) in 11-node model
+                    # H_i(s, u_period) = h_prefix[u_period+1] - h_prefix[s]
+                    total_cost += (c_s + (h_prefix[u_period + 1] - h_prefix_s)) * d_u
+
+            # Ensure production is integral
+            production_qty = round(production_qty)
+            cap_usage[s] = production_qty
 
             # After block (s, t_period), we've satisfied demands from 0 to t_period
             # F[s] represents cost to satisfy demands from 0 to s-1 (before the block)
@@ -557,23 +618,21 @@ def solve_pricing_subproblem(
         if t_idx < 0:
             break
 
-    # Validate demand coverage
+    # Validate demand coverage using 11-node interpretation
+    # Arc (s, u_node): produce at period s, consume at period u_period where u_node = u_period + 1
     covered = [False] * T
-    for (t_prod, u), val in arc_usage.items():
-        if val > 0.5 and u < T:
-            covered[u] = True
+    for (s, u_node), val in arc_usage.items():
+        if val > 0.5:
+            u_period = (
+                u_node - 1
+            )  # Convert node index to consumption period (0-indexed)
+            if 0 <= u_period < T:
+                covered[u_period] = True
 
-    for u in range(T):
-        if d_arr[u] > eps and not covered[u]:
+    for u_period in range(T):
+        if d_arr[u_period] > eps and not covered[u_period]:
             return INF, None
 
-    # Validate forced constraints: check if forced setups and arcs are satisfied
-    # IMPORTANT: LEFO allows multiple batches to serve the same demand period.
-    # So forcing Z_{t',u'}=1 doesn't prevent other arcs to u' from existing.
-    # The RMP will combine columns to satisfy all forced constraints.
-    #
-    # For forced setups: if we force Y_t=1, this column must have that setup
-    # (since setups are per-column, not aggregated).
     for t_forced in upsilon_1:
         if setup_usage[t_forced] < 0.5:
             return INF, None  # Forced setup not used - invalid solution
@@ -598,9 +657,6 @@ def solve_pricing_subproblem(
     # So we allow columns that don't have forced arcs - the RMP will ensure
     # forced constraints are satisfied through column selection.
 
-    # Verify reduced cost by recomputing from column's actual cost
-    # rc = total_cost - (π * capacity + σ * setup + τ * arc + μ)
-    # EXPERIMENT: Try different dual contribution calculations
     dual_contribution = convexity_dual  # μ (convexity dual)
 
     # Add capacity dual contributions: π * capacity_usage
@@ -612,7 +668,7 @@ def solve_pricing_subproblem(
     for t in range(T):
         if setup_usage[t] > eps:
             sigma_val = sigma.get((item_id, t), 0.0) if sigma else 0.0
-            dual_contribution += sigma_val * setup_usage[t]
+            dual_contribution += sigma_val * setup_usage[t]  # thinking on this part
 
     # Add arc dual contributions: τ * arc_usage
     # EXPERIMENT: User says "subtract tau to reduce cost"
@@ -1108,14 +1164,32 @@ def solve_node_with_column_generation(
             worst_rc = 0.0
             total_rc = 0.0
 
+            # Track arc usage counts for degeneracy handling (11-node interpretation)
+            # arc_usage_counts[item_id][(s, u_node)] = count of times arc (s, u_node) has been used
+            arc_usage_counts_by_item: Dict[int, Dict[Tuple[int, int], int]] = {}
+            for item_id in items.keys():
+                arc_usage_counts_by_item[item_id] = {}
+                # Count arcs from existing columns in RMP
+                for (iid, idx), lam_var in rmp.lambdas.items():
+                    if iid == item_id and lam_var.X > eps:
+                        col = rmp.columns[item_id][idx]
+                        for (s, u_node), arc_val in col.arc_usage.items():
+                            if arc_val > eps:
+                                arc_usage_counts_by_item[item_id][(s, u_node)] = (
+                                    arc_usage_counts_by_item[item_id].get(
+                                        (s, u_node), 0
+                                    )
+                                    + 1
+                                )
+
             # Pricing for each item
 
             for item_id, item_data in items.items():
                 # Get branching sets for pricing
-                theta_0 = node.theta_0_by_item.get(item_id, set())
-                theta_1 = node.theta_1_by_item.get(item_id, set())
-                upsilon_0 = node.upsilon_0_by_item.get(item_id, set())
-                upsilon_1 = node.upsilon_1_by_item.get(item_id, set())
+                theta_0 = node.theta_0_by_item.get(item_id, set[Tuple[int, int]]())
+                theta_1 = node.theta_1_by_item.get(item_id, set[Tuple[int, int]]())
+                upsilon_0 = node.upsilon_0_by_item.get(item_id, set[int]())
+                upsilon_1 = node.upsilon_1_by_item.get(item_id, set[int]())
 
                 Gamma = Gamma_by_item[item_id]
                 Expiry = Expiry_by_item[item_id]
@@ -1151,6 +1225,8 @@ def solve_node_with_column_generation(
                     sigma=sigma,
                     tau=tau,
                     eps=eps,
+                    arc_usage_counts=arc_usage_counts_by_item.get(item_id, {}),
+                    perturbation_eps=1e-5,
                 )
 
                 if math.isfinite(rc):
@@ -1162,6 +1238,13 @@ def solve_node_with_column_generation(
                     any_added = True
                     columns_added_this_node += 1
                     cols_this_iter += 1
+                    # Update arc usage counts for degeneracy handling (11-node interpretation)
+                    for (s, u_node), arc_val in col.arc_usage.items():
+                        if arc_val > eps:
+                            arc_usage_counts_by_item[item_id][(s, u_node)] = (
+                                arc_usage_counts_by_item[item_id].get((s, u_node), 0)
+                                + 1
+                            )
 
             # Write convergence data (using lambda_sums captured earlier)
             if csv_writer:
@@ -1254,7 +1337,7 @@ def extract_y_values(
         if lam_val < eps:
             continue
         col = rmp.columns[item_id][idx]
-        for t, y_val in enumerate(col.setup_by_period):
+        for t, y_val in enumerate[float](col.setup_by_period):
             if y_val > eps:
                 y_vals[item_id][t] = y_vals[item_id].get(t, 0.0) + lam_val * y_val
     return y_vals
@@ -1276,7 +1359,7 @@ def extract_x_values(
         if lam_val < eps:
             continue
         col = rmp.columns[item_id][idx]
-        for t, qty in enumerate(col.capacity_usage_by_period):
+        for t, qty in enumerate[float](col.capacity_usage_by_period):
             if qty > eps:
                 x_vals[item_id][t] = x_vals[item_id].get(t, 0.0) + lam_val * qty
     return x_vals
@@ -1307,7 +1390,7 @@ def extract_active_columns(
         if is_dummy:
             continue
 
-        setups = [t for t, v in enumerate(col.setup_by_period) if v > 0.5]
+        setups = [t for t, v in enumerate[float](col.setup_by_period) if v > 0.5]
         arcs = [(t, u) for (t, u), v in col.arc_usage.items() if v > 0.5]
         active_cols.append(
             {
@@ -1347,7 +1430,7 @@ def solution_uses_dummy(
     for item_id in items:
         item_demand = sum(items[item_id]["demand"])
         dummy_cost_threshold = 5000.0 * (item_demand + 1)
-        for idx, col in enumerate(rmp.columns[item_id]):
+        for idx, col in enumerate[ProductionPlanColumn](rmp.columns[item_id]):
             is_dummy = (
                 col.total_plan_cost > dummy_cost_threshold
                 and all(x == 0.0 for x in col.capacity_usage_by_period)
@@ -1388,8 +1471,8 @@ def find_most_fractional_z(
     best_frac = 0.0
     best = None
     for item_id, arcs in z_vals.items():
-        theta_0 = node.theta_0_by_item.get(item_id, set())
-        theta_1 = node.theta_1_by_item.get(item_id, set())
+        theta_0 = node.theta_0_by_item.get(item_id, set[Tuple[int, int]]())
+        theta_1 = node.theta_1_by_item.get(item_id, set[Tuple[int, int]]())
         for (t, u), val in arcs.items():
             if (t, u) in theta_0 or (t, u) in theta_1:
                 continue
@@ -1408,8 +1491,8 @@ def find_most_fractional_y(
     best_frac = 0.0
     best = None
     for item_id, setups in y_vals.items():
-        upsilon_0 = node.upsilon_0_by_item.get(item_id, set())
-        upsilon_1 = node.upsilon_1_by_item.get(item_id, set())
+        upsilon_0 = node.upsilon_0_by_item.get(item_id, set[int]())
+        upsilon_1 = node.upsilon_1_by_item.get(item_id, set[int]())
         for t, val in setups.items():
             if t in upsilon_0 or t in upsilon_1:
                 continue
@@ -1495,10 +1578,13 @@ def solve_instance(
             if m_it <= 0:
                 Gamma[t] = []
                 continue
-            u_max = min(
-                T - 1, v_it
-            )  # Allow consumption up to and including period v_it
-            Gamma[t] = list(range(t, u_max + 1))
+            # In 11-node model: Gamma[t] stores END NODES (u_node), not consumption periods
+            # Arc (s, u_node): produce at period s (node s), consume at period u_period where u_node = u_period + 1
+            # So if production at period t can serve consumption periods t to u_max,
+            # then Gamma[t] should contain end nodes [t+1, t+2, ..., u_max+1]
+            u_max_period = min(T - 1, v_it)  # Maximum consumption period (0-indexed)
+            # Convert consumption periods to end nodes: consumption period u -> end node u+1
+            Gamma[t] = [u_period + 1 for u_period in range(t, u_max_period + 1)]
         Gamma_by_item[item_id] = Gamma
         Expiry_by_item[item_id] = Expiry
 
@@ -1509,10 +1595,10 @@ def solve_instance(
         node_id=0,
         parent_id=None,
         depth=0,
-        theta_0_by_item={i: set() for i in items},
-        theta_1_by_item={i: set() for i in items},
-        upsilon_0_by_item={i: set() for i in items},
-        upsilon_1_by_item={i: set() for i in items},
+        theta_0_by_item={i: set[Tuple[int, int]]() for i in items},
+        theta_1_by_item={i: set[Tuple[int, int]]() for i in items},
+        upsilon_0_by_item={i: set[int]() for i in items},
+        upsilon_1_by_item={i: set[int]() for i in items},
     )
 
     msg = "\n>>> ROOT NODE <<<"
@@ -1706,7 +1792,7 @@ def solve_instance(
         # Remove nodes that have been fully branched (2 children) from queue
         # This saves memory by not keeping parent nodes after branching
         # Also update best_lb to exclude these nodes
-        # Explicitly delete parent nodes and their RMPs to free RAM
+        # Explicitly delete parent nodes and their RMPs to free RAM issue
         new_queue = []
         for bound, node_id, node, pz, py, px, prmp in queue:
             if node.node_id not in nodes_with_children:
