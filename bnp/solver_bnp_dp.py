@@ -599,21 +599,28 @@ def price_block_dp(
     T: int,
     Gamma: Dict[int, List[int]],
     duals: Dict,
+    forced_y: Set[int],
     forbidden_y: Set[int],
+    forced_z: Set[Tuple[int, int]],
     forbidden_z: Set[Tuple[int, int]],
     existing_blocks: Set[Tuple[int, int, float]],
-) -> List[Tuple[Tuple[int, int, float], float]]:
+    max_columns_per_item: int = 5,
+) -> Tuple[List[Tuple[Tuple[int, int, float], float]], float]:
     """
     DP pricing to find negative reduced cost blocks for an item.
 
     Reduced cost for block (t, e):
         rc = setup[t] - μ_y_def[(item_id, t)]
              - Σ_{u in [t,e]} σ_link[(item_id, t, u)] * d[u]
+             - τ_force_y[(item_id, t)]  (if Y[i,t]=1 forced)
+             - Σ τ_force_z[(item_id, t, u)]  (for forced arcs in block)
 
-    The σ_link duals are <= 0 (from linking constraint f <= d * Σλ).
-    When artificials are in use, μ_y_def will be large (from y_def constraint).
+    The τ duals give a "discount" to blocks that satisfy forced constraints,
+    ensuring we generate all necessary columns when branching.
 
-    Returns list of ((t, e, setup_cost), reduced_cost) with rc < -EPS.
+    Returns:
+        - list of top max_columns_per_item ((t, e, setup_cost), reduced_cost) with rc < -EPS
+        - true_min_rc: the minimum reduced cost across ALL negative RC blocks found
     """
     demand = item_data["demand"]
     setup = item_data["setup"]
@@ -625,6 +632,8 @@ def price_block_dp(
 
     sigma_link = duals.get("sigma_link", {})
     mu_y_def = duals.get("mu_y_def", {})
+    tau_force_y = duals.get("tau_force_y", {})
+    tau_force_z = duals.get("tau_force_z", {})
 
     negative_rc_blocks = []
 
@@ -675,14 +684,33 @@ def price_block_dp(
                     # σ <= 0 for <= constraint, contribution is -σ * d[u] >= 0
                     sigma_contrib += (-sigma) * demand[u]
 
-            # RC = setup_cost - μ - (-σ contribution)
-            # RC = setup_cost - μ + σ_contrib (where σ <= 0 so σ_contrib >= 0)
-            rc = s_cost - mu - sigma_contrib
+            # τ_force_y: dual of forced Y constraint (y[i,t] = 1)
+            # When Y[i,t]=1 is forced, blocks at period t get a discount
+            # The dual can be positive or negative; we subtract it from RC
+            tau_y = tau_force_y.get((item_id, t), 0.0)
+
+            # τ_force_z: dual of forced Z constraints (z[i,t,u] = 1)
+            # For each forced arc (t,u) that this block covers, we get a discount
+            tau_z_contrib = 0.0
+            for u in range(t, e + 1):
+                if u in reachable and demand[u] > 0 and (t, u) in forced_z:
+                    tau_z = tau_force_z.get((item_id, t, u), 0.0)
+                    tau_z_contrib += tau_z
+
+            # RC = setup_cost - μ - σ_contrib - τ_y - τ_z_contrib
+            rc = s_cost - mu - sigma_contrib - tau_y - tau_z_contrib
 
             if rc < -EPS:
                 negative_rc_blocks.append((block, rc))
 
-    return negative_rc_blocks
+    # Sort by reduced cost (most negative first)
+    negative_rc_blocks.sort(key=lambda x: x[1])
+
+    # True minimum RC across ALL negative RC blocks
+    true_min_rc = negative_rc_blocks[0][1] if negative_rc_blocks else 0.0
+
+    # Return top k columns and the true minimum RC
+    return negative_rc_blocks[:max_columns_per_item], true_min_rc
 
 
 def price_all_items(
@@ -690,28 +718,49 @@ def price_all_items(
     T: int,
     Gamma_by_item: Dict[int, Dict[int, List[int]]],
     duals: Dict,
+    forced_y: Dict[int, Set[int]],
     forbidden_y: Dict[int, Set[int]],
+    forced_z: Dict[int, Set[Tuple[int, int]]],
     forbidden_z: Dict[int, Set[Tuple[int, int]]],
     columns_by_item: Dict[int, List[Tuple[int, int, float]]],
-) -> Dict[int, List[Tuple[Tuple[int, int, float], float]]]:
-    """Price blocks for all items."""
+    max_columns_per_item: int = 20,
+) -> Tuple[Dict[int, List[Tuple[Tuple[int, int, float], float]]], float]:
+    """
+    Price blocks for all items, returning top max_columns_per_item per item.
+
+    Uses forced_y and forced_z duals to give "discounts" to columns that
+    satisfy forced branching constraints, ensuring we generate all needed columns.
+
+    Returns:
+        - result: dict mapping item_id -> list of (block, rc) tuples
+        - true_min_rc: minimum reduced cost across ALL items and ALL negative RC blocks
+    """
     result = {}
+    true_min_rc = 0.0
     for item_id, item_data in items.items():
         Gamma = Gamma_by_item.get(item_id, {})
+        forced_periods = forced_y.get(item_id, set())
         forbidden_periods = forbidden_y.get(item_id, set())
+        forced_arcs = forced_z.get(item_id, set())
         forbidden_arcs = forbidden_z.get(item_id, set())
         existing = set(columns_by_item.get(item_id, []))
-        result[item_id] = price_block_dp(
+        cols, item_min_rc = price_block_dp(
             item_id,
             item_data,
             T,
             Gamma,
             duals,
+            forced_periods,
             forbidden_periods,
+            forced_arcs,
             forbidden_arcs,
             existing,
+            max_columns_per_item,
         )
-    return result
+        result[item_id] = cols
+        if item_min_rc < true_min_rc:
+            true_min_rc = item_min_rc
+    return result, true_min_rc
 
 
 # =============================================================================
@@ -731,7 +780,7 @@ def column_generation_loop(
     forbidden_z: Dict[int, Set[Tuple[int, int]]],
     node_id: int,
     logger: Optional[BnPLogger],
-    max_cg_iters: int = 1000,
+    max_cg_iters: int = 20000,
     verbose: bool = False,
 ) -> Tuple[float, Dict, Dict[int, List[Tuple[int, int, float]]], int, int]:
     """
@@ -743,6 +792,13 @@ def column_generation_loop(
     columns_by_item = {i: list(cols) for i, cols in initial_columns.items()}
     total_columns_added = 0
     cg_iter = 0
+
+    # Track consecutive iterations with zero/positive reduced cost for each column
+    # (item_id, block) -> count of consecutive non-negative RC iterations
+    column_zero_rc_count: Dict[Tuple[int, Tuple[int, int, float]], int] = {}
+    for item_id, cols in columns_by_item.items():
+        for block in cols:
+            column_zero_rc_count[(item_id, block)] = 0
 
     while cg_iter < max_cg_iters:
         # Solve RMP
@@ -761,26 +817,55 @@ def column_generation_loop(
         if not math.isfinite(obj):
             return math.inf, {"status": "infeasible"}, columns_by_item, cg_iter, 0
 
-        # Price new columns
-        new_columns_by_item = price_all_items(
-            items, T, Gamma_by_item, duals, forbidden_y, forbidden_z, columns_by_item
+        # Price new columns (returns top 5 per item + true min RC across all)
+        # Pass forced_y/forced_z so their duals give "discounts" to relevant blocks
+        new_columns_by_item, min_rc = price_all_items(
+            items, T, Gamma_by_item, duals, forced_y, forbidden_y, forced_z, forbidden_z, columns_by_item
         )
 
-        # Count new columns
-        min_rc = 0.0
+        # Add new columns and track their reduced costs
         columns_added_this_iter = 0
 
+        # First, update RC tracking for existing columns based on pricing results
+        # Columns that were priced and have negative RC: reset counter
+        # Columns not found in pricing (RC >= 0): increment counter
+        priced_blocks_this_iter: Dict[int, Set[Tuple[int, int, float]]] = {
+            i: set() for i in items
+        }
+        for item_id, new_cols in new_columns_by_item.items():
+            for block, rc in new_cols:
+                priced_blocks_this_iter[item_id].add(block)
+                # This column has negative RC, reset its zero-RC counter
+                if (item_id, block) in column_zero_rc_count:
+                    column_zero_rc_count[(item_id, block)] = 0
+
+        # Increment counter for columns NOT in pricing results (they have RC >= 0)
+        for item_id, cols in columns_by_item.items():
+            for block in cols:
+                if block not in priced_blocks_this_iter.get(item_id, set()):
+                    column_zero_rc_count[(item_id, block)] = (
+                        column_zero_rc_count.get((item_id, block), 0) + 1
+                    )
+
+        # Add new columns
         for item_id, new_cols in new_columns_by_item.items():
             existing = set(columns_by_item.get(item_id, []))
             for block, rc in new_cols:
-                if rc < min_rc:
-                    min_rc = rc
                 if block not in existing:
                     columns_by_item[item_id].append(block)
+                    column_zero_rc_count[(item_id, block)] = (
+                        0  # New column starts fresh
+                    )
                     columns_added_this_iter += 1
 
         # Count total columns
         total_cols = sum(len(cols) for cols in columns_by_item.values())
+
+        # Pruning disabled - causes cyclic instability when pruned columns
+        # are needed for feasibility (even if they have zero reduced cost)
+        # The LP may need columns for constraint satisfaction even if they
+        # don't improve the objective
+        pass
 
         # Log CG iteration
         if logger:
@@ -847,15 +932,24 @@ def is_z_integer(z_vals: Dict[Tuple[int, int, int], float]) -> bool:
     return True
 
 
-def find_most_fractional_y(
+def find_best_branching_y(
     y_vals: Dict[Tuple[int, int], float],
     forced_y: Dict[int, Set[int]],
     forbidden_y: Dict[int, Set[int]],
+    items: Dict[int, dict],
 ) -> Optional[Tuple[int, int, float]]:
-    """Find the most fractional Y variable to branch on."""
-    best_frac = 0.0
-    best = None
+    """
+    Find the best Y variable to branch on using strong branching heuristics.
 
+    Score = fractionality * setup_cost_weight
+    - Fractionality: 4 * min(val, 1-val) gives score 0-1, max at val=0.5
+    - Setup cost weight: normalized setup cost (higher cost = higher priority)
+
+    This prioritizes branching on high-impact fractional variables.
+    """
+    candidates = []
+
+    # Collect all fractional Y candidates
     for (item_id, t), val in y_vals.items():
         if t in forced_y.get(item_id, set()):
             continue
@@ -863,8 +957,35 @@ def find_most_fractional_y(
             continue
 
         frac = min(val, 1.0 - val)
-        if frac > EPS and frac > best_frac:
-            best_frac = frac
+        if frac > EPS:
+            # Get setup cost for this item at period t
+            setup = items[item_id].get("setup", [0])
+            if isinstance(setup, list):
+                s_cost = float(setup[t]) if t < len(setup) else 0.0
+            else:
+                s_cost = float(setup)
+            candidates.append((item_id, t, val, frac, s_cost))
+
+    if not candidates:
+        return None
+
+    # Normalize setup costs to [0, 1] range
+    max_setup = max(c[4] for c in candidates) if candidates else 1.0
+    if max_setup < EPS:
+        max_setup = 1.0
+
+    # Score each candidate: fractionality_score * (0.3 + 0.7 * normalized_setup_cost)
+    # This gives 30% weight to fractionality alone and 70% to setup cost
+    best_score = -1.0
+    best = None
+
+    for item_id, t, val, frac, s_cost in candidates:
+        frac_score = 4.0 * frac  # 0 to 1, max at val=0.5
+        setup_weight = 0.3 + 0.7 * (s_cost / max_setup)
+        score = frac_score * setup_weight
+
+        if score > best_score:
+            best_score = score
             best = (item_id, t, val)
 
     return best
@@ -894,6 +1015,139 @@ def find_most_fractional_z(
 
 
 # =============================================================================
+# DIVE HEURISTIC
+# =============================================================================
+
+
+def _try_dive_with_threshold(
+    items: Dict[int, dict],
+    T: int,
+    capacity: List[float],
+    Gamma_by_item: Dict[int, Dict[int, List[int]]],
+    columns_pool: Dict[int, List[Tuple[int, int, float]]],
+    y_vals: Dict[Tuple[int, int], float],
+    base_forced_y: Dict[int, Set[int]],
+    base_forbidden_y: Dict[int, Set[int]],
+    threshold: float,
+    force_all_positive: bool = False,
+) -> Tuple[Optional[float], Optional[Dict]]:
+    """
+    Try dive with a specific threshold.
+    If force_all_positive=True, force Y=1 for ALL Y > 0.
+    Otherwise force Y=1 for Y >= threshold, Y=0 for Y < threshold.
+    """
+    forced_y = {i: set(s) for i, s in base_forced_y.items()}
+    forbidden_y = {i: set(s) for i, s in base_forbidden_y.items()}
+
+    for (item_id, t), val in y_vals.items():
+        if t in forced_y.get(item_id, set()) or t in forbidden_y.get(item_id, set()):
+            continue
+
+        if force_all_positive:
+            # Force ALL positive Y to 1 (most likely to find feasible)
+            if val > EPS:
+                if item_id not in forced_y:
+                    forced_y[item_id] = set()
+                forced_y[item_id].add(t)
+        else:
+            # Use threshold
+            if val >= threshold:
+                if item_id not in forced_y:
+                    forced_y[item_id] = set()
+                forced_y[item_id].add(t)
+            else:
+                if item_id not in forbidden_y:
+                    forbidden_y[item_id] = set()
+                forbidden_y[item_id].add(t)
+
+    forced_z: Dict[int, Set[Tuple[int, int]]] = {i: set() for i in items}
+    forbidden_z: Dict[int, Set[Tuple[int, int]]] = {i: set() for i in items}
+
+    obj, solution, _ = solve_rmp_with_duals(
+        items,
+        T,
+        capacity,
+        Gamma_by_item,
+        columns_pool,
+        forced_y,
+        forbidden_y,
+        forced_z,
+        forbidden_z,
+        use_artificial=True,
+    )
+
+    if not math.isfinite(obj):
+        return None, None
+
+    # Check if truly feasible (no artificials)
+    art_total = solution.get("art_total", 0.0)
+    if art_total > EPS:
+        return None, None
+
+    # Check if integer
+    y_dive = solution.get("y", {})
+    z_dive = solution.get("z", {})
+    if is_y_integer(y_dive) and is_z_integer(z_dive):
+        return obj, solution
+
+    return None, None
+
+
+def try_dive(
+    items: Dict[int, dict],
+    T: int,
+    capacity: List[float],
+    Gamma_by_item: Dict[int, Dict[int, List[int]]],
+    columns_pool: Dict[int, List[Tuple[int, int, float]]],
+    y_vals: Dict[Tuple[int, int], float],
+    base_forced_y: Dict[int, Set[int]],
+    base_forbidden_y: Dict[int, Set[int]],
+) -> Tuple[Optional[float], Optional[Dict]]:
+    """
+    Smart dive heuristic - tries multiple strategies to find feasible solution.
+
+    Strategy 1: Force Y=1 for ALL periods with any positive Y value
+    Strategy 2-4: Try progressively lower thresholds (0.5, 0.3, 0.1)
+
+    Returns (objective, solution) if feasible integer found, else (None, None).
+    """
+    # Strategy 1: Force ALL positive Y to 1
+    result = _try_dive_with_threshold(
+        items,
+        T,
+        capacity,
+        Gamma_by_item,
+        columns_pool,
+        y_vals,
+        base_forced_y,
+        base_forbidden_y,
+        threshold=0.0,
+        force_all_positive=True,
+    )
+    if result[0] is not None:
+        return result
+
+    # Strategy 2-4: Try different thresholds
+    for threshold in [0.5, 0.3, 0.1]:
+        result = _try_dive_with_threshold(
+            items,
+            T,
+            capacity,
+            Gamma_by_item,
+            columns_pool,
+            y_vals,
+            base_forced_y,
+            base_forbidden_y,
+            threshold=threshold,
+            force_all_positive=False,
+        )
+        if result[0] is not None:
+            return result
+
+    return None, None
+
+
+# =============================================================================
 # BRANCH-AND-PRICE
 # =============================================================================
 
@@ -904,8 +1158,8 @@ def solve_branch_and_price(
     capacity: List[float],
     Gamma_by_item: Dict[int, Dict[int, List[int]]],
     initial_blocks_by_item: Dict[int, List[Tuple[int, int, float]]],
-    max_time: float = 3600,
-    max_nodes: int = 100000,
+    max_time: float = 3600000,
+    max_nodes: int = 100000000,
     verbose: bool = False,
     logger: Optional[BnPLogger] = None,
 ) -> Tuple[float, Optional[Dict], float, float]:
@@ -1005,6 +1259,35 @@ def solve_branch_and_price(
     best_solution: Optional[Dict] = None
     columns_pool = {i: list(cols) for i, cols in root_columns.items()}
 
+    # Track column usage: (item_id, block) -> last depth used
+    # This allows pruning columns unused for 2 consecutive depth levels
+    column_last_used: Dict[Tuple[int, Tuple[int, int, float]], int] = {}
+    for item_id, cols in columns_pool.items():
+        for block in cols:
+            column_last_used[(item_id, block)] = 0  # Used at root
+
+    # Try dive at root to find initial incumbent
+    if verbose:
+        print("  Trying dive at root...")
+    dive_obj, dive_sol = try_dive(
+        items,
+        T,
+        capacity,
+        Gamma_by_item,
+        columns_pool,
+        y_vals,
+        root.forced_y,
+        root.forbidden_y,
+    )
+    if dive_obj is not None:
+        best_ub = dive_obj
+        best_solution = dive_sol
+        if verbose:
+            print(f"  🎯 Dive found incumbent: {best_ub:.4f}")
+    else:
+        if verbose:
+            print("  Dive did not find feasible solution")
+
     # Priority queue: (bound, node_id, node)
     queue: List[Tuple[float, int, BranchNode]] = []
     heapq.heappush(queue, (root.lp_bound, root.node_id, root))
@@ -1069,17 +1352,61 @@ def solve_branch_and_price(
             node.forbidden_z,
             node_id=node.node_id,
             logger=logger,
-            verbose=verbose,
+            verbose=False,  # Suppress CG iteration details
         )
 
-        # Merge columns into pool
+        # Merge columns into pool and track usage
         for item_id, cols in node_columns.items():
             existing = set(columns_pool.get(item_id, []))
             for col in cols:
                 if col not in existing:
                     columns_pool[item_id].append(col)
+                    column_last_used[(item_id, col)] = node.depth
+
+        # Update column usage based on active lambdas
+        # lam key is (item_id, t, e), block in pool is (t, e, setup_cost)
+        lam_vals = info.get("lam", {}) if isinstance(info, dict) else {}
+        for (item_id, t, e), val in lam_vals.items():
+            if val > EPS:
+                # Find the matching block in columns_pool
+                for block in columns_pool.get(item_id, []):
+                    if block[0] == t and block[1] == e:
+                        column_last_used[(item_id, block)] = node.depth
+                        break
+
+        # Prune columns not used for 2+ consecutive depth levels
+        # Only prune if we have enough columns (keep at least 20 per item)
+        if node.depth >= 2:
+            prune_depth_threshold = node.depth - 2
+            for item_id in columns_pool:
+                if len(columns_pool[item_id]) <= 20:
+                    continue  # Keep minimum columns per item
+                original_count = len(columns_pool[item_id])
+                columns_pool[item_id] = [
+                    col
+                    for col in columns_pool[item_id]
+                    if column_last_used.get((item_id, col), 0) >= prune_depth_threshold
+                ]
+                # Ensure we keep at least 20 columns (restore if pruned too many)
+                if len(columns_pool[item_id]) < 20:
+                    # This shouldn't happen often, but safety fallback
+                    continue
+                pruned = original_count - len(columns_pool[item_id])
+                if pruned > 0:
+                    # Clean up tracking dict for pruned columns
+                    keys_to_remove = [
+                        k
+                        for k in column_last_used
+                        if k[0] == item_id and k[1] not in set(columns_pool[item_id])
+                    ]
+                    for k in keys_to_remove:
+                        del column_last_used[k]
 
         if not math.isfinite(obj):
+            if verbose:
+                print(
+                    f"  [{nodes_explored}] Node {node.node_id} (d={node.depth}): INFEASIBLE"
+                )
             if logger:
                 logger.log_node(
                     NodeLogEntry(
@@ -1101,6 +1428,10 @@ def solve_branch_and_price(
 
         # Pruning by bound
         if best_ub is not None and obj >= best_ub - EPS:
+            if verbose:
+                print(
+                    f"  [{nodes_explored}] Node {node.node_id} (d={node.depth}): LP={obj:.2f} >= UB={best_ub:.2f} → PRUNED"
+                )
             if logger:
                 logger.log_node(
                     NodeLogEntry(
@@ -1118,6 +1449,25 @@ def solve_branch_and_price(
                 )
             continue
 
+        # Dive heuristic: every 50 nodes if no incumbent, every 150 if we have one
+        dive_interval = 50 if best_ub is None else 150
+        if nodes_explored % dive_interval == 0 and nodes_explored > 0:
+            dive_obj, dive_sol = try_dive(
+                items,
+                T,
+                capacity,
+                Gamma_by_item,
+                columns_pool,
+                info.get("y", {}),
+                node.forced_y,
+                node.forbidden_y,
+            )
+            if dive_obj is not None and (best_ub is None or dive_obj < best_ub - EPS):
+                best_ub = dive_obj
+                best_solution = dive_sol
+                if verbose:
+                    print(f"  🎯 Dive found better incumbent: {best_ub:.4f}")
+
         y_vals = info.get("y", {})
         z_vals = info.get("z", {})
 
@@ -1127,10 +1477,18 @@ def solve_branch_and_price(
 
         if y_int and z_int:
             if best_ub is None or obj < best_ub - EPS:
+                old_ub = best_ub
                 best_ub = obj
                 best_solution = info
                 if verbose:
-                    print(f"  ★ New incumbent: {best_ub:.4f} (depth={node.depth})")
+                    if old_ub is None:
+                        print(
+                            f"  [{nodes_explored}] Node {node.node_id} (d={node.depth}): LP={obj:.2f} → ★ FIRST INCUMBENT"
+                        )
+                    else:
+                        print(
+                            f"  [{nodes_explored}] Node {node.node_id} (d={node.depth}): LP={obj:.2f} → ★ IMPROVED {old_ub:.2f} → {best_ub:.2f}"
+                        )
                 if logger:
                     logger.log_node(
                         NodeLogEntry(
@@ -1148,9 +1506,9 @@ def solve_branch_and_price(
                     )
             continue
 
-        # Branch on most fractional Y first
+        # Branch on best Y variable (setup-cost weighted)
         branch_var_y = (
-            find_most_fractional_y(y_vals, node.forced_y, node.forbidden_y)
+            find_best_branching_y(y_vals, node.forced_y, node.forbidden_y, items)
             if not y_int
             else None
         )
@@ -1160,9 +1518,10 @@ def solve_branch_and_price(
             item_id, t, val = branch_var_y
 
             if verbose:
+                ub_str = f"{best_ub:.2f}" if best_ub else "N/A"
                 print(
-                    f"  [{nodes_explored}] Node {node.node_id}: "
-                    f"LP={obj:.2f}, branch Y[{item_id},{t}]={val:.3f}"
+                    f"  [{nodes_explored}] Node {node.node_id} (d={node.depth}): "
+                    f"LP={obj:.2f}, UB={ub_str} → branch Y[{item_id},{t}]={val:.3f}"
                 )
 
             if logger:
@@ -1217,9 +1576,10 @@ def solve_branch_and_price(
             item_id, t, u, val = branch_var_z
 
             if verbose:
+                ub_str = f"{best_ub:.2f}" if best_ub else "N/A"
                 print(
-                    f"  [{nodes_explored}] Node {node.node_id}: "
-                    f"LP={obj:.2f}, branch Z[{item_id},{t},{u}]={val:.3f}"
+                    f"  [{nodes_explored}] Node {node.node_id} (d={node.depth}): "
+                    f"LP={obj:.2f}, UB={ub_str} → branch Z[{item_id},{t},{u}]={val:.3f}"
                 )
 
             if logger:
@@ -1522,7 +1882,7 @@ def solve_instance(
 
 
 if __name__ == "__main__":
-    # Harder instance: 3 items, 12 periods, tighter capacity
+    # 3-item instance for testing stronger branching and column pruning:
     instance = {
         "period": 12,
         "manual_capacity": [0, 0, 100, 120, 110, 100, 90, 100, 110, 120, 100, 80],
@@ -1589,6 +1949,7 @@ if __name__ == "__main__":
             },
         },
     }
+    # Small instance (1 item, 10 periods):
     # instance = {
     #     "period": 10,
     #     "manual_capacity": [0, 0, 80, 80, 80, 80, 80, 80, 100, 80],
@@ -1638,7 +1999,7 @@ if __name__ == "__main__":
     # Run with verbose=True for demo
     summary, orders = solve_instance(
         instance_path=str(instance_path),
-        time_limit=600,
+        time_limit=60000,
         out_dir=str(out_dir),
         verbose=True,
     )

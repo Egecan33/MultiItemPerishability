@@ -42,6 +42,11 @@ try:
 except Exception:
     _solve_bnp_dp = None  # optional backend
 
+try:
+    from bnp.solver_bnp_dp_full_plans import solve_instance as _solve_bnp_dp_full_plans
+except Exception:
+    _solve_bnp_dp_full_plans = None  # optional backend
+
 SOLVER_REGISTRY = {
     "No-Crossing (no shelf) v1": {
         "fn": _solve_nocross_no_shelf_v1,
@@ -58,15 +63,20 @@ SOLVER_REGISTRY = {
         "tag": "lefo_mip_v1",
         "desc": "No-crossing model (v1).",
     },
-    "BNP": {
+    "BNP (MIP-based)": {
         "fn": _solve_bnp,
         "tag": "bnp_v1",
         "desc": "BNP (MIP_based).",
     },
-    "BNP DP": {
+    "BNP DP (arc-based)": {
         "fn": _solve_bnp_dp,
         "tag": "bnp_dp_v1",
         "desc": "BNP (DP_based).",
+    },
+    "BNP DP Full Plans": {
+        "fn": _solve_bnp_dp_full_plans,
+        "tag": "bnp_dp_full_plans_v1",
+        "desc": "BNP (DP_based) with full plans.",
     },
 }
 
@@ -1316,7 +1326,10 @@ with items_tab:
                 result = _solve_fn(
                     "last_instance.json", time_limit=time_limit, mip_gap=mip_gap
                 )
-                summary, orders_txt = result[0], result[1]  # Handle 2 or 3 return values
+                summary, orders_txt = (
+                    result[0],
+                    result[1],
+                )  # Handle 2 or 3 return values
             st.subheader("Summary")
             st.json(summary)
             st.subheader("Orders")
@@ -2275,7 +2288,10 @@ with batch_tab:
                 result = _solve_fn(
                     "last_instance.json", time_limit=time_limit, mip_gap=mip_gap
                 )
-                summary, orders_txt = result[0], result[1]  # Handle 2 or 3 return values
+                summary, orders_txt = (
+                    result[0],
+                    result[1],
+                )  # Handle 2 or 3 return values
 
                 # log to Supabase (if configured)
                 sb = supabase_client()
@@ -3162,10 +3178,11 @@ with saved_run_tab:
                     continue
 
                 # run solver
-                result = solve_fn(
-                    str(tmp_path), time_limit=time_limit, mip_gap=mip_gap
-                )
-                summary, orders_txt = result[0], result[1]  # Handle 2 or 3 return values
+                result = solve_fn(str(tmp_path), time_limit=time_limit, mip_gap=mip_gap)
+                summary, orders_txt = (
+                    result[0],
+                    result[1],
+                )  # Handle 2 or 3 return values
 
                 # log run + orders
                 try:
