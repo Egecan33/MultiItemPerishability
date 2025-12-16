@@ -329,25 +329,8 @@ def generate_all_zio_columns() -> List[Dict]:
                 }
             )
 
-    print(f"Generated {len(columns)} columns before deduplication")
-
-    # Remove duplicates
-    print("Removing duplicates...")
-    seen = set()
-    unique_columns = []
-    for col in columns:
-        # Key: (tuple of setups, tuple of (production period, qty) pairs, tuple of arcs)
-        key = (
-            tuple(col["setups"]),
-            tuple(sorted(col["production"].items())),
-            tuple(col["arcs"]),
-        )
-        if key not in seen:
-            seen.add(key)
-            unique_columns.append(col)
-
-    print(f"After deduplication: {len(unique_columns)} unique columns")
-    return unique_columns
+    print(f"Generated {len(columns)} columns (no deduplication)")
+    return columns
 
 
 print("Generating all ZIO columns with new interpretation...")
@@ -356,7 +339,7 @@ import time
 start_time = time.time()
 zio_columns = generate_all_zio_columns()
 elapsed = time.time() - start_time
-print(f"Generated {len(zio_columns)} unique ZIO columns in {elapsed:.2f} seconds\n")
+print(f"Generated {len(zio_columns)} ZIO columns in {elapsed:.2f} seconds\n")
 
 # Create output directory (same directory as script)
 output_dir = Path(__file__).parent
@@ -401,118 +384,17 @@ if len(zio_columns) > 30:
         f"\n... and {len(zio_columns) - 30} more columns (see {output_file} for full list)"
     )
 
-# Now test with RMP
-print(f"\n=== TESTING WITH RMP ===")
-import gurobipy as gp
-from gurobipy import GRB
+# Helper: check if a column with given setups and production exists (ignores arcs cost)
+def has_column(setups, production):
+    key_setups = tuple(sorted(setups))
+    key_prod = tuple(sorted(production.items()))
+    for col in zio_columns:
+        if tuple(col["setups"]) == key_setups and tuple(sorted(col["production"].items())) == key_prod:
+            return True
+    return False
 
-# Import RMP class from solver_bnp_dp
-sys.path.insert(0, str(Path(__file__).parent.parent / "bnp"))
-from solver_bnp_dp import RestrictedMasterProblem, ProductionPlanColumn
-
-# Create single item instance
-items = {item_id: item_data}
-capacity = data["manual_capacity"]
-Gamma_by_item = {item_id: Gamma}
-
-# Create RMP
-rmp = RestrictedMasterProblem(
-    items=items,
-    T=T,
-    capacity=capacity,
-    Gamma_by_item=Gamma_by_item,
-)
-
-# Add demand satisfaction constraints to RMP
-# For each period u with demand > 0, we need: Σ_k Σ_{t: (t,u) in arcs} λ^k * demand[u] >= demand[u]
-# Or equivalently: Σ_k (sum of arcs to u) * λ^k >= 1 for each u with demand > 0
-print("Adding demand satisfaction constraints to RMP...")
-demand_expr = {}  # demand_expr[u] = expression for period u
-demand_con = {}  # demand_con[u] = constraint for period u
-
-for u in range(T):
-    if demand[u] > 0:
-        demand_expr[u] = gp.LinExpr(0.0)
-
-# Convert ZIO columns to ProductionPlanColumn format
-print(f"Converting {len(zio_columns)} ZIO columns to ProductionPlanColumn format...")
-for col_data in zio_columns:
-    # Create capacity usage by period
-    cap_usage = [0.0] * T
-    for prod_period, qty in col_data["production"].items():
-        if 0 <= prod_period < T:
-            cap_usage[prod_period] = qty
-
-    # Create setup by period
-    setup_by_period = [0.0] * T
-    for t in col_data["setups"]:
-        if 0 <= t < T:
-            setup_by_period[t] = 1.0
-
-    # Create arc usage
-    arc_usage = {}
-    for s, u in col_data["arcs"]:
-        arc_usage[(s, u)] = 1.0
-
-    # Create column
-    col = ProductionPlanColumn(
-        item_id=item_id,
-        total_plan_cost=col_data["cost"],
-        capacity_usage_by_period=cap_usage,
-        setup_by_period=setup_by_period,
-        arc_usage=arc_usage,
-    )
-
-    rmp.add_column(col)
-
-    # Track which demands this column serves for demand constraints
-    # We'll add this after all columns are added
-
-print(f"Added {len(zio_columns)} columns to RMP")
-
-# Note: Demand satisfaction is typically handled in the pricing subproblem in column generation
-# For now, we solve RMP without explicit demand constraints to see the solution
-# The columns themselves are valid ZIO plans, but the RMP combination might not satisfy all demands
-print("Note: Solving RMP without explicit demand constraints.")
-print("Demand satisfaction should be verified in the solution analysis below.")
-
-# Solve RMP
-print("\nSolving RMP...")
-lb, mu, pi, sigma, tau = rmp.solve()
-
-print(f"\nRMP Status: {rmp.model.status}")
-if rmp.model.status == GRB.OPTIMAL:
-    print(f"RMP Lower Bound: {lb:.2f}")
-    print(f"Convexity dual (mu): {mu}")
-    print(f"Capacity duals (pi): {pi}")
-elif rmp.model.status == GRB.INFEASIBLE:
-    print("RMP is INFEASIBLE!")
-    print("Computing IIS (Irreducible Inconsistent Subsystem)...")
-    rmp.model.computeIIS()
-    print("IIS Constraints:")
-    for con in rmp.model.getConstrs():
-        if con.IISConstr:
-            print(f"  {con.ConstrName}: {con}")
-    print(
-        "\nThis means the generated columns cannot satisfy all demands with the given capacity constraints."
-    )
-    print("Exiting analysis.")
-    sys.exit(1)
-else:
-    print(f"RMP solve failed with status: {rmp.model.status}")
-    sys.exit(1)
-
-# Extract solution
-eps = 1e-6
-active_columns = []
-for (i, idx), lam_var in rmp.lambdas.items():
-    try:
-        lam_val = lam_var.X
-        if lam_val > eps:
-            col = rmp.columns[i][idx]
-            active_columns.append((i, idx, lam_val, col))
-    except:
-        pass
+# Example usage (uncomment to test):
+# print(has_column([0,1,2], {2:68,3:49,4:104,6:17,7:101}))
 
 print(f"\nActive columns (lambda > {eps}):")
 for item_id, col_idx, lam_val, col in sorted(active_columns, key=lambda x: -x[2]):

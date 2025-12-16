@@ -1,0 +1,5 @@
+Item 0, Period 2: 68.00
+Item 0, Period 3: 73.00
+Item 0, Period 4: 80.00
+Item 0, Period 6: 38.00
+Item 0, Period 7: 80.00
