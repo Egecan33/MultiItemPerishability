@@ -26,11 +26,6 @@ from gurobipy import GRB
 EPS = 1e-6
 
 
-# =============================================================================
-# DATA STRUCTURES
-# =============================================================================
-
-
 @dataclass
 class BranchNode:
     """Node in the branch-and-bound tree."""
@@ -588,9 +583,7 @@ def solve_rmp_with_duals(
     return m.ObjVal, solution, duals
 
 
-# =============================================================================
 # COLUMN GENERATION - DP PRICING
-# =============================================================================
 
 
 def price_block_dp(
@@ -612,10 +605,10 @@ def price_block_dp(
     Reduced cost for block (t, e):
         rc = setup[t] - μ_y_def[(item_id, t)]
              - Σ_{u in [t,e]} σ_link[(item_id, t, u)] * d[u]
-             - τ_force_y[(item_id, t)]  (if Y[i,t]=1 forced)
+             - sig_force_y[(item_id, t)]  (if Y[i,t]=1 forced)
              - Σ τ_force_z[(item_id, t, u)]  (for forced arcs in block)
 
-    The τ duals give a "discount" to blocks that satisfy forced constraints,
+    The sig and τ duals give a "discount" to blocks that satisfy forced constraints,
     ensuring we generate all necessary columns when branching.
 
     Returns:
@@ -763,9 +756,7 @@ def price_all_items(
     return result, true_min_rc
 
 
-# =============================================================================
-# COLUMN GENERATION LOOP
-# =============================================================================
+# CG
 
 
 def column_generation_loop(
@@ -820,7 +811,15 @@ def column_generation_loop(
         # Price new columns (returns top 5 per item + true min RC across all)
         # Pass forced_y/forced_z so their duals give "discounts" to relevant blocks
         new_columns_by_item, min_rc = price_all_items(
-            items, T, Gamma_by_item, duals, forced_y, forbidden_y, forced_z, forbidden_z, columns_by_item
+            items,
+            T,
+            Gamma_by_item,
+            duals,
+            forced_y,
+            forbidden_y,
+            forced_z,
+            forbidden_z,
+            columns_by_item,
         )
 
         # Add new columns and track their reduced costs

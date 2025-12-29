@@ -1,0 +1,205 @@
+Testing SINGLE-ITEM instance
+Expected: LP relaxation ~1003.60, Integer optimal (single ZIO) ~1231.76, comb ZIO ~1105.86
+Instance: 1 items, 10 periods
+
+
+Node 0 (depth=0, incumbent=inf, queue=0)
+Set parameter Username
+Academic license - for non-commercial use only - expires 2026-02-25
+    CG iter 0: obj=1371.67, cols=2, added=1, min_rc=-387.3910
+    CG iter 1: obj=1276.80, cols=3, added=1, min_rc=-379.6910
+    CG iter 2: obj=1141.87, cols=4, added=1, min_rc=-358.3550
+    CG iter 3: obj=1088.21, cols=5, added=1, min_rc=-405.7418
+    CG iter 4: obj=1003.85, cols=5, added=0, min_rc=0.0000
+  Branching on Y[0,4] = 0.6154
+
+Node 1 (depth=1, incumbent=inf, queue=1)
+    CG iter 0: obj=1273.34, cols=6, added=1, min_rc=-723.7670
+    CG iter 1: obj=1110.34, cols=7, added=1, min_rc=-367.4303
+    CG iter 2: obj=1033.95, cols=7, added=0, min_rc=0.0000
+  Branching on Y[0,3] = 0.7551
+
+Node 2 (depth=1, incumbent=inf, queue=2)
+    CG iter 0: obj=78475587.32, cols=8, added=1, min_rc=-169999895.9500
+    CG iter 1: obj=42870337.38, cols=9, added=1, min_rc=-28562080.3830
+    CG iter 2: obj=30902038.75, cols=10, added=1, min_rc=-37999932.9820
+    CG iter 3: obj=23001067.34, cols=11, added=1, min_rc=-45.9400
+    CG iter 4: obj=23001062.58, cols=11, added=0, min_rc=0.0000
+  Branching on Y[0,7] = 0.7921
+
+Node 3 (depth=2, incumbent=inf, queue=3)
+    CG iter 0: obj=1117.46, cols=12, added=1, min_rc=-367.4303
+    CG iter 1: obj=1073.10, cols=13, added=1, min_rc=-862.7667
+    CG iter 2: obj=1048.24, cols=14, added=1, min_rc=-2.9562
+    CG iter 3: obj=1047.89, cols=14, added=0, min_rc=0.0000
+  Branching on Y[0,7] = 0.7921
+
+Node 4 (depth=2, incumbent=inf, queue=4)
+    CG iter 0: obj=66475585.78, cols=15, added=1, min_rc=-54999912.5200
+    CG iter 1: obj=37001051.61, cols=15, added=0, min_rc=0.0000
+  Branching on Y[0,5] = 0.6812
+
+Node 7 (depth=3, incumbent=inf, queue=5)
+    CG iter 0: obj=1117.46, cols=16, added=1, min_rc=-279.4703
+    CG iter 1: obj=1066.18, cols=16, added=0, min_rc=0.0000
+  Branching on Y[0,6] = 0.2079
+
+Node 8 (depth=3, incumbent=inf, queue=6)
+    CG iter 0: obj=111001106.06, cols=17, added=1, min_rc=-270999950.2510
+    CG iter 1: obj=14520681.37, cols=18, added=1, min_rc=-65653617.8541
+    CG iter 2: obj=3780790.35, cols=19, added=1, min_rc=-49000040.6936
+    CG iter 3: obj=1119.79, cols=20, added=1, min_rc=-59.8159
+    CG iter 4: obj=1118.66, cols=21, added=1, min_rc=-53.3560
+    CG iter 5: obj=1101.05, cols=22, added=1, min_rc=-30.4435
+    CG iter 6: obj=1096.43, cols=23, added=1, min_rc=-5.3240
+    CG iter 7: obj=1095.45, cols=23, added=0, min_rc=0.0000
+  Branching on Y[0,6] = 0.6780
+
+Node 11 (depth=4, incumbent=inf, queue=7)
+    CG iter 0: obj=1318.72, cols=24, added=1, min_rc=-3999922.9250
+    CG iter 1: obj=1318.72, cols=25, added=1, min_rc=-318.5846
+    CG iter 2: obj=1240.70, cols=26, added=1, min_rc=-290.5500
+    CG iter 3: obj=1107.17, cols=27, added=1, min_rc=-57.3680
+    CG iter 4: obj=1105.86, cols=27, added=0, min_rc=0.0000
+  Integer Y solution found: 1105.86
+  *** New incumbent: 1105.86 ***
+
+Node 12 (depth=4, incumbent=1105.86, queue=6)
+    CG iter 0: obj=21001045.77, cols=28, added=1, min_rc=-100999824.6260
+    CG iter 1: obj=1083.76, cols=29, added=1, min_rc=-27.7180
+    CG iter 2: obj=1083.40, cols=30, added=1, min_rc=-19.3804
+    CG iter 3: obj=1082.18, cols=30, added=0, min_rc=0.0000
+  Branching on Y[0,9] = 0.2981
+
+Node 15 (depth=5, incumbent=1105.86, queue=7)
+    CG iter 0: obj=5504049.60, cols=31, added=1, min_rc=-114999970.4540
+    CG iter 1: obj=1240.58, cols=32, added=1, min_rc=-211.4777
+    CG iter 2: obj=1169.22, cols=33, added=1, min_rc=-87.4800
+    CG iter 3: obj=1120.05, cols=33, added=0, min_rc=0.0000
+  Pruned by bound: 1120.05 >= 1105.86
+
+Node 16 (depth=5, incumbent=1105.86, queue=6)
+    CG iter 0: obj=21001045.77, cols=34, added=1, min_rc=-100999823.9570
+    CG iter 1: obj=1083.89, cols=35, added=1, min_rc=-23.6540
+    CG iter 2: obj=1083.42, cols=36, added=1, min_rc=-7.7534
+    CG iter 3: obj=1083.18, cols=36, added=0, min_rc=0.0000
+  Branching on Y[0,5] = 0.1818
+
+Node 17 (depth=6, incumbent=1105.86, queue=7)
+    CG iter 0: obj=23001186.27, cols=37, added=1, min_rc=-66000036.8040
+    CG iter 1: obj=1198.19, cols=38, added=1, min_rc=-175.0330
+    CG iter 2: obj=1168.67, cols=39, added=1, min_rc=-47.1977
+    CG iter 3: obj=1148.98, cols=40, added=1, min_rc=-15.7200
+    CG iter 4: obj=1145.71, cols=40, added=0, min_rc=0.0000
+  Pruned by bound: 1145.71 >= 1105.86
+
+Node 18 (depth=6, incumbent=1105.86, queue=6)
+    CG iter 0: obj=10001072.86, cols=41, added=1, min_rc=-169999716.1000
+    CG iter 1: obj=1089.56, cols=41, added=0, min_rc=0.0000
+  Branching on Y[0,8] = 0.2500
+
+Node 19 (depth=7, incumbent=1105.86, queue=7)
+    CG iter 0: obj=7856315.61, cols=42, added=1, min_rc=-14905914.8929
+    CG iter 1: obj=3225158.50, cols=43, added=1, min_rc=-11429176.8915
+    CG iter 2: obj=1162.99, cols=44, added=1, min_rc=-84.0000
+    CG iter 3: obj=1158.05, cols=45, added=1, min_rc=-84.0000
+    CG iter 4: obj=1155.53, cols=45, added=0, min_rc=0.0000
+  Pruned by bound: 1155.53 >= 1105.86
+
+Node 20 (depth=7, incumbent=1105.86, queue=6)
+    CG iter 0: obj=31001029.87, cols=46, added=1, min_rc=-270999372.3970
+    CG iter 1: obj=19001057.66, cols=47, added=1, min_rc=-109.7993
+    CG iter 2: obj=19001053.37, cols=47, added=0, min_rc=0.0000
+  Pruned by bound: 19001053.37 >= 1105.86
+
+Node 13 (depth=4, incumbent=1105.86, queue=5)
+    CG iter 0: obj=38001063.34, cols=48, added=1, min_rc=-117999822.7190
+    CG iter 1: obj=2717898.03, cols=49, added=1, min_rc=-210095914.8726
+    CG iter 2: obj=1132.35, cols=50, added=1, min_rc=-50.7664
+    CG iter 3: obj=1124.64, cols=51, added=1, min_rc=-21.4504
+    CG iter 4: obj=1119.53, cols=51, added=0, min_rc=0.0000
+  Pruned by bound: 1119.53 >= 1105.86
+
+Node 14 (depth=4, incumbent=1105.86, queue=4)
+    CG iter 0: obj=1172.34, cols=51, added=0, min_rc=0.0000
+  Pruned by bound: 1172.34 >= 1105.86
+
+Node 5 (depth=2, incumbent=1105.86, queue=3)
+    CG iter 0: obj=44001054.88, cols=52, added=1, min_rc=-100999874.9970
+    CG iter 1: obj=23001085.63, cols=53, added=1, min_rc=-45.9400
+    CG iter 2: obj=23001080.87, cols=53, added=0, min_rc=0.0000
+  Pruned by bound: 23001080.87 >= 1105.86
+
+Node 6 (depth=2, incumbent=1105.86, queue=2)
+    CG iter 0: obj=61001091.93, cols=54, added=1, min_rc=-117999949.6290
+    CG iter 1: obj=25035012.87, cols=55, added=1, min_rc=-114999843.1224
+    CG iter 2: obj=23001108.15, cols=55, added=0, min_rc=0.0000
+  Pruned by bound: 23001108.15 >= 1105.86
+
+Node 9 (depth=3, incumbent=1105.86, queue=1)
+    CG iter 0: obj=58001071.76, cols=56, added=1, min_rc=-100999963.3370
+    CG iter 1: obj=37001079.38, cols=57, added=1, min_rc=-4999520.3900
+    CG iter 2: obj=37001079.38, cols=58, added=1, min_rc=-0.5500
+    CG iter 3: obj=37001079.32, cols=58, added=0, min_rc=0.0000
+  Pruned by bound: 37001079.32 >= 1105.86
+
+Node 10 (depth=3, incumbent=1105.86, queue=0)
+    CG iter 0: obj=66475585.78, cols=59, added=1, min_rc=-15550699.0638
+    CG iter 1: obj=37001061.42, cols=59, added=0, min_rc=0.0000
+  Pruned by bound: 37001061.42 >= 1105.86
+
+Branch-and-Price completed:
+  Nodes explored: 21
+  Best UB: 1105.8640
+  Best LB: 1105.8640
+
+======================================================================
+
+ACTIVE COLUMNS IN OPTIMAL SOLUTION
+
+
+--- Item 0 ---
+  Active columns: 3
+  Sum of λ: 1.000000
+
+  Column 15: λ = 0.207921 (20.79%)
+    Cost: 1194.02
+    Y (setups): [2, 3, 4, 6, 7]
+    X (production): t2:68.0, t3:153.0, t4:0.0, t6:118.0, t7:0.0
+    Dummy setups (Y=1, X=0): [4, 7]
+    Z (arcs): (2→2), (3→3), (3→4), (3→5), (6→6), (6→7), (6→8), (6→9)
+
+  Column 25: λ = 0.769231 (76.92%)
+    Cost: 1081.12
+    Y (setups): [2, 3, 4, 6, 7]
+    X (production): t2:68.0, t3:49.0, t4:104.0, t6:17.0, t7:101.0
+    Z (arcs): (2→2), (3→3), (4→4), (4→5), (6→6), (7→7), (7→8), (7→9)
+
+  Column 26: λ = 0.022848 (2.28%)
+    Cost: 1136.66
+    Y (setups): [2, 3, 4, 6, 7]
+    X (production): t2:68.0, t3:153.0, t4:0.0, t6:17.0, t7:101.0
+    Dummy setups (Y=1, X=0): [4]
+    Z (arcs): (2→2), (3→3), (3→4), (3→5), (6→6), (7→7), (7→8), (7→9)
+
+  Convex combination for Item 0:
+    Aggregated cost: 1105.86
+    X_agg: t2:68.00, t3:73.00, t4:80.00, t6:38.00, t7:80.00
+    Y_agg: t2:1.0000, t3:1.0000, t4:1.0000, t6:1.0000, t7:1.0000
+
+======================================================================
+
+RESULTS
+
+  Status:     OPTIMAL
+  Objective:  1105.864
+  Best bound: 1105.864
+  Gap:        0.0000%
+  Runtime:    0.00s
+
+Production plan:
+  item=0, t=2, x=68.00
+  item=0, t=3, x=73.00
+  item=0, t=4, x=80.00
+  item=0, t=6, x=38.00
+  item=0, t=7, x=80.00

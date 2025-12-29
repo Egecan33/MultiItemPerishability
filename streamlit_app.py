@@ -33,12 +33,12 @@ except Exception:
     _solve_nocross_v1 = None  # optional backend
 
 try:
-    from bnp.solver_bnp import solve_instance as _solve_bnp
+    from bnp.solver_bnp_mip_based import solve_instance as _solve_bnp
 except Exception:
     _solve_bnp = None  # optional backend
 
 try:
-    from bnp.solver_bnp_dp import solve_instance as _solve_bnp_dp
+    from bnp.solver_bnp_dp_arc_based import solve_instance as _solve_bnp_dp
 except Exception:
     _solve_bnp_dp = None  # optional backend
 
@@ -60,18 +60,18 @@ SOLVER_REGISTRY = {
     },
     "No-Crossing v1": {
         "fn": _solve_nocross_v1,
-        "tag": "lefo_mip_v1",
+        "tag": "pure_mip_gurobi_v1",
         "desc": "No-crossing model (v1).",
     },
     "BNP (MIP-based)": {
         "fn": _solve_bnp,
-        "tag": "bnp_v1",
+        "tag": "bnp_mip_based_v1",
         "desc": "BNP (MIP_based).",
     },
     "BNP DP (arc-based)": {
         "fn": _solve_bnp_dp,
-        "tag": "bnp_dp_v1",
-        "desc": "BNP (DP_based).",
+        "tag": "bnp_dp_arc_based_v1",
+        "desc": "BNP (DP_based) with arc-based pricing.",
     },
     "BNP DP Full Plans": {
         "fn": _solve_bnp_dp_full_plans,

@@ -1,0 +1,2 @@
+node_id,depth,lp_bound,incumbent,branch_item,branch_t,direction,status,cg_iters,columns_added
+0,0,36042.27599112808,35887.526856777506,,,,PRUNED,24,194
