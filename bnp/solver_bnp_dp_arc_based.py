@@ -24,6 +24,13 @@ import gurobipy as gp
 from gurobipy import GRB
 
 EPS = 1e-6
+ADD_ALL_LEFO_CUTS_UPFRONT = False  # Add all LEFO cuts at root (exact)
+MAX_LEFO_CUTS_PER_ITER = 10  # max cuts per CG iter if lazy cutting (still will add all neccesary cuts but slower)
+
+# Safe column pruning settings
+ENABLE_COLUMN_PRUNING = True
+PRUNE_AFTER_UNUSED_ITERS = 15  # Only prune if unused for this many consecutive CG iters
+MIN_COLUMNS_PER_ITEM = 10  # Always keep at least this many columns per item
 
 
 @dataclass
@@ -37,6 +44,8 @@ class BranchNode:
     forbidden_y: Dict[int, Set[int]] = field(default_factory=dict)  # item -> {periods}
     # LEFO cuts accumulated at this node: (item_id, t1, u, t2, up) means Z[t1,u] + Z[t2,up] <= 1
     lefo_cuts: List[Tuple[int, int, int, int, int]] = field(default_factory=list)
+    # X bounds for production quantities: (item_id, t) -> (lower, upper)
+    x_bounds: Dict[Tuple[int, int], Tuple[float, float]] = field(default_factory=dict)
     lp_bound: float = math.inf
 
     def __lt__(self, other: "BranchNode") -> bool:
@@ -294,12 +303,16 @@ def solve_rmp_with_duals(
     forced_y: Dict[int, Set[int]],
     forbidden_y: Dict[int, Set[int]],
     lefo_cuts: List[Tuple[int, int, int, int, int]],
+    x_bounds: Dict[Tuple[int, int], Tuple[float, float]] = None,
     use_artificial: bool = True,
 ) -> Tuple[float, Dict, Dict]:
     """
     Solve RMP and return objective, solution, and dual values.
 
     Uses artificial variables to ensure feasibility during column generation.
+
+    Args:
+        x_bounds: Optional dict of (item_id, t) -> (lower, upper) bounds on production.
 
     Returns:
         (obj, solution_dict, duals_dict)
@@ -459,6 +472,20 @@ def solve_rmp_with_duals(
                 f"lefo_cut_{idx}",
             )
 
+    # X bounds: production quantity bounds from branching
+    if x_bounds:
+        for (item_id, t), (lb, ub) in x_bounds.items():
+            # Total production at (item, t) = Σ_u f[item, t, u]
+            flow_from_t = [
+                f[(i, tt, u)] for (i, tt, u) in f if i == item_id and tt == t
+            ]
+            if flow_from_t:
+                total_prod = gp.quicksum(flow_from_t)
+                if lb > 0:
+                    m.addConstr(total_prod >= lb, f"x_lb_{item_id}_{t}")
+                if ub < math.inf:
+                    m.addConstr(total_prod <= ub, f"x_ub_{item_id}_{t}")
+
     # Objective: setup costs + flow costs + artificial penalties
     obj = gp.LinExpr()
     for item_id, item_data in items.items():
@@ -578,18 +605,19 @@ def price_block_dp(
     duals: Dict,
     forced_y: Set[int],
     forbidden_y: Set[int],
-    lefo_cuts: List[Tuple[int, int, int, int, int]],
     existing_blocks: Set[Tuple[int, int, float]],
     max_columns_per_item: int = 5,
 ) -> Tuple[List[Tuple[Tuple[int, int, float], float]], float]:
     """
     DP pricing to find negative reduced cost blocks for an item.
 
+    NOTE: Column generation is INDEPENDENT of LEFO cuts. We generate all
+    cost-effective columns; the RMP's LEFO constraints select which to use.
+
     Reduced cost for block (t, e):
         rc = setup[t] - μ_y_def[(item_id, t)]
              - Σ_{u in [t,e]} σ_link[(item_id, t, u)] * d[u]
              - τ_force_y[(item_id, t)]  (if Y[i,t]=1 forced)
-             - Σ π_lefo[idx] for LEFO cuts involving arcs in this block
 
     Returns:
         - list of top max_columns_per_item ((t, e, setup_cost), reduced_cost) with rc < -EPS
@@ -606,17 +634,9 @@ def price_block_dp(
     sigma_link = duals.get("sigma_link", {})
     mu_y_def = duals.get("mu_y_def", {})
     tau_force_y = duals.get("tau_force_y", {})
-    pi_lefo = duals.get("pi_lefo", {})
-
-    # Build lookup for LEFO cuts affecting this item
-    # For each cut idx, store which arcs (t, u) are involved for this item
-    lefo_arcs_by_cut: Dict[int, List[Tuple[int, int]]] = {}
-    for idx, (i, t1, u, t2, up) in enumerate(lefo_cuts):
-        if i == item_id:
-            if idx not in lefo_arcs_by_cut:
-                lefo_arcs_by_cut[idx] = []
-            lefo_arcs_by_cut[idx].append((t1, u))
-            lefo_arcs_by_cut[idx].append((t2, up))
+    # NOTE: LEFO duals (pi_lefo) are NOT used in pricing.
+    # Column generation is independent of LEFO cuts - we generate all cost-effective
+    # columns, and the RMP's LEFO constraints will select which ones to use.
 
     negative_rc_blocks = []
 
@@ -661,35 +681,26 @@ def price_block_dp(
             # τ_force_y: dual of forced Y constraint (y[i,t] = 1)
             tau_y = tau_force_y.get((item_id, t), 0.0)
 
-            # LEFO cut duals: for each cut, if this block covers an arc in the cut,
-            # we get contribution from the dual (π_lefo <= 0 for <= constraint)
-            # Block (t, e) covers arcs (t, u) for u in [t, e] ∩ reachable
-            block_arcs = set(
-                (t, u) for u in range(t, e + 1) if u in reachable and demand[u] > 0
-            )
-            lefo_contrib = 0.0
-            for idx, arcs in lefo_arcs_by_cut.items():
-                # Check if any arc in this cut is covered by the block
-                for arc in arcs:
-                    if arc in block_arcs:
-                        # π_lefo <= 0 for <= constraint, contribution is -π
-                        lefo_contrib += -pi_lefo.get(idx, 0.0)
-                        break  # Only count once per cut
-
-            # RC = setup_cost - μ - σ_contrib - τ_y - lefo_contrib
-            rc = s_cost - mu - sigma_contrib - tau_y - lefo_contrib
+            # RC = setup_cost - μ - σ_contrib - τ_y
+            # NOTE: LEFO duals NOT included - CG is independent of LEFO cuts
+            rc = s_cost - mu - sigma_contrib - tau_y
 
             if rc < -EPS:
-                negative_rc_blocks.append((block, rc))
+                # Store with score: (rc, -(e-t)) to prefer larger blocks at same RC
+                block_size = e - t
+                negative_rc_blocks.append((block, rc, block_size))
 
-    # Sort by reduced cost (most negative first)
-    negative_rc_blocks.sort(key=lambda x: x[1])
+    # Sort by (rc, -block_size): most negative RC first, then larger blocks
+    negative_rc_blocks.sort(key=lambda x: (x[1], -x[2]))
 
     # True minimum RC across ALL negative RC blocks
     true_min_rc = negative_rc_blocks[0][1] if negative_rc_blocks else 0.0
 
-    # Return top k columns and the true minimum RC
-    return negative_rc_blocks[:max_columns_per_item], true_min_rc
+    # Return top k columns (block, rc) and the true minimum RC
+    top_blocks = [
+        (block, rc) for block, rc, _ in negative_rc_blocks[:max_columns_per_item]
+    ]
+    return top_blocks, true_min_rc
 
 
 def price_all_items(
@@ -699,15 +710,14 @@ def price_all_items(
     duals: Dict,
     forced_y: Dict[int, Set[int]],
     forbidden_y: Dict[int, Set[int]],
-    lefo_cuts: List[Tuple[int, int, int, int, int]],
     columns_by_item: Dict[int, List[Tuple[int, int, float]]],
     max_columns_per_item: int = 20,
 ) -> Tuple[Dict[int, List[Tuple[Tuple[int, int, float], float]]], float]:
     """
     Price blocks for all items, returning top max_columns_per_item per item.
 
-    Uses forced_y duals and LEFO cut duals to give "discounts" to columns that
-    satisfy constraints, ensuring we generate all needed columns.
+    NOTE: Column generation is INDEPENDENT of LEFO cuts. We generate all
+    cost-effective columns; the RMP's LEFO constraints select which to use.
 
     Returns:
         - result: dict mapping item_id -> list of (block, rc) tuples
@@ -728,7 +738,6 @@ def price_all_items(
             duals,
             forced_periods,
             forbidden_periods,
-            lefo_cuts,
             existing,
             max_columns_per_item,
         )
@@ -750,6 +759,7 @@ def column_generation_loop(
     forced_y: Dict[int, Set[int]],
     forbidden_y: Dict[int, Set[int]],
     lefo_cuts: List[Tuple[int, int, int, int, int]],
+    x_bounds: Dict[Tuple[int, int], Tuple[float, float]],
     node_id: int,
     logger: Optional[BnPLogger],
     max_cg_iters: int = 20000,
@@ -783,12 +793,14 @@ def column_generation_loop(
             forced_y,
             forbidden_y,
             lefo_cuts,
+            x_bounds,
         )
 
         if not math.isfinite(obj):
             return math.inf, {"status": "infeasible"}, columns_by_item, cg_iter, 0
 
         # Price new columns (returns top 5 per item + true min RC across all)
+        # NOTE: Pricing is INDEPENDENT of LEFO cuts - we generate all cost-effective columns
         new_columns_by_item, min_rc = price_all_items(
             items,
             T,
@@ -796,7 +808,6 @@ def column_generation_loop(
             duals,
             forced_y,
             forbidden_y,
-            lefo_cuts,
             columns_by_item,
         )
 
@@ -838,11 +849,58 @@ def column_generation_loop(
         # Count total columns
         total_cols = sum(len(cols) for cols in columns_by_item.values())
 
-        # Pruning disabled - causes cyclic instability when pruned columns
-        # are needed for feasibility (even if they have zero reduced cost)
-        # The LP may need columns for constraint satisfaction even if they
-        # don't improve the objective
-        pass
+        # Safe column pruning: remove columns unused for many iterations
+        # Key safety: NEVER prune active columns (those with λ > 0 in current solution)
+        if ENABLE_COLUMN_PRUNING and cg_iter > 0:
+            # Get active columns from current solution
+            lam_vals = solution.get("lam", {}) if isinstance(solution, dict) else {}
+            active_columns: Dict[int, Set[Tuple[int, int, float]]] = {
+                i: set() for i in items
+            }
+            for (item_id, t, e), val in lam_vals.items():
+                if val > EPS:
+                    # Find matching block in pool
+                    for block in columns_by_item.get(item_id, []):
+                        if block[0] == t and block[1] == e:
+                            active_columns[item_id].add(block)
+                            break
+
+            # Prune inactive columns that have been unused for too long
+            for item_id in columns_by_item:
+                if len(columns_by_item[item_id]) <= MIN_COLUMNS_PER_ITEM:
+                    continue  # Keep minimum
+
+                columns_to_keep = []
+                for col in columns_by_item[item_id]:
+                    # NEVER prune active columns
+                    if col in active_columns[item_id]:
+                        columns_to_keep.append(col)
+                        column_zero_rc_count[(item_id, col)] = 0  # Reset counter
+                        continue
+
+                    # Check if unused for too long
+                    unused_count = column_zero_rc_count.get((item_id, col), 0)
+                    if unused_count < PRUNE_AFTER_UNUSED_ITERS:
+                        columns_to_keep.append(col)
+                    # else: prune this column (don't add to keep list)
+
+                # Ensure we keep at least MIN_COLUMNS_PER_ITEM
+                if len(columns_to_keep) >= MIN_COLUMNS_PER_ITEM:
+                    pruned_count = len(columns_by_item[item_id]) - len(columns_to_keep)
+                    if pruned_count > 0:
+                        # Clean up tracking for pruned columns
+                        old_cols = set(columns_by_item[item_id])
+                        new_cols = set(columns_to_keep)
+                        for col in old_cols - new_cols:
+                            column_zero_rc_count.pop((item_id, col), None)
+                        columns_by_item[item_id] = columns_to_keep
+                        if verbose:
+                            print(
+                                f"      Pruned {pruned_count} inactive columns from item {item_id}"
+                            )
+
+            # Recount after pruning
+            total_cols = sum(len(cols) for cols in columns_by_item.values())
 
         # Log CG iteration
         if logger:
@@ -882,6 +940,7 @@ def column_generation_loop(
         forced_y,
         forbidden_y,
         lefo_cuts,
+        x_bounds,
     )
 
     return obj, solution, columns_by_item, cg_iter, total_columns_added
@@ -978,6 +1037,135 @@ def find_lefo_violation(
     return None
 
 
+def find_all_lefo_violations(
+    z_vals: Dict[Tuple[int, int, int], float],
+    items: Dict[int, dict],
+    Gamma_by_item: Dict[int, Dict[int, List[int]]],
+    existing_cuts: List[Tuple[int, int, int, int, int]],
+) -> List[Tuple[int, int, int, int, int]]:
+    """
+    Find ALL LEFO violations: Z[t1,u] + Z[t2,up] > 1 for crossing pairs.
+
+    Returns: List of (item_id, t1, u, t2, up) tuples for all violations.
+    """
+    existing_set = set(existing_cuts)
+    violations = []
+
+    for item_id, item_data in items.items():
+        Gamma = Gamma_by_item.get(item_id, {})
+        shelf_seq = item_data.get("shelf_seq", [])
+        demand = item_data.get("demand", [])
+        T = len(demand)
+
+        prods = [t for t in range(T) if Gamma.get(t)]
+        if len(prods) < 2:
+            continue
+
+        expiry = {}
+        for t in prods:
+            m_t = int(shelf_seq[t]) if t < len(shelf_seq) else 0
+            expiry[t] = t + m_t
+
+        prods_sorted = sorted(prods, key=lambda t: expiry[t])
+
+        for a in range(len(prods_sorted)):
+            t1 = prods_sorted[a]
+            v1 = expiry[t1]
+            reachable_t1 = set(Gamma.get(t1, []))
+
+            for b in range(a + 1, len(prods_sorted)):
+                t2 = prods_sorted[b]
+                v2 = expiry[t2]
+
+                if v1 >= v2:
+                    continue
+
+                reachable_t2 = Gamma.get(t2, [])
+
+                for up in reachable_t2:
+                    if demand[up] <= 0:
+                        continue
+                    z_t2_up = z_vals.get((item_id, t2, up), 0.0)
+                    if z_t2_up < EPS:
+                        continue
+
+                    for u in range(t2, up):
+                        if u not in reachable_t1 or demand[u] <= 0:
+                            continue
+
+                        z_t1_u = z_vals.get((item_id, t1, u), 0.0)
+                        if z_t1_u < EPS:
+                            continue
+
+                        if z_t1_u + z_t2_up > 1.0 + EPS:
+                            cut = (item_id, t1, u, t2, up)
+                            if cut not in existing_set:
+                                violations.append(cut)
+                                existing_set.add(cut)
+
+    return violations
+
+
+def generate_all_lefo_cuts(
+    items: Dict[int, dict],
+    Gamma_by_item: Dict[int, Dict[int, List[int]]],
+) -> List[Tuple[int, int, int, int, int]]:
+    """
+    Generate ALL possible LEFO cuts upfront (same as MIP no-cross constraints).
+
+    For each pair of production periods t1 < t2 with expiry v1 < v2,
+    for each arc (t2, up) and (t1, u) where t2 <= u <= up-1,
+    add constraint Z[t1,u] + Z[t2,up] <= 1.
+
+    Returns: List of (item_id, t1, u, t2, up) tuples for all LEFO cuts.
+    """
+    all_cuts = []
+
+    for item_id, item_data in items.items():
+        Gamma = Gamma_by_item.get(item_id, {})
+        shelf_seq = item_data.get("shelf_seq", [])
+        demand = item_data.get("demand", [])
+        T = len(demand)
+
+        prods = [t for t in range(T) if Gamma.get(t)]
+        if len(prods) < 2:
+            continue
+
+        expiry = {}
+        for t in prods:
+            m_t = int(shelf_seq[t]) if t < len(shelf_seq) else 0
+            expiry[t] = t + m_t
+
+        prods_sorted = sorted(prods, key=lambda t: expiry[t])
+
+        for a in range(len(prods_sorted)):
+            t1 = prods_sorted[a]
+            v1 = expiry[t1]
+            reachable_t1 = set(Gamma.get(t1, []))
+
+            for b in range(a + 1, len(prods_sorted)):
+                t2 = prods_sorted[b]
+                v2 = expiry[t2]
+
+                if v1 >= v2:
+                    continue
+
+                reachable_t2 = Gamma.get(t2, [])
+
+                for up in reachable_t2:
+                    if demand[up] <= 0:
+                        continue
+
+                    for u in range(t2, up):
+                        if u not in reachable_t1 or demand[u] <= 0:
+                            continue
+
+                        cut = (item_id, t1, u, t2, up)
+                        all_cuts.append(cut)
+
+    return all_cuts
+
+
 def find_best_branching_y(
     y_vals: Dict[Tuple[int, int], float],
     forced_y: Dict[int, Set[int]],
@@ -1033,6 +1221,42 @@ def find_best_branching_y(
         if score > best_score:
             best_score = score
             best = (item_id, t, val)
+
+    return best
+
+
+def find_fractional_x(
+    x_agg: Dict[int, Dict[int, float]],
+    x_bounds: Dict[Tuple[int, int], Tuple[float, float]],
+) -> Optional[Tuple[int, int, float]]:
+    """
+    Find a fractional X (production quantity) to branch on.
+
+    x_agg: dict of item_id -> {t: total_production_at_t}
+
+    Returns: (item_id, t, value) for the most fractional X, or None if all integer.
+    """
+    best_frac = 0.0
+    best = None
+
+    for item_id, prod_by_t in x_agg.items():
+        for t, val in prod_by_t.items():
+            # Check if this (item, t) already has bounds that make it integer
+            if (item_id, t) in x_bounds:
+                lb, ub = x_bounds[(item_id, t)]
+                if abs(ub - lb) < EPS:
+                    continue  # Already fixed
+
+            # Check fractionality
+            frac_part = val - math.floor(val)
+            if frac_part < EPS or frac_part > 1 - EPS:
+                continue  # Integer
+
+            # Score by how close to 0.5 the fractional part is
+            frac_score = min(frac_part, 1.0 - frac_part)
+            if frac_score > best_frac:
+                best_frac = frac_score
+                best = (item_id, t, val)
 
     return best
 
@@ -1093,6 +1317,7 @@ def _try_dive_with_threshold(
         forced_y,
         forbidden_y,
         lefo_cuts,
+        x_bounds=None,
         use_artificial=True,
     )
 
@@ -1106,10 +1331,15 @@ def _try_dive_with_threshold(
 
     # Check if Y is integer
     y_dive = solution.get("y", {})
-    if is_y_integer(y_dive):
-        return obj, solution
+    if not is_y_integer(y_dive):
+        return None, None
 
-    return None, None
+    # Check if X is integer
+    x_agg = solution.get("x_agg", {})
+    if find_fractional_x(x_agg, {}) is not None:
+        return None, None  # X is fractional
+
+    return obj, solution
 
 
 def try_dive(
@@ -1184,9 +1414,15 @@ def solve_branch_and_price(
     max_nodes: int = 100000000,
     verbose: bool = False,
     logger: Optional[BnPLogger] = None,
+    add_all_lefo_cuts_upfront: bool = ADD_ALL_LEFO_CUTS_UPFRONT,
 ) -> Tuple[float, Optional[Dict], float, float]:
     """
     Solve using block-based Branch-and-Price with column generation.
+
+    Args:
+        add_all_lefo_cuts_upfront: If True, add ALL LEFO (no-crossing) constraints
+            at the root node (same as MIP). If False, add them lazily when violations
+            are detected. Default True for exactness.
 
     Returns: (best_obj, best_solution, root_bound, final_gap)
 
@@ -1194,13 +1430,21 @@ def solve_branch_and_price(
     """
     start_time = time.time()
 
+    # Generate LEFO cuts upfront if enabled
+    if add_all_lefo_cuts_upfront:
+        initial_lefo_cuts = generate_all_lefo_cuts(items, Gamma_by_item)
+        if verbose:
+            print(f"  Adding {len(initial_lefo_cuts)} LEFO cuts upfront")
+    else:
+        initial_lefo_cuts = []
+
     root = BranchNode(
         node_id=0,
         parent_id=None,
         depth=0,
         forced_y={i: set() for i in items},
         forbidden_y={i: set() for i in items},
-        lefo_cuts=[],
+        lefo_cuts=initial_lefo_cuts,
     )
 
     if verbose:
@@ -1217,6 +1461,7 @@ def solve_branch_and_price(
             root.forced_y,
             root.forbidden_y,
             root.lefo_cuts,
+            root.x_bounds,
             node_id=0,
             logger=logger,
             verbose=verbose,
@@ -1300,17 +1545,28 @@ def solve_branch_and_price(
         root.lefo_cuts,
     )
     if dive_obj is not None:
-        best_ub = dive_obj
-        best_solution = dive_sol
-        if verbose:
-            print(f"  🎯 Dive found incumbent: {best_ub:.4f}")
+        # Check for LEFO violations before accepting as incumbent
+        dive_z = dive_sol.get("z", {})
+        lefo_violations = find_all_lefo_violations(dive_z, items, Gamma_by_item, [])
+        if not lefo_violations:
+            best_ub = dive_obj
+            best_solution = dive_sol
+            if verbose:
+                print(f"  🎯 Dive found incumbent: {best_ub:.4f}")
+        else:
+            if verbose:
+                print(
+                    f"  Dive solution has {len(lefo_violations)} LEFO violations, rejected"
+                )
     else:
         if verbose:
             print("  Dive did not find feasible solution")
 
-    # Priority queue: (bound, node_id, node)
-    queue: List[Tuple[float, int, BranchNode]] = []
-    heapq.heappush(queue, (root.lp_bound, root.node_id, root))
+    # Priority queue: (-depth, -node_id, node) for DFS (depth-first search)
+    # Negative depth means deeper nodes have smaller values → processed first
+    # Negative node_id gives LIFO behavior for same-depth nodes
+    queue: List[Tuple[int, int, BranchNode]] = []
+    heapq.heappush(queue, (-root.depth, -root.node_id, root))
 
     node_counter = 1
     nodes_explored = 0
@@ -1334,9 +1590,9 @@ def solve_branch_and_price(
         _, _, node = heapq.heappop(queue)
         nodes_explored += 1
 
-        # Update global lower bound (min of queue + best_ub)
+        # Update global lower bound (min LP bound of all nodes in queue)
         if queue:
-            global_lb = min(q[0] for q in queue)
+            global_lb = min(q[2].lp_bound for q in queue)
         else:
             global_lb = best_ub if best_ub is not None else root_bound
 
@@ -1372,6 +1628,7 @@ def solve_branch_and_price(
                 node.forced_y,
                 node.forbidden_y,
                 node.lefo_cuts,
+                node.x_bounds,
                 node_id=node.node_id,
                 logger=logger,
                 verbose=False,  # Suppress CG iteration details
@@ -1382,19 +1639,29 @@ def solve_branch_and_price(
             if not math.isfinite(obj):
                 break  # Infeasible
 
-            # Check for LEFO violations and add cuts
+            # Check for ALL LEFO violations and add cuts (up to MAX_LEFO_CUTS_PER_ITER)
             z_vals = info.get("z", {})
-            violation = find_lefo_violation(
+            violations = find_all_lefo_violations(
                 z_vals, items, Gamma_by_item, node.lefo_cuts
             )
-            if violation is None:
+            if not violations:
                 break  # No violations, proceed
 
-            # Add cut and restart CG
-            node.lefo_cuts.append(violation)
+            # Add up to MAX_LEFO_CUTS_PER_ITER cuts, sorted by violation severity
+            violations_sorted = sorted(
+                violations,
+                key=lambda v: z_vals.get((v[0], v[1], v[2]), 0)
+                + z_vals.get((v[0], v[3], v[4]), 0),
+                reverse=True,
+            )
+            cuts_to_add = violations_sorted[:MAX_LEFO_CUTS_PER_ITER]
+            for v in cuts_to_add:
+                node.lefo_cuts.append(v)
             if verbose:
-                i, t1, u, t2, up = violation
-                print(f"    LEFO cut added: Z[{i},{t1},{u}] + Z[{i},{t2},{up}] <= 1")
+                print(
+                    f"    Added {len(cuts_to_add)} LEFO cuts "
+                    f"(of {len(violations)} violations), restarting CG"
+                )
 
         cg_iters = total_cg_iters
         cols_added = total_cols_added
@@ -1508,10 +1775,20 @@ def solve_branch_and_price(
                 node.lefo_cuts,
             )
             if dive_obj is not None and (best_ub is None or dive_obj < best_ub - EPS):
-                best_ub = dive_obj
-                best_solution = dive_sol
-                if verbose:
-                    print(f"  🎯 Dive found better incumbent: {best_ub:.4f}")
+                # Check for LEFO violations before accepting as incumbent
+                dive_z = dive_sol.get("z", {})
+                lefo_violations = find_all_lefo_violations(
+                    dive_z, items, Gamma_by_item, []
+                )
+                if not lefo_violations:
+                    best_ub = dive_obj
+                    best_solution = dive_sol
+                    if verbose:
+                        print(f"  🎯 Dive found better incumbent: {best_ub:.4f}")
+                elif verbose:
+                    print(
+                        f"  Dive solution has {len(lefo_violations)} LEFO violations, rejected"
+                    )
 
         y_vals = info.get("y", {})
 
@@ -1519,35 +1796,103 @@ def solve_branch_and_price(
         y_int = is_y_integer(y_vals)
 
         if y_int:
-            # Y is integer - this is a valid solution
-            if best_ub is None or obj < best_ub - EPS:
-                old_ub = best_ub
-                best_ub = obj
-                best_solution = info
-                if verbose:
-                    if old_ub is None:
-                        print(
-                            f"  [{nodes_explored}] Node {node.node_id} (d={node.depth}): LP={obj:.2f} → ★ FIRST INCUMBENT"
+            # Y is integer - check if X is also integer
+            x_agg = info.get("x_agg", {})
+            branch_var_x = find_fractional_x(x_agg, node.x_bounds)
+
+            if branch_var_x is None:
+                # Both Y and X are integer - valid solution!
+                if best_ub is None or obj < best_ub - EPS:
+                    old_ub = best_ub
+                    best_ub = obj
+                    best_solution = info
+                    if verbose:
+                        if old_ub is None:
+                            print(
+                                f"  [{nodes_explored}] Node {node.node_id} (d={node.depth}): LP={obj:.2f} → ★ FIRST INCUMBENT"
+                            )
+                        else:
+                            print(
+                                f"  [{nodes_explored}] Node {node.node_id} (d={node.depth}): LP={obj:.2f} → ★ IMPROVED {old_ub:.2f} → {best_ub:.2f}"
+                            )
+                    if logger:
+                        logger.log_node(
+                            NodeLogEntry(
+                                node_id=node.node_id,
+                                depth=node.depth,
+                                lp_bound=obj,
+                                incumbent=obj,
+                                branch_item=None,
+                                branch_t=None,
+                                direction=None,
+                                status="NEW_INCUMBENT",
+                                cg_iters=cg_iters,
+                                columns_added=cols_added,
+                            )
                         )
-                    else:
-                        print(
-                            f"  [{nodes_explored}] Node {node.node_id} (d={node.depth}): LP={obj:.2f} → ★ IMPROVED {old_ub:.2f} → {best_ub:.2f}"
-                        )
-                if logger:
-                    logger.log_node(
-                        NodeLogEntry(
-                            node_id=node.node_id,
-                            depth=node.depth,
-                            lp_bound=obj,
-                            incumbent=obj,
-                            branch_item=None,
-                            branch_t=None,
-                            direction=None,
-                            status="NEW_INCUMBENT",
-                            cg_iters=cg_iters,
-                            columns_added=cols_added,
-                        )
+                continue
+
+            # Y is integer but X is fractional - branch on X
+            item_id, t, val = branch_var_x
+            floor_val = math.floor(val)
+            ceil_val = math.ceil(val)
+
+            if verbose:
+                ub_str = f"{best_ub:.2f}" if best_ub else "N/A"
+                print(
+                    f"  [{nodes_explored}] Node {node.node_id} (d={node.depth}): "
+                    f"LP={obj:.2f}, UB={ub_str} → branch X[{item_id},{t}]={val:.2f}"
+                )
+
+            if logger:
+                logger.log_node(
+                    NodeLogEntry(
+                        node_id=node.node_id,
+                        depth=node.depth,
+                        lp_bound=obj,
+                        incumbent=best_ub if best_ub else math.inf,
+                        branch_item=item_id,
+                        branch_t=t,
+                        direction="X",
+                        status="BRANCHED_X",
+                        cg_iters=cg_iters,
+                        columns_added=cols_added,
                     )
+                )
+
+            # Create two children: X <= floor, X >= ceil
+            for direction in [0, 1]:
+                child = BranchNode(
+                    node_id=node_counter,
+                    parent_id=node.node_id,
+                    depth=node.depth + 1,
+                    forced_y={i: set(s) for i, s in node.forced_y.items()},
+                    forbidden_y={i: set(s) for i, s in node.forbidden_y.items()},
+                    lefo_cuts=list(node.lefo_cuts),
+                    x_bounds=dict(node.x_bounds),  # Inherit parent's X bounds
+                    lp_bound=obj,
+                )
+
+                if direction == 0:
+                    # X <= floor_val
+                    old_lb, old_ub_bound = child.x_bounds.get(
+                        (item_id, t), (0.0, math.inf)
+                    )
+                    child.x_bounds[(item_id, t)] = (
+                        old_lb,
+                        min(old_ub_bound, floor_val),
+                    )
+                else:
+                    # X >= ceil_val
+                    old_lb, old_ub_bound = child.x_bounds.get(
+                        (item_id, t), (0.0, math.inf)
+                    )
+                    child.x_bounds[(item_id, t)] = (max(old_lb, ceil_val), old_ub_bound)
+
+                heapq.heappush(queue, (-child.depth, -child.node_id, child))
+                node_counter += 1
+
+            max_depth = max(max_depth, node.depth + 1)
             continue
 
         # Branch on best Y variable (setup-cost weighted)
@@ -1582,7 +1927,7 @@ def solve_branch_and_price(
                     )
                 )
 
-            # Create children for Y branching (inherit LEFO cuts)
+            # Create children for Y branching (inherit LEFO cuts and X bounds)
             for direction in [0, 1]:
                 child = BranchNode(
                     node_id=node_counter,
@@ -1591,6 +1936,7 @@ def solve_branch_and_price(
                     forced_y={i: set(s) for i, s in node.forced_y.items()},
                     forbidden_y={i: set(s) for i, s in node.forbidden_y.items()},
                     lefo_cuts=list(node.lefo_cuts),  # Inherit parent's cuts
+                    x_bounds=dict(node.x_bounds),  # Inherit parent's X bounds
                     lp_bound=obj,
                 )
 
@@ -1599,7 +1945,7 @@ def solve_branch_and_price(
                 else:
                     child.forced_y[item_id].add(t)
 
-                heapq.heappush(queue, (obj, child.node_id, child))
+                heapq.heappush(queue, (-child.depth, -child.node_id, child))
                 node_counter += 1
 
             max_depth = max(max_depth, node.depth + 1)
@@ -1625,7 +1971,7 @@ def solve_branch_and_price(
             global_lb = best_ub
         else:
             # Time/node limit -> gap is (UB - LB) / UB
-            global_lb = min(q[0] for q in queue) if queue else root_bound
+            global_lb = min(q[2].lp_bound for q in queue) if queue else root_bound
             final_gap = (best_ub - global_lb) / max(abs(best_ub), 1e-10)
     else:
         final_gap = math.inf
@@ -1938,71 +2284,51 @@ if __name__ == "__main__":
     #         },
     #     },
     # }
-    # 3-item instance for testing (12 periods):
+    # 1105 case - single item instance (T=10, expected optimal ~ 1105):
     instance = {
-        "period": 12,
-        "manual_capacity": [0, 0, 100, 120, 110, 100, 90, 100, 110, 120, 100, 80],
+        "period": 10,
+        "manual_capacity": [0, 0, 80, 80, 80, 80, 80, 80, 100, 80],
         "items": {
             "0": {
                 "h": [
-                    0.5,
-                    0.52,
-                    0.54,
-                    0.56,
-                    0.58,
-                    0.6,
-                    0.58,
-                    0.56,
-                    0.54,
-                    0.52,
-                    0.5,
-                    0.48,
-                ],
-                "c_var": [2.0, 1.8, 2.5, 1.9, 1.7, 2.2, 1.5, 1.3, 2.7, 1.9, 2.1, 1.6],
-                "setup": [85, 86, 87, 88, 89, 90, 91, 92, 91, 90, 89, 88],
-                "demand": [0, 0, 45, 32, 55, 28, 15, 20, 38, 42, 30, 25],
-                "shelf_seq": [12, 10, 8, 6, 8, 5, 7, 9, 6, 5, 4, 3],
-            },
-            "1": {
-                "h": [
-                    0.3,
-                    0.32,
-                    0.34,
-                    0.36,
-                    0.38,
                     0.4,
-                    0.38,
-                    0.36,
-                    0.34,
-                    0.32,
-                    0.3,
-                    0.28,
+                    0.408,
+                    0.416,
+                    0.424,
+                    0.430,
+                    0.435,
+                    0.438,
+                    0.440,
+                    0.440,
+                    0.438,
                 ],
-                "c_var": [1.5, 1.4, 2.0, 1.6, 1.3, 1.8, 1.2, 1.1, 2.2, 1.5, 1.7, 1.3],
-                "setup": [70, 71, 72, 73, 74, 75, 76, 77, 76, 75, 74, 73],
-                "demand": [0, 0, 30, 25, 40, 20, 12, 18, 35, 28, 22, 18],
-                "shelf_seq": [10, 8, 7, 5, 6, 4, 6, 8, 5, 4, 3, 2],
-            },
-            "2": {
-                "h": [
-                    0.6,
-                    0.62,
-                    0.64,
-                    0.66,
-                    0.68,
-                    0.7,
-                    0.68,
-                    0.66,
-                    0.64,
-                    0.62,
-                    0.6,
-                    0.58,
+                "c_var": [
+                    1.76,
+                    1.71,
+                    2.50,
+                    1.78,
+                    1.67,
+                    2.11,
+                    1.37,
+                    1.24,
+                    2.68,
+                    1.81,
                 ],
-                "c_var": [2.5, 2.3, 3.0, 2.4, 2.1, 2.8, 1.9, 1.7, 3.2, 2.4, 2.6, 2.0],
-                "setup": [95, 96, 97, 98, 99, 100, 101, 102, 101, 100, 99, 98],
-                "demand": [0, 0, 25, 18, 35, 15, 10, 12, 28, 22, 16, 14],
-                "shelf_seq": [8, 6, 5, 4, 5, 3, 5, 6, 4, 3, 2, 2],
-            },
+                "setup": [
+                    80,
+                    81.66,
+                    83.25,
+                    84.70,
+                    85.95,
+                    86.93,
+                    87.61,
+                    87.96,
+                    87.96,
+                    87.61,
+                ],
+                "demand": [0, 0, 68, 49, 66, 38, 17, 17, 41, 43],
+                "shelf_seq": [24, 18, 22, 6, 16, 9, 21, 23, 9, 7],
+            }
         },
     }
 

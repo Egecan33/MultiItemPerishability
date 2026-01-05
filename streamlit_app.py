@@ -47,6 +47,13 @@ try:
 except Exception:
     _solve_bnp_dp_full_plans = None  # optional backend
 
+try:
+    from bnp.solver_bnp_dp_block_based import (
+        solve_instance as _solve_bnp_dp_block_based,
+    )
+except Exception:
+    _solve_bnp_dp_block_based = None  # optional backend
+
 SOLVER_REGISTRY = {
     "No-Crossing (no shelf) v1": {
         "fn": _solve_nocross_no_shelf_v1,
@@ -77,6 +84,11 @@ SOLVER_REGISTRY = {
         "fn": _solve_bnp_dp_full_plans,
         "tag": "bnp_dp_full_plans_v1",
         "desc": "BNP (DP_based) with full plans.",
+    },
+    "BNP DP Block-Based": {
+        "fn": _solve_bnp_dp_block_based,
+        "tag": "bnp_dp_block_based_v1",
+        "desc": "BNP (DP_based) with block-based pricing.",
     },
 }
 

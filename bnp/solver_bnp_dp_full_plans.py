@@ -31,6 +31,117 @@ from gurobipy import GRB
 
 EPS = 1e-6
 
+# #region agent log - LEFO violation checker
+import json as _json
+
+_DEBUG_LOG_PATH = (
+    "/Users/egecanaktan/github_repositories/MultiItemPerishability/debug_lefo.log"
+)
+
+
+def _debug_log(location: str, message: str, data: dict, hypothesis_id: str):
+    """Write debug log entry to NDJSON file."""
+    import time
+
+    entry = {
+        "timestamp": int(time.time() * 1000),
+        "location": location,
+        "message": message,
+        "data": data,
+        "hypothesisId": hypothesis_id,
+        "sessionId": "debug-session",
+    }
+    with open(_DEBUG_LOG_PATH, "a") as f:
+        f.write(_json.dumps(entry) + "\n")
+
+
+def check_theorem_violation(
+    col, shelf_seq: List[int], demand: List[float]
+) -> List[Tuple]:
+    """
+    Check the THEOREM: V_T >= E for all production periods T in a subplan ending at E.
+
+    In ZIO Full-Plans, each column can have multiple "blocks" (subplans).
+    For each block: all productions in that block must have expiry >= last demand served.
+
+    Actually, in ZIO each production period serves a CONTIGUOUS set of demands.
+    The theorem becomes: for production at t serving demands up to e, V_t >= e.
+
+    Returns list of violations: [(t, v_t, max_demand_served), ...]
+    """
+    T = len(demand)
+    violations = []
+
+    # Get all arcs from the column: (production_period, demand_period)
+    arcs = [(t, u) for (t, u), val in col.z.items() if val > 0]
+
+    if not arcs:
+        return []
+
+    # Group arcs by production period: t -> list of demands served
+    demands_by_prod = {}
+    for t, u in arcs:
+        if t not in demands_by_prod:
+            demands_by_prod[t] = []
+        demands_by_prod[t].append(u)
+
+    # Check: for each production t, V_t >= max demand served by t
+    for t, demands_served in demands_by_prod.items():
+        max_demand = max(demands_served)
+        v_t = t + shelf_seq[t] if t < len(shelf_seq) else t + T
+
+        if v_t < max_demand:
+            violations.append((t, v_t, max_demand))
+
+    return violations
+
+
+def check_column_lefo_violation(
+    col, shelf_seq: List[int], demand: List[float]
+) -> List[Tuple]:
+    """
+    Check if a ZIO column has internal LEFO violations.
+
+    Returns list of violations: [(t1, u, t2, up, v1, v2), ...]
+    where production at t1 (expiry v1) serves demand u,
+    and production at t2 (expiry v2) serves demand up,
+    violating LEFO constraint: v1 < v2 and t2 <= u <= up - 1
+    """
+    T = len(demand)
+    violations = []
+
+    # Get all arcs from the column: (production_period, demand_period)
+    arcs = [(t, u) for (t, u), val in col.z.items() if val > 0]
+
+    if len(arcs) < 2:
+        return []
+
+    # Compute expiry for each production period used
+    prod_periods = list(set(t for t, u in arcs))
+    expiry = {}
+    for t in prod_periods:
+        if t < len(shelf_seq):
+            expiry[t] = t + shelf_seq[t]
+        else:
+            expiry[t] = t + T  # fallback
+
+    # Check all pairs of arcs for LEFO violations
+    for t1, u in arcs:
+        v1 = expiry.get(t1, T)
+        for t2, up in arcs:
+            if t1 == t2:
+                continue
+            v2 = expiry.get(t2, T)
+
+            # LEFO violation: v1 < v2 and t2 <= u <= up - 1
+            if v1 < v2 and t2 <= u <= up - 1:
+                violations.append((t1, u, t2, up, v1, v2))
+
+    return violations
+
+
+# #endregion
+
 
 # CONFIGURATION FLAGS
 
@@ -307,7 +418,28 @@ def generate_initial_column(
             x[t] = 0
             cost += setup[t]
 
-    return ZIOColumn(item_id=item_id, y=y, x=x, z=z, cost=cost)
+    col = ZIOColumn(item_id=item_id, y=y, x=x, z=z, cost=cost)
+
+    # #region agent log - Check initial column for LEFO violations
+    violations = check_column_lefo_violation(col, shelf_seq, demand)
+    if violations:
+        _debug_log(
+            "generate_initial_column:370",
+            f"LEFO VIOLATION in INITIAL column for item {item_id}",
+            {
+                "item_id": item_id,
+                "y_periods": list(y.keys()),
+                "z_arcs": [(t, u) for (t, u) in z.keys()],
+                "violations": [
+                    (t1, u, t2, up, v1, v2) for t1, u, t2, up, v1, v2 in violations
+                ],
+                "shelf_seq": shelf_seq,
+            },
+            "H4",
+        )
+    # #endregion
+
+    return col
 
 
 def enumerate_zio_columns(
@@ -726,6 +858,63 @@ def price_zio_column_dp(
         seen_signatures.add(sig)
 
         col = ZIOColumn(item_id=item_id, y=y, x=x, z=z, cost=final_actual)
+
+        # #region agent log - Check for THEOREM violation (V_T >= E for all T)
+        theorem_violations = check_theorem_violation(col, shelf_seq, demand)
+        if theorem_violations:
+            _debug_log(
+                "price_zio_column_dp:theorem",
+                f"THEOREM VIOLATION in column for item {item_id} - REJECTED",
+                {
+                    "item_id": item_id,
+                    "y_periods": list(y.keys()),
+                    "z_arcs": [(t, u) for (t, u) in z.keys()],
+                    "theorem_violations": [
+                        {"t": t, "expiry": v_t, "max_demand": max_d}
+                        for t, v_t, max_d in theorem_violations
+                    ],
+                    "shelf_seq": shelf_seq,
+                },
+                "H5",
+            )
+            # FIX: Skip columns with theorem violations
+            continue
+        # #endregion
+
+        # #region agent log - Check for LEFO violations in generated column
+        lefo_violations = check_column_lefo_violation(col, shelf_seq, demand)
+        if lefo_violations:
+            _debug_log(
+                "price_zio_column_dp:lefo",
+                f"LEFO VIOLATION in column for item {item_id} - REJECTED",
+                {
+                    "item_id": item_id,
+                    "y_periods": list(y.keys()),
+                    "z_arcs": [(t, u) for (t, u) in z.keys()],
+                    "violations": [
+                        (t1, u, t2, up, v1, v2)
+                        for t1, u, t2, up, v1, v2 in lefo_violations
+                    ],
+                    "shelf_seq": shelf_seq,
+                    "reduced_cost": final_rc,
+                },
+                "H1",
+            )
+            # FIX: Skip columns with LEFO violations - they are structurally invalid
+            continue
+        else:
+            _debug_log(
+                "price_zio_column_dp:ok",
+                f"Column VALID for item {item_id}",
+                {
+                    "item_id": item_id,
+                    "y_periods": list(y.keys()),
+                    "num_arcs": len(z),
+                },
+                "H1",
+            )
+        # #endregion
+
         results.append((col, final_rc))
 
     results.sort(key=lambda x: x[1])
@@ -1179,6 +1368,28 @@ def column_generation_loop(
                         columns[i].append(col)
                         existing_sigs.add(col.signature())
                         iter_cols_added += 1
+
+                        # #region agent log - Track columns added to pool
+                        item_data = items[i]
+                        shelf_seq = item_data.get("shelf_seq", [T] * T)
+                        demand_vec = item_data.get("demand", [0] * T)
+                        violations = check_column_lefo_violation(
+                            col, shelf_seq, demand_vec
+                        )
+                        if violations:
+                            _debug_log(
+                                "column_generation:1290",
+                                f"Adding column WITH LEFO VIOLATION to pool",
+                                {
+                                    "item_id": i,
+                                    "cg_iter": cg_iter,
+                                    "node_id": node_id,
+                                    "reduced_cost": rc,
+                                    "violations": violations,
+                                },
+                                "H2",
+                            )
+                        # #endregion
 
         total_cols_added += iter_cols_added
         total_cols = sum(len(cols) for cols in columns.values())
@@ -1733,6 +1944,35 @@ def solve_branch_and_price(
                 best_lam = lam_vals
                 if verbose:
                     print(f"  *** New incumbent: {best_ub:.2f} ***")
+
+                # #region agent log - Check active columns in incumbent for LEFO violations
+                for i_item in items:
+                    if i_item in columns and i_item in lam_vals:
+                        for k, col in enumerate(columns[i_item]):
+                            lam_k = lam_vals[i_item].get(k, 0)
+                            if lam_k > EPS:
+                                item_data = items[i_item]
+                                shelf_seq = item_data.get("shelf_seq", [T] * T)
+                                demand_vec = item_data.get("demand", [0] * T)
+                                violations = check_column_lefo_violation(
+                                    col, shelf_seq, demand_vec
+                                )
+                                if violations:
+                                    _debug_log(
+                                        "solve_bnp:incumbent",
+                                        f"INCUMBENT uses column with LEFO VIOLATION",
+                                        {
+                                            "item_id": i_item,
+                                            "column_idx": k,
+                                            "lambda": lam_k,
+                                            "objective": lp_bound,
+                                            "violations": violations,
+                                            "y_periods": list(col.y.keys()),
+                                            "z_arcs": list(col.z.keys()),
+                                        },
+                                        "H3",
+                                    )
+                # #endregion
 
             if logger:
                 logger.log_node(
