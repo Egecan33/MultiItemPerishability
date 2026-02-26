@@ -144,8 +144,11 @@ def parse_orders_lines(orders_txt):
       "Item 3", "Item i=3", "Item(3)" and t lines like "10 → 5", "t=10 → 5", "u=10 -> 5"
     Accepts separators: "→", "->", "=>".
     Returns list of dicts: {"item_id": int, "t": int, "qty": float}
+    
+    Skips Flow lines like "(2 → 5): 68.000" which have different semantics.
     """
     rows, cur_item = [], None
+    seen = set()  # track (item_id, t) to avoid duplicates
     for ln in (ln.strip() for ln in orders_txt if ln and ln.strip()):
         low = ln.lower()
         if low.startswith("item"):
@@ -166,6 +169,15 @@ def parse_orders_lines(orders_txt):
         if cur_item is None:
             continue  # no current item context yet
 
+        # Skip Flow lines like "(2 → 5): 68.000" - they have format (t → u): qty
+        # These have "):" in the right part after split
+        if "):" in right:
+            continue
+
+        # Also skip if left side starts with "(" - indicates flow arc notation
+        if left.strip().startswith("("):
+            continue
+
         mt = re.search(r"(-?\d+)", left)  # period index anywhere on the left
         mq = re.search(
             r"([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", right
@@ -175,6 +187,13 @@ def parse_orders_lines(orders_txt):
 
         t = int(mt.group(1))
         qty = float(mq.group(1))
+        
+        # Deduplicate (item_id, t) to handle any edge cases
+        key = (cur_item, t)
+        if key in seen:
+            continue
+        seen.add(key)
+        
         rows.append({"item_id": cur_item, "t": t, "qty": _safe_float(qty)})
     return rows
 
