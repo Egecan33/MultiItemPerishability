@@ -1,0 +1,3 @@
+numpy>=1.26
+supabase>=2.5.1
+gurobipy>=11.0.0
